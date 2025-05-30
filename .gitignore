@@ -69,3 +69,4 @@ typings/
 .DS_Store
 
 # Ghost Docker Custom
+.tinyb

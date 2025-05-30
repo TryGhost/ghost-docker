@@ -30,16 +30,23 @@ services:
       database__connection__database: ghost
       enableDeveloperExperiments: true
       tinybird__tracker__endpoint: https://${DOMAIN:?DOMAIN environment variable is required}/.ghost/analytics/tb/web_analytics
-      tinybird__tracker__id: ${TINYBIRD_ID}
+      tinybird__tracker__id: ${TINYBIRD_ID:-}
       tinybird__tracker__datasource: analytics_events
-      tinybird__tracker__token: ${TINYBIRD_TOKEN}
+      tinybird__tracker__token: ${TINYBIRD_TRACKER_TOKEN:-}
       tinybird__stats__endpoint: https://api.tinybird.co
-      tinybird__stats__id: ${TINYBIRD_ID}
-      tinybird__stats__token: ${TINYBIRD_TOKEN}
+      tinybird__stats__id: ${TINYBIRD_ID:-}
+      tinybird__stats__token: ${TINYBIRD_STATS_TOKEN:-}
     volumes:
       - ghost_content:/var/lib/ghost/content
     depends_on:
-      - db
+      db:
+        condition: service_started
+      tinybird-sync:
+        condition: service_completed_successfully
+        required: false
+      tinybird-deploy:
+        condition: service_completed_successfully
+        required: false
     networks:
       - ghost_network
 
@@ -68,14 +75,55 @@ services:
     environment:
       NODE_ENV: production
       PROXY_TARGET: https://api.tinybird.co/v0/events
+    profiles: [analytics]
     networks:
       - ghost_network
+
+  tinybird-sync:
+    image: ghost:5-alpine
+    command: >
+      sh -c "
+        if [ -d /var/lib/ghost/current/core/server/data/tinybird ]; then
+          rm -rf /shared/tinybird/*;
+          cp -rf /var/lib/ghost/current/core/server/data/tinybird/* /shared/tinybird/;
+          echo 'Tinybird files synced into shared volume.';
+        else
+          echo 'Tinybird source directory not found.';
+        fi
+      "
+    volumes:
+      - tinybird_files:/shared/tinybird
+    networks:
+      - ghost_network
+    profiles: [analytics]
+    restart: no
+
+  tinybird-deploy:
+    build:
+      context: ./tinybird
+      dockerfile: Dockerfile
+    working_dir: /home/tinybird
+    command: >
+      sh -c "
+        tb --cloud deploy
+      "
+    volumes:
+      - .tinyb:/home/tinybird/.tinyb
+      - tinybird_files:/home/tinybird
+    depends_on:
+      tinybird-sync:
+        condition: service_completed_successfully
+    profiles: [analytics]
+    networks:
+      - ghost_network
+    tty: true
 
 volumes:
   ghost_content:
   db_data:
   caddy_data:
   caddy_config:
+  tinybird_files:
 
 networks:
   ghost_network:
