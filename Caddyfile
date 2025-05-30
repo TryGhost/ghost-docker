@@ -45,5 +45,5 @@ www.{$DOMAIN} {
         format console
         level INFO
     }
-    redir https://{$DOMAIN}{uri}
+    redir https://ghost.joegrigg.com{uri}
 }
