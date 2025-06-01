@@ -33,14 +33,14 @@ services:
       tinybird__tracker__id: ${TINYBIRD_ID:-}
       tinybird__tracker__datasource: analytics_events
       tinybird__tracker__token: ${TINYBIRD_TRACKER_TOKEN:-}
-      tinybird__stats__endpoint: https://api.tinybird.co
+      tinybird__stats__endpoint: ${TINYBIRD_API_URL:-https://api.tinybird.co}
       tinybird__stats__id: ${TINYBIRD_ID:-}
       tinybird__stats__token: ${TINYBIRD_STATS_TOKEN:-}
     volumes:
       - ghost_content:/var/lib/ghost/content
     depends_on:
       db:
-        condition: service_started
+        condition: service_healthy
       tinybird-sync:
         condition: service_completed_successfully
         required: false
@@ -64,6 +64,10 @@ services:
     volumes:
       - db_data:/var/lib/mysql
       - ./mysql-init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: mysql -u${DATABASE_USER:-ghost} -p${DATABASE_PASSWORD:?DATABASE_PASSWORD environment variable is required} ghost -e 'select 1'
+      interval: 1s
+      retries: 120
     networks:
       - ghost_network
 
@@ -74,7 +78,8 @@ services:
       - "3000"
     environment:
       NODE_ENV: production
-      PROXY_TARGET: https://api.tinybird.co/v0/events
+      PROXY_TARGET: ${TINYBIRD_API_URL:-https://api.tinybird.co}/v0/events
+      LOG_LEVEL: debug
     profiles: [analytics]
     networks:
       - ghost_network
