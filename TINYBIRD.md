@@ -1,5 +1,7 @@
 # Tinybird Configuration
 
+Note: Currently Traffic Analytics features are behind a feature flag. For now, you'll need to enable developer experiments by setting `ENABLE_DEV_EXPERIMENTS=true` in your `.env` file, and enable the Traffic Analytics feature flag under Settings > Labs > Private Features.
+
 Steps:
 1. Create a Tinybird account and a Tinybird workspace at [tinybird.co](https://auth.tinybird.co/login). You can select any cloud/region you choose.
 2. Follow the first two steps in the Quickstart to install the Tinybird CLI and run `tb login`, but _do not proceed any further with the Quickstart instructions_.
