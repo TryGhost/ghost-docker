@@ -90,10 +90,9 @@ services:
     image: ghcr.io/tryghost/activitypub:edge
     restart: always
     volumes:
-      - ./gcscreds.json:/home/gcs/gcscreds.json
+      - ghost_content:/opt/activitypub/content
     expose:
       - "8080"
-      - "9229"
     environment:
       NODE_ENV: production
       PORT: 8080
@@ -103,9 +102,8 @@ services:
       MYSQL_DATABASE: activitypub
       ALLOW_PRIVATE_ADDRESS: true
       USE_MQ: false
-      GCP_BUCKET_NAME: ${ACTIVITYPUB_GCP_BUCKET:?ACTIVITYPUB_GCP_BUCKET environment variable is required}
-      GOOGLE_CLOUD_PROJECT: ${GOOGLE_CLOUD_PROJECT:?GOOGLE_CLOUD_PROJECT envirobment variable is required}
-      GOOGLE_APPLICATION_CREDENTIALS: /home/gcs/gcscreds.json
+      LOCAL_STORAGE_PATH: /opt/activitypub/content/images/activitypub
+      LOCAL_STORAGE_HOSTING_URL: https://${DOMAIN}/content/images/activitypub
     depends_on:
       - db
     profiles: [activitypub]
