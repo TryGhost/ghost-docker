@@ -384,7 +384,7 @@ main() {
 
     read -rp 'Import these settings to .env? (y/n): ' confirm
     if [[ "${confirm,,}" == "y" ]]; then
-        echo -e '\n# Configuration imported from existing Ghost install' >> "${PWD}/.env"
+        echo -e "\n# Configuration imported from existing Ghost install at ${current_location}" >> "${PWD}/.env"
         node "${PWD}/scripts/config-to-env.js" "${current_location}/config.production.json" >> "${PWD}/.env"
         echo "✓ Configuration imported"
     else
