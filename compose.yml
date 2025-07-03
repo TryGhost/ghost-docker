@@ -33,15 +33,12 @@ services:
       database__connection__user: ${DATABASE_USER:-ghost}
       database__connection__password: ${DATABASE_PASSWORD:?DATABASE_PASSWORD environment variable is required}
       database__connection__database: ghost
-      enableDeveloperExperiments: true
-      labs__trafficAnalytics: true
-      labs__ActivityPub: true
+      enableDeveloperExperiments: ${ENABLE_DEVELOPER_EXPERIMENTS:-false}
+      labs__ActivityPub: ${ENABLE_ACTIVITYPUB:-false}
       tinybird__tracker__endpoint: https://${DOMAIN:?DOMAIN environment variable is required}/.ghost/analytics/tb/web_analytics
-      tinybird__tracker__id: ${TINYBIRD_ID:-}
       tinybird__tracker__datasource: analytics_events
       tinybird__tracker__token: ${TINYBIRD_TRACKER_TOKEN:-}
       tinybird__stats__endpoint: ${TINYBIRD_API_URL:-https://api.tinybird.co}
-      tinybird__stats__id: ${TINYBIRD_ID:-}
       tinybird__stats__token: ${TINYBIRD_STATS_TOKEN:-}
     volumes:
       - ${UPLOAD_LOCATION:-./data/ghost}:/var/lib/ghost/content

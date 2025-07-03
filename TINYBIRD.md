@@ -11,5 +11,6 @@ Steps:
 1. Using the UI link from the previous step, open your workspace and click on *Tokens* in the left hand menu
 1. Copy your Tinybird `stats_page` token and add it to your `.env` file as `TINYBIRD_STATS_TOKEN`
 1. Copy your Tinybird `tracker` token and add it to your `.env` file as `TINYBIRD_TRACKER_TOKEN`
-1. Run `docker compose --profile=analytics up -d` to start all services in the background. You can also set `COMPOSE_PROFILES=analytics` in your `.env` file to automatically include the `analytics` profile when running `docker compose` commands.
+1. Run `docker compose --profile=analytics up -d` to start all services in the background
+1. Set `COMPOSE_PROFILES=analytics` in your `.env` file to automatically include the `analytics` profile when running `docker compose` commands
 1. At this point, everything should be working. You can test it's working by visiting your site's homepage, then checking the Stats page in Ghost Admin — you should see a view recorded.
