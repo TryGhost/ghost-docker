@@ -37,7 +37,7 @@ services:
       database__connection__database: ghost
       enableDeveloperExperiments: ${ENABLE_DEVELOPER_EXPERIMENTS:-false}
       labs__ActivityPub: ${ENABLE_ACTIVITYPUB:-false}
-      tinybird__tracker__endpoint: https://${DOMAIN:?DOMAIN environment variable is required}/.ghost/analytics/tb/web_analytics
+      tinybird__tracker__endpoint: https://${DOMAIN:?DOMAIN environment variable is required}/.ghost/analytics/api/v1/page_hit
       tinybird__tracker__datasource: analytics_events
       tinybird__stats__endpoint: ${TINYBIRD_API_URL:-https://api.tinybird.co}
       tinybird__stats__token: ${TINYBIRD_STATS_TOKEN:-}
