@@ -96,7 +96,7 @@ services:
       - ghost_network
 
   activitypub:
-    image: ghcr.io/tryghost/activitypub:edge
+    image: ghcr.io/tryghost/activitypub:1
     restart: always
     expose:
       - "8080"
