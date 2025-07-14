@@ -2,7 +2,6 @@
 
 # Get token from .tinyb JSON file
 USER_TOKEN=$(jq -r '.token' .tinyb)
-echo "User token: $USER_TOKEN"
 
 if [ -z "$USER_TOKEN" ] || [ "$USER_TOKEN" = "null" ]; then
     echo "Error: Could not find token in .tinyb file"
@@ -11,7 +10,7 @@ fi
 
 # Get host from .tinyb JSON file
 HOST=$(jq -r '.host' .tinyb)
-echo "Host: $HOST"
+echo "TINYBIRD_API_URL=$HOST"
 
 if [ -z "$HOST" ] || [ "$HOST" = "null" ]; then
     echo "Error: Could not find host in .tinyb file"
@@ -20,7 +19,7 @@ fi
 
 # Get id from .tinyb JSON file
 WORKSPACE_ID=$(jq -r '.id' .tinyb)
-echo "Workspace ID: $WORKSPACE_ID"
+echo "TINYBIRD_WORKSPACE_ID=$WORKSPACE_ID"
 
 if [ -z "$WORKSPACE_ID" ] || [ "$WORKSPACE_ID" = "null" ]; then
     echo "Error: Could not find id in .tinyb file"
@@ -37,5 +36,5 @@ ADMIN_TOKEN=$(echo "$RESPONSE" | jq -r '.tokens[] | select(.name == "admin token
 TRACKER_TOKEN=$(echo "$RESPONSE" | jq -r '.tokens[] | select(.name == "tracker") | .token')
 
 # Echo the tokens as proof of concept
-echo "Admin token: $ADMIN_TOKEN"
-echo "Tracker token: $TRACKER_TOKEN"
+echo "TINYBIRD_ADMIN_TOKEN=$ADMIN_TOKEN"
+echo "TINYBIRD_TRACKER_TOKEN=$TRACKER_TOKEN"
