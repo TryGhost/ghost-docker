@@ -88,9 +88,13 @@ services:
     restart: always
     expose:
       - "3000"
+    volumes:
+      - traffic_analytics_data:/data
     environment:
       NODE_ENV: production
       PROXY_TARGET: ${TINYBIRD_API_URL:-https://api.tinybird.co}/v0/events
+      SALT_STORE_TYPE: ${SALT_STORE_TYPE:-file}
+      SALT_STORE_FILE_PATH: /data/salts.json
       TINYBIRD_TRACKER_TOKEN: ${TINYBIRD_TRACKER_TOKEN:-}
       LOG_LEVEL: debug
     profiles: [analytics]
@@ -198,6 +202,7 @@ volumes:
   caddy_config:
   tinybird_files:
   tinybird_home:
+  traffic_analytics_data:
 
 networks:
   ghost_network:
