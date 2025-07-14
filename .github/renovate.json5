@@ -31,16 +31,19 @@
 			description: "Auto-merge trusted package updates",
 			matchDatasources: ["docker", "docker-compose", "github-tags"],
 			matchUpdateTypes: ["minor", "patch"],
-			matchPackageNames: ["ghost/traffic-analytics"],
-			automerge: true,
-		},
-		{
-			description: "Don't pin Ghost images till we have v1",
-			matchDatasources: ["docker", "docker-compose"],
 			matchPackageNames: [
-			    "ghost",
+				"ghost/traffic-analytics",
 				"ghcr.io/tryghost/activitypub",
 				"ghcr.io/tryghost/activitypub-migrations",
+			],
+			automerge: true,
+		},
+		// We don't need to pin the Ghost image since its pulled via env variables
+		{
+			description: "Don't pin Ghost image",
+			matchDatasources: ["docker", "docker-compose"],
+			matchPackageNames: [
+				"ghost",
 			],
 			pinDigests: false,
 		},
