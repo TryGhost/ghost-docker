@@ -10,6 +10,18 @@
 	suppressNotifications: ["prIgnoreNotification"],
 	packageRules: [
 		{
+			description: "Group ActivityPub containers together",
+			matchDatasources: ["docker", "github-tags", "docker-compose"],
+			matchPackageNames: [
+				"ghcr.io/tryghost/activitypub",
+				"ghcr.io/tryghost/activitypub-migrations",
+			],
+			groupName: "ActivityPub",
+			groupSlug: "activitypub",
+			additionalBranchPrefix: "",
+			separateMinorPatch: false,
+		},
+		{
 			description: "Auto-merge initial digest pinning",
 			matchDatasources: ["docker", "github-tags"],
 			matchUpdateTypes: ["pinDigest"],
