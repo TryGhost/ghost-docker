@@ -19,5 +19,13 @@ then
     exit 0
 fi
 
+# Check if running in interactive environment
+## If not logged in and running in non-interactive mode (i.e. `docker compose up -d`), the tinybird-login service will hang indefinitely
+if [[ ! -t 0 ]] || [[ ! -t 1 ]]; then
+        echo "Not logged in to Tinybird and running in non-interactive mode."
+        echo "Please run 'docker compose run --rm tinybird-login' to login interactively."
+        exit 1
+fi
+
 # Login to Tinybird
 tb login --method code

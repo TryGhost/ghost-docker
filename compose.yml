@@ -135,7 +135,7 @@ services:
     profiles: [analytics]
     networks:
       - ghost_network
-    tty: true
+    tty: false
     restart: no
 
   tinybird-sync:
