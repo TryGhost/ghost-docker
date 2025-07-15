@@ -1,0 +1,58 @@
+# Replace your-domain.com with your actual domain
+{$DOMAIN} {
+	import snippets/Logging
+
+	# Traffic Analytics service
+	import snippets/TrafficAnalytics
+
+	# ActivityPub Service
+	import snippets/ActivityPub
+
+	# Default proxy everything else to Ghost
+	handle {
+		reverse_proxy ghost:2368
+	}
+
+	# Optional: Enable gzip compression
+	encode gzip
+
+	# Optional: Add security headers
+	import snippets/SecurityHeaders
+}
+
+# If you have a separate domain for Ghost Admin uncomment the below block
+# {$ADMIN_DOMAIN} {
+# 	import snippets/Logging
+#
+# 	# Traffic Analytics service
+# 	import snippets/TrafficAnalytics
+#
+# 	# ActivityPub Service
+# 	import snippets/ActivityPub
+#
+# 	# Default proxy everything else to Ghost
+# 	handle {
+# 		reverse_proxy ghost:2368
+# 	}
+#
+# 	# Optional: Enable gzip compression
+# 	encode gzip
+#
+# 	# Optional: Add security headers
+# 	import snippets/SecurityHeaders
+# }
+
+# If you want to redirect the www variant of your domain to the non-www varient uncomment the below 4 lines
+# Note: You must have DNS setup correctly for this to work
+# www.{$DOMAIN} {
+# 	import snippets/Logging
+# 	redir https://{$DOMAIN}{uri}
+# }
+
+# If you want to redirect the non-www variant of your domain to the www varient uncomment the below 4 lines and replace REPLACE_ME with your domain
+# Note: You must have DNS setup correctly for this to work
+# If you're want to enable ActivityPub you _must_ enable this redirect
+# REPLACE_ME {
+# 	import snippets/Logging
+# 	redir https://{$DOMAIN}{uri}
+# }

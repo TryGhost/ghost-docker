@@ -1,0 +1,6 @@
+# Log all requests
+log {
+	output stdout
+	format console
+	level INFO
+}
