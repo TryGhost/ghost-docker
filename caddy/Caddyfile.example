@@ -1,4 +1,3 @@
-# Replace your-domain.com with your actual domain
 {$DOMAIN} {
 	import snippets/Logging
 
@@ -20,7 +19,8 @@
 	import snippets/SecurityHeaders
 }
 
-# If you have a separate domain for Ghost Admin uncomment the below block
+# Separate admin domains
+# To use a separate domain for Ghost Admin uncomment the block below (recommended)
 # {$ADMIN_DOMAIN} {
 # 	import snippets/Logging
 #
@@ -42,17 +42,19 @@
 # 	import snippets/SecurityHeaders
 # }
 
-# If you want to redirect the www variant of your domain to the non-www varient uncomment the below 4 lines
-# Note: You must have DNS setup correctly for this to work
+# Redirect www -> root domain
+# To redirect the www variant of your domain to the non-www variant uncomment the 4 lines below
+# Note: You must have DNS setup correctly for both domains for this to work
 # www.{$DOMAIN} {
 # 	import snippets/Logging
 # 	redir https://{$DOMAIN}{uri}
 # }
 
-# If you want to redirect the non-www variant of your domain to the www varient uncomment the below 4 lines and replace REPLACE_ME with your domain
-# Note: You must have DNS setup correctly for this to work
-# If you're want to enable ActivityPub you _must_ enable this redirect
-# REPLACE_ME {
+# Redirect root -> www domain
+# To redirect the non-www variant of your domain to the www variant uncomment the 4 lines below and change CHANGE_ME to your root domain
+# Note: You must have DNS setup correctly for both domains for this to work
+# If you want to use ActivityPub you _must_ enable this redirect
+# CHANGE_ME {
 # 	import snippets/Logging
 # 	redir https://{$DOMAIN}{uri}
 # }
