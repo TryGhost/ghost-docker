@@ -80,10 +80,9 @@ The repository includes comprehensive migration tools:
 
 1. Clone repository and copy `.env.example` to `.env`
 2. Configure required environment variables (domain, passwords)
-3. Enable developer experiments if using analytics/ActivityPub
-4. Run `docker compose up -d` to start services
-5. Access Ghost at `https://DOMAIN` (Caddy handles SSL automatically)
-6. Monitor logs with `docker compose logs -f ghost`
+3. Run `docker compose up -d` to start services
+4. Access Ghost at `https://DOMAIN` (Caddy handles SSL automatically)
+5. Monitor logs with `docker compose logs -f ghost`
 
 For analytics setup, see `TINYBIRD.md` for detailed instructions.
 
