@@ -144,7 +144,7 @@ services:
 
   tinybird-sync:
     # Do not alter this without updating the Ghost container as well
-    image: ghost:${GHOST_VERSION:-5-alpine}
+    image: ghost:${GHOST_VERSION:-6.0.0-rc.0-alpine}
     command: >
       sh -c "
         if [ -d /var/lib/ghost/current/core/server/data/tinybird ]; then
