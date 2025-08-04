@@ -120,6 +120,7 @@ services:
       LOCAL_STORAGE_HOSTING_URL: https://${DOMAIN}/content/images/activitypub
     depends_on:
       - db
+      - activitypub-migrate
     profiles: [activitypub]
     networks:
       - ghost_network
