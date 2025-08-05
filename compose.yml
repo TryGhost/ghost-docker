@@ -32,6 +32,7 @@ services:
     environment:
       NODE_ENV: production
       url: https://${DOMAIN:?DOMAIN environment variable is required}
+      admin__url: ${ADMIN_DOMAIN:+https://${ADMIN_DOMAIN}}
       database__client: mysql
       database__connection__host: db
       database__connection__user: ${DATABASE_USER:-ghost}
