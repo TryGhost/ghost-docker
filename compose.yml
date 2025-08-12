@@ -61,7 +61,7 @@ services:
       - ghost_network
 
   db:
-    image: mysql:8.0.42@sha256:4445b2668d41143cb50e471ee207f8822006249b6859b24f7e12479684def5d9
+    image: mysql:8.0.43@sha256:f483084b37081f1574c8d4e4485cd9028abcb022973c44c079a520eb01801d55
     restart: always
     expose:
       - "3306"
