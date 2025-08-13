@@ -3,6 +3,7 @@ header {
 	Strict-Transport-Security max-age=31536000;
 	# Prevent embedding in frames
 	X-Frame-Options DENY
+    # X-Frame-Options allow from https://${ADMIN_DOMAIN}
 	# Enable XSS protection
 	X-XSS-Protection "1; mode=block"
 	# Prevent MIME sniffing
