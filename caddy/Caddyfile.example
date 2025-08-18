@@ -12,6 +12,13 @@
 		reverse_proxy ghost:2368
 	}
 
+    # Uncomment below if using a separate domain for the admin page. It will allow only the admin origin to embed the site in the `view site` tab.
+    # header {
+    #   defer
+    #   -X-Frame-Options
+    #   Content-Security-Policy "frame-ancestors 'self' https://{$ADMIN_DOMAIN}"
+    # }
+
 	# Optional: Enable gzip compression
 	encode gzip
 
