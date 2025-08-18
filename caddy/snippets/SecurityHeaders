@@ -7,6 +7,6 @@ header {
 	X-Content-Type-Options nosniff
 	# Referrer policy
 	Referrer-Policy strict-origin-when-cross-origin
-    # Prevent embedding in external iframes
-    Content-Security-Policy "frame-ancestors 'self' {$ADMIN_DOMAIN:}"
+	# Prevent embedding in external iframes
+	Content-Security-Policy "frame-ancestors 'self' {$ADMIN_DOMAIN:}"
 }
