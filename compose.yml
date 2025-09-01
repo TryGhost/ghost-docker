@@ -109,14 +109,13 @@ services:
     volumes:
       - ${UPLOAD_LOCATION:-./data/ghost}:/opt/activitypub/content
     environment:
+      # See https://github.com/TryGhost/ActivityPub/blob/main/docs/env-vars.md
       NODE_ENV: production
-      PORT: 8080
+      ACTIVITYPUB_COLLECTION_PAGE_SIZE: 20
       MYSQL_HOST: db
       MYSQL_USER: ${DATABASE_USER:-ghost}
       MYSQL_PASSWORD: ${DATABASE_PASSWORD:?DATABASE_PASSWORD environment variable is required}
       MYSQL_DATABASE: activitypub
-      ALLOW_PRIVATE_ADDRESS: true
-      USE_MQ: false
       LOCAL_STORAGE_PATH: /opt/activitypub/content/images/activitypub
       LOCAL_STORAGE_HOSTING_URL: https://${DOMAIN}/content/images/activitypub
     depends_on:
