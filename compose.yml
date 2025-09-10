@@ -111,7 +111,6 @@ services:
     environment:
       # See https://github.com/TryGhost/ActivityPub/blob/main/docs/env-vars.md
       NODE_ENV: production
-      ACTIVITYPUB_COLLECTION_PAGE_SIZE: 20
       MYSQL_HOST: db
       MYSQL_USER: ${DATABASE_USER:-ghost}
       MYSQL_PASSWORD: ${DATABASE_PASSWORD:?DATABASE_PASSWORD environment variable is required}
