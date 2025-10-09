@@ -106,12 +106,13 @@ EOF
 validate_mysql_connection() {
     local host=$1
     local database=$2
-    local user=$3
-    local password=$4
+    local port=$3
+    local user=$4
+    local password=$5
 
     echo "Testing MySQL connection..."
 
-    if mysql -h"$host" -u"$user" -p"$password" -e "SELECT 1 FROM information_schema.tables WHERE table_schema='$database' LIMIT 1;" &>/dev/null; then
+    if mysql -h"$host" -u"$user" -p"$password" -P"$port" -e "SELECT 1 FROM information_schema.tables WHERE table_schema='$database' LIMIT 1;" &>/dev/null; then
         echo "✓ MySQL connection successful"
         return 0
     else
@@ -205,11 +206,12 @@ migrate_content() {
 test_mysql_dump() {
     local host=$1
     local database=$2
-    local user=$3
-    local password=$4
+    local port=$3
+    local user=$4
+    local password=$5
 
     # Try a minimal dump to test permissions
-    if MYSQL_PWD="$password" mysqldump --no-tablespaces --no-data -h"$host" -u"$user" "$database" >/dev/null 2>&1; then
+    if MYSQL_PWD="$password" mysqldump --no-tablespaces --no-data -P"$port" -h"$host" -u"$user" "$database" >/dev/null 2>&1; then
         return 0
     else
         return 1
@@ -220,15 +222,21 @@ test_mysql_dump() {
 migrate_database() {
     local mysql_host
     local mysql_database
+    local mysql_port
     mysql_host=$(jq -r < "${current_location}/config.production.json" '.database.connection.host')
     mysql_database=$(jq -r < "${current_location}/config.production.json" '.database.connection.database')
+    mysql_port=$(jq -r < "${current_location}/config.production.json" '.database.connection.port')
+    # Default to 3306 if port is missing or null
+    if [[ -z "$mysql_port" || "$mysql_port" == "null" ]]; then
+        mysql_port=3306
+    fi
 
     echo "Exporting database from $mysql_host..."
 
     # Export database with proper error handling
     local dump_output
     local dump_status
-    dump_output=$(MYSQL_PWD="$mysql_password" mysqldump --no-tablespaces -h"$mysql_host" -u"$mysql_user" "$mysql_database" 2>&1 > "$TEMP_SQL_FILE")
+    dump_output=$(MYSQL_PWD="$mysql_password" mysqldump --no-tablespaces -h"$mysql_host" -u"$mysql_user" -P"$mysql_port" "$mysql_database" 2>&1 > "$TEMP_SQL_FILE")
     dump_status=$?
 
     # Check for errors in output (mysqldump may return 0 even with some errors)
@@ -413,10 +421,16 @@ main() {
     # Get database configuration
     local mysql_host
     local mysql_database
+    local mysql_port
     local ghost_mysql_user
     local ghost_mysql_password
     mysql_host=$(jq -r < "${current_location}/config.production.json" '.database.connection.host')
     mysql_database=$(jq -r < "${current_location}/config.production.json" '.database.connection.database')
+    mysql_port=$(jq -r < "${current_location}/config.production.json" '.database.connection.port')
+    # Default to 3306 if port is missing or null
+    if [[ -z "$mysql_port" || "$mysql_port" == "null" ]]; then
+        mysql_port=3306
+    fi
     ghost_mysql_user=$(jq -r < "${current_location}/config.production.json" '.database.connection.user')
     ghost_mysql_password=$(jq -r < "${current_location}/config.production.json" '.database.connection.password')
 
@@ -454,7 +468,7 @@ main() {
 
     # Try Ghost's own credentials first
     echo "Testing database export with Ghost's credentials..."
-    if test_mysql_dump "$mysql_host" "$mysql_database" "$ghost_mysql_user" "$ghost_mysql_password"; then
+    if test_mysql_dump "$mysql_host" "$mysql_database" "$mysql_port" "$ghost_mysql_user" "$ghost_mysql_password"; then
         echo "✓ Ghost's credentials have sufficient privileges"
         mysql_user="$ghost_mysql_user"
         mysql_password="$ghost_mysql_password"
@@ -473,7 +487,7 @@ main() {
         echo ""
 
         # Validate connection
-        if ! validate_mysql_connection "$mysql_host" "$mysql_database" "$mysql_user" "$mysql_password"; then
+        if ! validate_mysql_connection "$mysql_host" "$mysql_database" "$mysql_port" "$mysql_user" "$mysql_password"; then
             echo ""
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             echo "Could not connect to MySQL database."
@@ -488,7 +502,7 @@ main() {
         fi
 
         # Test dump permissions
-        if ! test_mysql_dump "$mysql_host" "$mysql_database" "$mysql_user" "$mysql_password"; then
+        if ! test_mysql_dump "$mysql_host" "$mysql_database" "$mysql_port" "$mysql_user" "$mysql_password"; then
             echo ""
             echo "ERROR: The provided user doesn't have sufficient privileges for database export."
             echo "Please ensure the user has the necessary privileges or try a different user."
@@ -632,7 +646,7 @@ main() {
     echo "Once you're checked over the migration you can remove the old installation files and database by running:"
     echo ""
     echo "  rm -r $current_location/"
-    echo "  mysql -h$mysql_host -u$mysql_user -p -e 'DROP DATABASE IF EXISTS ${mysql_database}'"
+    echo "  mysql -h$mysql_host -u$mysql_user -p -P$mysql_port -e 'DROP DATABASE IF EXISTS ${mysql_database}'"
     echo ""
     echo "This will remove the old Ghost CLI and Ghost 5.x installation"
     echo ""
