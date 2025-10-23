@@ -1,4 +1,4 @@
-FROM python:3.13-slim@sha256:6544e0e002b40ae0f59bc3618b07c1e48064c4faed3a15ae2fbd2e8f663e8283
+FROM python:3.13-slim@sha256:0222b795db95bf7412cede36ab46a266cfb31f632e64051aac9806dabf840a61
 
 # Install dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
