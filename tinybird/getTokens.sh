@@ -32,7 +32,7 @@ RESPONSE=$(curl -s -X GET \
   -H "Authorization: Bearer $USER_TOKEN")
 
 # Parse tokens from response
-ADMIN_TOKEN=$(echo "$RESPONSE" | jq -r '.tokens[] | select(.name == "admin token") | .token')
+ADMIN_TOKEN=$(echo "$RESPONSE" | jq -r '.tokens[] | select(.name == "workspace admin token") | .token')
 TRACKER_TOKEN=$(echo "$RESPONSE" | jq -r '.tokens[] | select(.name == "tracker") | .token')
 
 # Echo the tokens as proof of concept
