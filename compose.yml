@@ -126,7 +126,7 @@ services:
     networks:
       - ghost_network
 
-  # Suporting Services
+  # Supporting Services
 
   tinybird-login:
     build:
