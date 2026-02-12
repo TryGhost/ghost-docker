@@ -73,3 +73,6 @@ typings/
 
 # Where we store docker data by default
 data
+
+# don't commit the config for caddy accidentally
+caddy/Caddyfile
