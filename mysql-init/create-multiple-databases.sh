@@ -3,14 +3,12 @@
 set -e
 set -u
 
-if [ -n "$MYSQL_MULTIPLE_DATABASES" ]; then
-  echo "Creating multiple databases: $MYSQL_MULTIPLE_DATABASES"
-
-  for db in $(echo "$MYSQL_MULTIPLE_DATABASES" | tr ',' ' '); do
+IFS=',' read -ra DBS <<< "$MULTIPLE_DATABASES"
+  for db in "${DBS[@]}"; do
     echo "Creating database: $db"
-    mysql -u root -p"$MYSQL_ROOT_PASSWORD" <<-EOSQL
+    mariadb -u root -p"$MARIADB_ROOT_PASSWORD" <<-EOSQL
       CREATE DATABASE IF NOT EXISTS \`$db\`;
-      GRANT ALL ON \`$db\`.* TO '$MYSQL_USER'@'%';
+      GRANT ALL ON \`$db\`.* TO '$MARIADB_USER'@'%';
 EOSQL
   done
 

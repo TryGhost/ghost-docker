@@ -59,25 +59,25 @@ services:
       - ghost_network
 
   db:
-    image: mysql:8.0.44@sha256:f37951fc3753a6a22d6c7bf6978c5e5fefcf6f31814d98c582524f98eae52b21
+    image: mariadb:12.1.2-noble
     restart: always
     expose:
       - "3306"
     environment:
-      MYSQL_ROOT_PASSWORD: ${DATABASE_ROOT_PASSWORD:?DATABASE_ROOT_PASSWORD environment variable is required}
-      MYSQL_USER: ${DATABASE_USER:-ghost}
-      MYSQL_PASSWORD: ${DATABASE_PASSWORD:?DATABASE_PASSWORD environment variable is required}
-      MYSQL_DATABASE: ghost
-      MYSQL_MULTIPLE_DATABASES: activitypub
+      MARIADB_ROOT_PASSWORD: ${DATABASE_ROOT_PASSWORD:?DATABASE_ROOT_PASSWORD environment variable is required}
+      MARIADB_USER: ${DATABASE_USER:-ghost}
+      MARIADB_PASSWORD: ${DATABASE_PASSWORD:?DATABASE_PASSWORD environment variable is required}
+      MARIADB_DATABASE: ghost
+      MULTIPLE_DATABASES: ghost,activitypub,analytics
     volumes:
-      - ${MYSQL_DATA_LOCATION:-./data/mysql}:/var/lib/mysql
+      - ${MARIADB_DATA_LOCATION:-./data/mariadb}:/var/lib/mysql
       - ./mysql-init:/docker-entrypoint-initdb.d
     healthcheck:
-      test: mysqladmin ping -p$$MYSQL_ROOT_PASSWORD -h 127.0.0.1
-      interval: 1s
-      start_period: 30s
-      start_interval: 10s
-      retries: 120
+    test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-p${MARIADB_ROOT_PASSWORD}"]
+    interval: 1s
+    start_period: 30s
+    retries: 120
+
     networks:
       - ghost_network
 
@@ -109,10 +109,10 @@ services:
     environment:
       # See https://github.com/TryGhost/ActivityPub/blob/main/docs/env-vars.md
       NODE_ENV: production
-      MYSQL_HOST: db
-      MYSQL_USER: ${DATABASE_USER:-ghost}
-      MYSQL_PASSWORD: ${DATABASE_PASSWORD:?DATABASE_PASSWORD environment variable is required}
-      MYSQL_DATABASE: activitypub
+      MARIADB_HOST: db
+      MARIADB_USER: ${DATABASE_USER:-ghost}
+      MARIADB_PASSWORD: ${DATABASE_PASSWORD:?DATABASE_PASSWORD environment variable is required}
+      MARIADB_DATABASE: activitypub
       LOCAL_STORAGE_PATH: /opt/activitypub/content/images/activitypub
       LOCAL_STORAGE_HOSTING_URL: https://${DOMAIN}/content/images/activitypub
     depends_on:
@@ -187,7 +187,7 @@ services:
   activitypub-migrate:
     image: ghcr.io/tryghost/activitypub-migrations:1.1.0@sha256:b3ab20f55d66eb79090130ff91b57fe93f8a4254b446c2c7fa4507535f503662
     environment:
-      MYSQL_DB: mysql://${DATABASE_USER:-ghost}:${DATABASE_PASSWORD:?DATABASE_PASSWORD environment variable is required}@tcp(db:3306)/activitypub
+      MARIADB_DB: mysql://${DATABASE_USER:-ghost}:${DATABASE_PASSWORD:?DATABASE_PASSWORD environment variable is required}@tcp(db:3306)/activitypub
     networks:
       - ghost_network
     depends_on:
