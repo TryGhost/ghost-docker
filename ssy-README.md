@@ -57,7 +57,12 @@ git push origin main
 ```bash
 git switch securitysaysyes
 git pull origin securitysaysyes   # ensure local is up-to-date
-git switch -c ssy-my-change       # create a new working branch
+
+# Option A: explicit tracking
+git switch -c ssy-my-change -u origin/ssy-my-change
+
+# Option B: if you have the repo-local alias `cobr` (checkout branch + set upstream)
+git cobr ssy-my-change
 ```
 
 3. **Make your changes** (e.g., Docker compose tweaks, MariaDB scripts, etc.)
@@ -128,7 +133,7 @@ environment:
 
 ```text
 1. Update main ← upstream
-2. 🧑🏼‍💻 Create feature branch from securitysaysyes
+2. 🧑🏼‍💻 Create feature branch from securitysaysyes (use `git switch -c <branch> -u origin/<branch>` or `git cobr <branch>` to track your fork automatically)
 3. 🧑🏼‍💻 **Make changes + commit**
 4. 🧑🏼‍💻 **Push feature branch + open PR (optional)**
 5. Let GitHub Actions rebase securitysaysyes on main
@@ -145,3 +150,5 @@ environment:
 - Always branch from `securitysaysyes` for custom work.  
 - Use draft PRs for CI/test verification before merging into `securitysaysyes`.  
 - GitHub Actions on `main` automatically handles rebasing — manual intervention is only needed if conflicts occur.
+- For convenience, you can define a repo-local alias to create & track feature branches: `git config alias.cobr '!f() { git switch -c "$1" -u origin/"$1"; }; f'`, then use: `git cobr <branch>`
+
