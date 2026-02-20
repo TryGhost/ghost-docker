@@ -1,9 +1,8 @@
 # SecuritySaysYes (SSY) Branch Workflow
 
 This repository contains a fork of `TryGhost/ghost-docker` with custom changes, maintained on the `securitysaysyes` branch.  
-Upstream changes are mirrored in `main`, while all customizations live in `securitysaysyes`.
 
-The GitHub Actions workflow is now merged into `main`, so `securitysaysyes` will be automatically rebased on upstream changes.
+Upstream changes are mirrored in `main`, while all customizations live in `securitysaysyes`.
 
 ---
 
@@ -43,7 +42,7 @@ Legend:
 
 ## Making Changes to `securitysaysyes`
 
-1. **Start from the latest upstream**
+### Start from the latest upstream
 
 ```bash
 git switch main
@@ -52,51 +51,53 @@ git merge --ff-only upstream/main
 git push origin main
 ```
 
-2. **Create a feature branch from `securitysaysyes`**
+### Create a feature branch from `securitysaysyes`
 
 ```bash
 git switch securitysaysyes
-git pull origin securitysaysyes   # ensure local is up-to-date
+git pull origin securitysaysyes
 
-# Option A: explicit tracking
-git switch -c ssy-my-change -u origin/ssy-my-change
-
-# Option B: if you have the repo-local alias `cobr` (checkout branch + set upstream)
-git cobr ssy-my-change
+BRANCH_NAME="ssy-my-feature"  # replace with your branch name
+git switch -c "$BRANCH_NAME"
+git push -u origin "$BRANCH_NAME"
 ```
 
-3. **Make your changes** (e.g., Docker compose tweaks, MariaDB scripts, etc.)
+### Make your changes
 
-4. **Commit your changes**
+Modify files (Docker compose tweaks, MariaDB scripts, etc.)
+
+### Commit your changes
 
 ```bash
-git add …
-git commit
+git add 
+git commit -m "Describe your change here"
 ```
 
-5. **Push your feature branch**
+### Push your feature branch (if not already pushed)
 
 ```bash
-git push -u origin ssy-my-change
+git push origin "$BRANCH_NAME"
 ```
 
-6. **Open a PR** (optional)  
-- Base: `securitysaysyes`  
-- Compare: `ssy-my-change`  
-- This triggers CI on your fork, checks your changes before merging them back into `securitysaysyes`.
+### Open a Pull Request (PR)
+
+1. Go to your fork: [https://github.com/adamamyl/ghost-docker](https://github.com/adamamyl/ghost-docker)  
+2. Click **Compare & pull request**  
+3. Base repository: `adamamyl/ghost-docker`  
+4. Base branch: `securitysaysyes`  
+5. Compare branch: your feature branch (`$BRANCH_NAME`)  
+
+> This ensures PRs target **your fork/securitysaysyes**, not upstream.
 
 ---
 
 ## Updating `securitysaysyes` with Upstream Changes
 
-1. **Automatic rebase via GitHub Actions**  
-- The workflow in `main` will:  
-  - Fetch the latest `main` (upstream mirror)  
-  - Attempt to rebase `securitysaysyes`  
-  - If the rebase succeeds, push updates automatically  
-  - If the rebase fails, create a draft PR for manual conflict resolution  
+### Automatic rebase via GitHub Actions
 
-2. **Manual rebase (if needed)**
+- Workflow in `main` will fetch upstream, rebase `securitysaysyes`, push if successful, otherwise open a draft PR.
+
+### Manual rebase (if needed)
 
 ```bash
 git switch securitysaysyes
@@ -106,21 +107,19 @@ git rebase main
 git push --force origin securitysaysyes
 ```
 
-> ⚠️ Only force-push to `securitysaysyes`. Never push to `main`.
+> Only force-push to `securitysaysyes`. Never push to `main`.
 
 ---
 
 ## Adding New Databases (MariaDB)
 
-1. Use the `./mysql-init` folder with scripts similar to the existing ones (if needed)
-
-2. Set environment variables in `docker-compose.yml`:
+1. Use `./mysql-init` for scripts.  
+1. Set environment variables in `.env` (if needed):
+1. Update MULTIPLE_DATABASES array: 
 
 ```yaml
 environment:
-  MARIADB_ROOT_PASSWORD: <password>
   MARIADB_USER: ghost
-  MARIADB_PASSWORD: <password>
   MARIADB_DATABASE: ghost
   MULTIPLE_DATABASES: ghost,activitypub,analytics
 ```
@@ -131,24 +130,19 @@ environment:
 
 ## Summary Workflow
 
-```text
 1. Update main ← upstream
-2. 🧑🏼‍💻 Create feature branch from securitysaysyes (use `git switch -c <branch> -u origin/<branch>` or `git cobr <branch>` to track your fork automatically)
-3. 🧑🏼‍💻 **Make changes + commit**
-4. 🧑🏼‍💻 **Push feature branch + open PR (optional)**
-5. Let GitHub Actions rebase securitysaysyes on main
-6. Resolve conflicts if needed
-```
-
-> Following this keeps `securitysaysyes` clean, rebasing-friendly, and safe for future upstream updates.
+2. Create feature branch from securitysaysyes (git switch -c + git push -u)
+3. Make changes + commit
+4. Push feature branch
+5. **Open PR targeting your fork/securitysaysyes**
+6. Let GitHub Actions rebase securitysaysyes
+7. Resolve conflicts if needed
 
 ---
 
 ## Notes
 
-- Never commit directly to `main`.  
-- Always branch from `securitysaysyes` for custom work.  
-- Use draft PRs for CI/test verification before merging into `securitysaysyes`.  
-- GitHub Actions on `main` automatically handles rebasing — manual intervention is only needed if conflicts occur.
-- For convenience, you can define a repo-local alias to create & track feature branches: `git config alias.cobr '!f() { git switch -c "$1" -u origin/"$1"; }; f'`, then use: `git cobr <branch>`
-
+- Don't commit directly to `main` (except when needed).
+- Always branch from `securitysaysyes`
+- PRs target your fork/securitysaysyes
+- Vanilla Git works — no custom aliases needed

@@ -1,0 +1,6 @@
+FROM mariadb:12.1.2-noble
+
+# Install MariaDB client tools for healthcheck and CLI usage
+RUN apt-get update && \
+    apt-get install -y mariadb-client && \
+    rm -rf /var/lib/apt/lists/*

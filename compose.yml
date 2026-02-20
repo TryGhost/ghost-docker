@@ -63,6 +63,8 @@ services:
     restart: always
     expose:
       - "3306"
+    env_file:
+      - .env
     environment:
       MYSQL_ROOT_PASSWORD: ${DATABASE_ROOT_PASSWORD:?DATABASE_ROOT_PASSWORD environment variable is required}
       MYSQL_USER: ${DATABASE_USER:-ghost}
@@ -80,7 +82,6 @@ services:
       retries: 120
     networks:
       - ghost_network
-
 
   traffic-analytics:
     image: ghost/traffic-analytics:1.0.74@sha256:375b0524e3e05b127662baa665d937909d11fbc909bab3bbbc3131b668b64d60
@@ -107,6 +108,8 @@ services:
       - "8080"
     volumes:
       - ${UPLOAD_LOCATION:-./data/ghost}:/opt/activitypub/content
+    env_file:
+      - .env
     environment:
       # See https://github.com/TryGhost/ActivityPub/blob/main/docs/env-vars.md
       NODE_ENV: production
