@@ -201,6 +201,16 @@ services:
         condition: service_healthy
     profiles: [activitypub]
     restart: no
+  
+  ses-adapter:
+    build:
+      context: ./ses-adapter
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    volumes:
+      - ./ses-adapter/config.json:/app/config.json:ro
+    networks:
+      - ghost_network
 
 volumes:
   caddy_data:
