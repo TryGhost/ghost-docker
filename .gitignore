@@ -76,3 +76,6 @@ data
 
 # don't commit the config for caddy accidentally
 caddy/Caddyfile
+
+# don't commit the SES secrets
+ses-adapter/config.json
