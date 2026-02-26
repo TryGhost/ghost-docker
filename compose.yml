@@ -57,6 +57,8 @@ services:
         required: false
     networks:
       - ghost_network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   db:
     image: mysql:8.0-debian
