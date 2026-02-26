@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+
+source ../.env
+DB="ghost-docker-db-1"
+
+
+# import settings from directory
+docker exec -it "${DB}" mysql -u ghost -p"${DATABASE_PASSWORD}" ghost \
+  < ../mysql-init/02-ghost-ses-adapter.sql
+
+# verify
+docker exec -it "${DB}" mysql -u ghost -p"${DATABASE_PASSWORD}" ghost \
+  -e "SELECT \`key\`, value FROM settings WHERE \`key\` = 'mailgun_base_url';"
