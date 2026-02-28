@@ -2,7 +2,7 @@
 
 Note: Currently Traffic Analytics features are behind a feature flag. For now, you'll need to enable it by following the steps below:
 
-1. Create a Tinybird account and a Tinybird workspace at [tinybird.co](https://auth.tinybird.co/login). You can select any cloud/region you choose.
+1. Create a Tinybird account and a Tinybird workspace at [tinybird.co](https://cloud.tinybird.co/login). You can select any cloud/region you choose.
 1. Run `docker compose run --rm tinybird-login` to login to your Tinybird account following the steps given
 1. Run `docker compose run --rm tinybird-sync`. This will copy the Tinybird files from the Ghost container into a shared volume. The service should log "Tinybird files synced into shared volume.", then exit.
 1. Run `docker compose run --rm tinybird-deploy` and wait for the service to exit successfully. This will create your Tinybird datasources, pipes and API endpoints. It may take a minute or two to complete the first time. You should see "Deployment #1 is live!" in your terminal before the service exits.
