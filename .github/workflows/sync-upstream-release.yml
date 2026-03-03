@@ -1,0 +1,106 @@
+name: Sync Upstream Releases (Safe)
+
+on:
+  schedule:
+    - cron: '32 11 * * *'  
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v3
+        with:
+          ref: main
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+
+      - name: Get latest upstream release
+        id: upstream
+        run: |
+          latest=$(curl -s https://api.github.com/repos/TryGhost/ghost-docker/releases/latest \
+            | jq -r .tag_name)
+          echo "Latest upstream release: $latest"
+          echo "latest_release=$latest" >> $GITHUB_OUTPUT
+
+      - name: Get last synced release
+        id: last
+        run: |
+          last=""
+          if [ ! -f .last_upstream_release ]; then
+            echo "${{ steps.upstream.outputs.latest_release }}" > .last_upstream_release
+          fi
+          last=$(<.last_upstream_release)
+          echo "Last synced release: $last"
+          echo "last_release=$last" >> $GITHUB_OUTPUT
+
+      - name: Exit if no new release
+        if: ${{ steps.upstream.outputs.latest_release == steps.last.outputs.last_release }}
+        run: |
+          echo "No new upstream release. Exiting."
+          exit 0
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/TryGhost/ghost-docker.git || true
+          git fetch upstream
+
+      - name: Update main branch
+        run: |
+          git checkout main
+          git merge --ff-only upstream/main
+          git push origin main
+
+      - name: Rebase custom branch
+        id: rebase
+        run: |
+          git checkout securitysaysyes
+          if git rebase main; then
+            echo "Rebase succeeded"
+            echo "rebase_status=success" >> $GITHUB_OUTPUT
+          else
+            echo "Rebase failed"
+            echo "rebase_status=failure" >> $GITHUB_OUTPUT
+            git rebase --abort
+          fi
+
+      - name: Test rebased branch
+        if: steps.rebase.outputs.rebase_status == 'success'
+        run: |
+          # Example CI commands, adjust to your repo
+          # e.g., build Docker, run tests
+          echo "Running tests..."
+          ./ci/run-tests.sh
+
+      - name: Push or open PR
+        run: |
+          if [ "${{ steps.rebase.outputs.rebase_status }}" = "success" ]; then
+            git push origin securitysaysyes --force
+            # Only create PR if tests passed (CI step succeeded)
+            if [ ${{ job.status }} = "success" ]; then
+              gh pr create \
+                --title "Rebased securitysaysyes branch" \
+                --body "Branch rebased on upstream release ${{ steps.upstream.outputs.latest_release }}" \
+                --head securitysaysyes \
+                --base main \
+                --draft || echo "PR already exists"
+            fi
+          else
+            # On rebase failure, open a PR for manual resolution
+            git push origin securitysaysyes --force || true
+            gh pr create \
+              --title "Rebase failed: securitysaysyes branch" \
+              --body "Automatic rebase failed. Resolve conflicts manually." \
+              --head securitysaysyes \
+              --base main \
+              --draft || echo "PR already exists"
+          fi
+
+      - name: Save latest release
+        run: echo "${{ steps.upstream.outputs.latest_release }}" > .last_upstream_release
