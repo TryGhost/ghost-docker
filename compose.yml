@@ -2,7 +2,7 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/compose-spec/compose-spec/main/schema/compose-spec.json
 services:
   caddy:
-    image: caddy:2.10.2-alpine@sha256:953131cfea8e12bfe1c631a36308e9660e4389f0c3dfb3be957044d3ac92d446
+    image: caddy:2.11.2-alpine@sha256:834468128c7696cec0ceea6172f7d692daf645ae51983ca76e39da54a97c570d
     restart: always
     ports:
       - "${HTTP_PORT:-80}:80"
