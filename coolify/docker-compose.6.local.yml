@@ -1,0 +1,10 @@
+services:
+  ghost-gate:
+    ports: 
+      - "3989:3989"
+    environment:
+      SERVICE_URL_GHOST_GATE_3989: http://localhost:3989
+      SERVICE_URL_GHOST_GATE: http://localhost:3989
+      MYSQL_USER: ${SERVICE_USER_MYSQL:-localuser}
+      MYSQL_PASSWORD: ${SERVICE_PASSWORD_MYSQL:-changeme}
+      MYSQL_ROOT_PASSWORD: ${SERVICE_PASSWORD_MYSQLROOT:-changemeroot}
