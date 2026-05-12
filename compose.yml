@@ -208,4 +208,4 @@ networks:
     enable_ipv6: true
     ipam:
       config:
-        - subnet: fdc1:f5e4:6668::/48
+        - subnet: fdc1:f5e4:6668::/64
