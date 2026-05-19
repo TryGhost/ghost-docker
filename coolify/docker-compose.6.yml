@@ -9,8 +9,8 @@ services:
       mysql:
         condition: service_healthy
     environment:
-      SERVICE_URL_GHOST_GATE_3989: ${SERVICE_URL_GHOST_GATE_3989}
-      SERVICE_URL_GHOST_GATE: ${SERVICE_URL_GHOST_GATE}
+      SERVICE_URL_GHOST_GATE_3989:
+      SERVICE_URL_GHOST_GATE:
       PROXY_GHOST_UPSTREAM: http://ghost:2368
       PROXY_ANALYTICS_UPSTREAM: http://traffic-analytics:3000
       PROXY_ACTIVITYPUB_UPSTREAM: http://activitypub:8080
