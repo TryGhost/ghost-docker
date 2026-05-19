@@ -161,6 +161,8 @@ const PATH_WITH_TB = `/root/.local/bin:${process.env.PATH || '/usr/bin:/bin'}`;
  */
 const TINYBIRD_HOST_TO_API = {
   'gcp-europe-west3': 'https://api.tinybird.co',
+  eu_shared: 'https://api.tinybird.co',
+  us_east: 'https://api.us-east.tinybird.co',
 };
 
 function hostSlugToApiBaseUrl(host) {
