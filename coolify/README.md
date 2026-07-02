@@ -6,7 +6,7 @@ Configuration to run Ghost and its services with Docker Compose
 
 - [docker-compose.6.local.yml] - Modifications that allow running ghost 6 (with tinybird analytics and wizard) locally. `docker compose up -f coolify/docker-compose.6.yml -f coolify/docker-compose.6.local.yml`
 
-- [docker-compose.6.yml] - For use with coolify, see setup below.
+- [docker-compose.6.yml] - Ghost 6 + Tinybird for analytics + router and wizard to ease in setup. For use with coolify, see setup below.
 
 ## Ghost 6 with Tinybird Analytics
 

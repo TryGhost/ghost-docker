@@ -1,0 +1,16 @@
+{
+  "name": "ghost-gate",
+  "private": true,
+  "description": "Reverse-proxy + Tinybird setup wizard for Ghost on Coolify",
+  "main": "server.js",
+  "dependencies": {
+    "express": "^4.21.2",
+    "http-proxy-middleware": "^2.0.9",
+    "mysql2": "^3.11.5"
+  },
+  "version": "1.0.0",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "license": "MIT"
+}
