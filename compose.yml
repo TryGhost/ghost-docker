@@ -73,7 +73,7 @@ services:
       - ${MYSQL_DATA_LOCATION:-./data/mysql}:/var/lib/mysql
       - ./mysql-init:/docker-entrypoint-initdb.d
     healthcheck:
-      test: mysqladmin ping -p$$MYSQL_ROOT_PASSWORD -h 127.0.0.1
+      test: MYSQL_PWD="$$MYSQL_ROOT_PASSWORD" mysqladmin ping -h 127.0.0.1
       interval: 1s
       start_period: 30s
       start_interval: 10s
