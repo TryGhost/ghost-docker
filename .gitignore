@@ -59,6 +59,9 @@ typings/
 # dotenv environment variables file
 .env
 
+# Caddy configuration file
+caddy/Caddyfile
+
 # IDE
 .idea/*
 *.iml
