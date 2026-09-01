@@ -19,6 +19,7 @@ performs exactly one fixed action: pull the pinned Ghost image and recreate the
 | [`contract.md`](./contract.md) | The shared Zod contract (`@tryghost/update-contract`): request / status / availability schemas | Ghost monorepo |
 | [`compose-changes.md`](./compose-changes.md) | `compose.yml` additions, new volumes, `.env.example` additions | This repo |
 | [`update-agent.md`](./update-agent.md) | The Node/TS agent: repo placement, `package.json`, `Dockerfile`, `docker.ts`, `snapshot.ts`, `index.ts`, tests | Ghost monorepo |
+| [`multi-site.md`](./multi-site.md) | One agent for N sites: `com.ghost.site` discovery, per-site channel subdirs, self-describing DB, per-site locks | Both |
 | [`ghost-core-handoff.md`](./ghost-core-handoff.md) | Admin API endpoints, auth, config flag, UI state machine | Ghost core |
 
 ## The idea in one paragraph
@@ -44,6 +45,7 @@ out of scope.
 | Version-available signal | **Agent digest-drift** + Ghost update-check for display | Digest drift is the true Docker signal; update-check gives friendly version/changelog |
 | Pre-update DB snapshot | **On by default, skippable per-update** | Complements `knex-migrator` rollback; deferred to core's own snapshot if it exists |
 | Major-version updates | **Out of scope** | Breaking-change risk; the pinned tag (`6-alpine`) already prevents them |
+| Multi-site | **One agent for all sites**, discovered by `com.ghost.site` label | Single privileged container regardless of site count; matches the multi-site work already underway (distinct Ghost services, shared Caddy/MySQL) |
 
 ## Prior art (we are not inventing this)
 

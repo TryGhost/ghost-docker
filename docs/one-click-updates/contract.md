@@ -106,11 +106,21 @@ export const idleStatus = (): UpdateStatus => UpdateStatusSchema.parse({
 
 ## File semantics
 
+The three files live under a **per-site subdirectory** of the shared channel
+volume — `/<channelPath>/<site-key>/{request,status,available}.json` — so each
+site's Ghost reads/writes only its own (see `multi-site.md`). The schemas below
+are identical for every site; only the path is namespaced. Single-site is the
+N=1 case with one subdir.
+
 | File | Writer | Reader | Notes |
 |---|---|---|---|
-| `request.json` | Ghost core | update-agent | One request at a time; `request_id` de-duplicates. Carries no command. |
+| `request.json` | Ghost core | update-agent | One request at a time per site; `request_id` de-duplicates. Carries no command; the path already scopes it to one site. |
 | `status.json` | update-agent | Ghost core | Atomic write (temp + rename). Persists across Ghost restarts — the UI reads the final state after `recreating`. |
-| `available.json` | update-agent | Ghost core | Refreshed on the agent's idle poll (`DIGEST_POLL_INTERVAL`). |
+| `available.json` | update-agent | Ghost core | Refreshed per site on the agent's idle poll (`DIGEST_POLL_INTERVAL`). |
+
+> Optionally add a `site` field to `UpdateStatusSchema` / `AvailabilitySchema` for
+> the agent's own logging. Ghost core doesn't need it — it reads its own subdir —
+> so it's left out to keep the payloads minimal.
 
 ## Round-trip test (lives in the package)
 

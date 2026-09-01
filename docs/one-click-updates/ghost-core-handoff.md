@@ -16,6 +16,12 @@ selfupdate:
 When `enabled` is false, the endpoints return 404 and the admin UI shows no
 update affordance. This keeps non-Docker / non-agent installs unaffected.
 
+**Multi-site:** each Ghost service points `channelPath` at its **own** subdirectory
+of the shared channel volume (subdir = the compose service name, e.g.
+`…/update-channel/ghost-siteb`). A given Ghost instance only ever reads/writes its
+own subdir; it has no awareness of other sites. One `update-agent` serves them all
+(see `multi-site.md`). Everything below is per-site and unchanged by site count.
+
 ## 2. Shared-volume contract
 
 Import the schemas from `@tryghost/update-contract` (see `contract.md`) — do not
