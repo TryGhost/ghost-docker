@@ -11,8 +11,9 @@ const HARDCODED_EXCLUSIONS = [
     'logging',
     'process',
     'paths',
-    // We don't need URL because its already set in our env
+    // We don't need URL or admin__url because the container owns them
     'url',
+    'admin__url',
 ];
 
 // Parse command line arguments
@@ -72,15 +73,25 @@ function flattenObject(obj, prefix = '') {
   return result;
 }
 
-// Format value for shell output
+// Serialize a value for a Docker Compose env file.
+//
+// Compose interpolates dotenv values, including inside double quotes, so a
+// literal `$` must be written `$$`. Values are always double quoted, which is
+// the only encoding that can represent every value; see the encoding contract
+// at the top of scripts/lib/env.sh.
 function formatValue(value) {
-  // If value contains spaces, newlines, or quotes, wrap in quotes
-  if (typeof value === 'string' && (value.includes(' ') || value.includes('\n') || value.includes('"') || value.includes("'"))) {
-    // Escape any existing double quotes
-    value = value.replace(/"/g, '\\"');
-    return `"${value}"`;
+  const text = String(value);
+  let out = '';
+  for (const c of text) {
+    if (c === '\\') { out += '\\\\'; }
+    else if (c === '"') { out += '\\"'; }
+    else if (c === '$') { out += '$$'; }
+    else if (c === '\n') { out += '\\n'; }
+    else if (c === '\r') { out += '\\r'; }
+    else if (c === '\t') { out += '\\t'; }
+    else { out += c; }
   }
-  return value;
+  return `"${out}"`;
 }
 
 // Main function
@@ -131,7 +142,7 @@ function main() {
       continue;
     }
 
-    // Output in KEY=VALUE format
+    // Output in KEY="VALUE" format, ready for ghost.env
     console.log(`${key}=${formatValue(value)}`);
   }
 }

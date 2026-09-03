@@ -17,13 +17,28 @@ The project uses Docker Compose to orchestrate these services:
 5. **ActivityPub** (optional profile) - Federated social networking support
 6. **Supporting services** - Tinybird setup tools and ActivityPub migrations
 
-Services communicate internally via Docker networks. Caddy handles all external traffic routing including special paths for analytics (`/_tinybird`) and ActivityPub (`/.well-known/`, `/activitypub/`).
+Services communicate internally via Docker networks, addressed through unique
+per-site aliases (`ghost-${COMPOSE_PROJECT_NAME}`, `db-…`, `activitypub-…`,
+`traffic-analytics-…`) rather than bare service names. Caddy handles all
+external traffic routing, including analytics (`/.ghost/analytics/`) and
+ActivityPub (`/.ghost/activitypub/`, `/.well-known/webfinger`,
+`/.well-known/nodeinfo`).
+
+Site mode is selected through `COMPOSE_PROFILES` and exactly one of `local` or
+`production` must be present. Optional per-site profiles (`analytics`,
+`activitypub`) are additive and never change the mode. Caddy is part of
+`production`, not optional; bring-your-own-proxy is an unsupported manual edit
+of `compose.yml`. `supervisor` is a
+reserved profile name with no service yet.
+
+Long-running services use `restart: ${RESTART_POLICY:-unless-stopped}`;
+one-shot jobs (`activitypub-migrate`, `tinybird-*`) keep `restart: "no"`.
 
 ## Common Commands
 
 ```bash
 # Core operations
-docker compose up -d                    # Start Ghost + MySQL + Caddy
+docker compose up -d                    # Start the services for the selected mode
 docker compose down                     # Stop all services
 docker compose logs -f [service]        # View logs (e.g., ghost, mysql, caddy)
 docker compose ps                       # Check service status
@@ -42,23 +57,55 @@ docker compose --profile=analytics up tinybird-deploy # Deploy configuration
 
 # Development & debugging
 docker compose exec ghost sh            # Access Ghost container shell
-docker compose exec mysql mysql -u root -p  # Access MySQL CLI
+docker compose exec db mysql -u root -p  # Access MySQL CLI
+
+# Configuration helpers (never source an env file; always atomic writes)
+scripts/config.sh validate              # Validate .env and ghost.env by mode
+scripts/config.sh set ghost.env KEY VAL # Write one value safely
+scripts/config.sh unset ghost.env KEY
+
+# Caddy routes
+scripts/caddy.sh apply                  # Render, validate, install, reload, verify
+
+# Tests (Node 20+ built-in runner, no dependencies and no package.json;
+# docker tests skip without a daemon)
+node --test --test-timeout=120000 tests/*.test.mjs
+GD_TEST_INGRESS=1 node --test --test-timeout=900000 tests/ingress.test.mjs
 ```
 
 ## Configuration
 
-All configuration is done via environment variables. Key patterns:
+Configuration is split by audience. See `docs/configuration.md` for the full
+contract.
 
-- **Required variables**: `DOMAIN`, `DATABASE_PASSWORD`, `DATABASE_ROOT_PASSWORD`
-- **Ghost config pattern**: `section__subsection__key=value` (e.g., `mail__options__service=Mailgun`)
-- **Developer experiments**: Must set `labs__publicAPI=true` for analytics/ActivityPub features
-- **Data persistence**: Volumes stored in `./data/ghost` and `./data/mysql`
+- `.env` — Compose and operator settings: project identity, site mode, ports,
+  data locations, restart policy, and infrastructure credentials such as
+  `DATABASE_ROOT_PASSWORD`. **Never passed into the Ghost container.**
+- `ghost.env` — Ghost application settings only, in `section__subsection__key`
+  form. The sole `env_file` of the ghost service. Container-owned keys (`url`,
+  `admin__url`, `NODE_ENV`, `server__*`, `paths__*`, `database__*`) are set as
+  Compose `environment` entries and are rejected here. That rejection is
+  derived by asking `docker compose config` what the container receives, not
+  from a hardcoded list, so it cannot drift from `compose.yml`.
 
-### Key configuration files:
-- `.env` - Main environment configuration (create from `.env.example`)
-- `compose.yml` - Docker Compose service definitions
-- `Caddyfile` - Reverse proxy routing configuration
-- `mysql-init/create-multiple-databases.sh` - MySQL multi-database initialization
+Compose interpolates dotenv values, including inside double quotes. Write a
+literal dollar sign as `$$`, or use `scripts/config.sh set`, which serializes
+safely. Never source an env file; use `scripts/lib/env.sh`.
+
+- **Developer experiments**: set `labs__publicAPI=true` in `ghost.env` for the
+  analytics/ActivityPub features
+- **Data persistence**: `UPLOAD_LOCATION` and `MYSQL_DATA_LOCATION`
+
+### Key files
+- `.env` / `.env.example` — operator configuration
+- `ghost.env` / `ghost.env.example` — application configuration
+- `.ghost-docker.json` — generated installation metadata (schema v1, written from S2)
+- `compose.yml` — service definitions
+- `caddy/Caddyfile` — tracked generic entry point; site routes are generated
+  into `caddy/sites/`, operator routes live in `caddy/custom/`, global options
+  in `caddy/global/`
+- `scripts/lib/*.sh` — shared helpers (env, fs, compose, config, caddy)
+- `mysql-init/create-multiple-databases.sh` — MySQL multi-database initialization
 
 ## Migration from Ghost CLI
 
@@ -74,21 +121,55 @@ The repository includes comprehensive migration tools:
   - Creates recovery script with clear restoration instructions
   - Sets up Docker Compose environment
 
-- `scripts/config-to-env.js` - Converts Ghost JSON config to .env format
+- `scripts/config-to-env.js` - Converts Ghost JSON config to ghost.env format.
+  CommonJS; there is no package.json in this repository, so `.js` is CommonJS
+  by default. This is the only host Node dependency, and `install.sh --import`
+  removes it
 
 ## Development Workflow
 
-1. Clone repository and copy `.env.example` to `.env`
-2. Configure required environment variables (domain, passwords)
-3. Run `docker compose up -d` to start services
-4. Access Ghost at `https://DOMAIN` (Caddy handles SSL automatically)
-5. Monitor logs with `docker compose logs -f ghost`
+1. Copy `.env.example` to `.env` and `ghost.env.example` to `ghost.env`
+   (both mode `0600`)
+2. Configure the required variables for the mode; run `scripts/config.sh validate`
+3. Production only: `scripts/caddy.sh apply`
+4. Run `docker compose up -d`
+5. Access Ghost at `URL`; monitor with `docker compose logs -f ghost`
+
+All shell code is `bash`, kept compatible with bash 3.2 so it runs on macOS's
+system bash: no `declare -A`, `mapfile`, `${v,,}` or namerefs. It must pass
+`shellcheck`, which picks the dialect from the shebang. Tests are `.mjs` files
+in `tests/` run by Node's built-in runner: the shell libraries are exercised
+through a real shell via `tests/helpers.mjs`, while fixtures, structured-output
+parsing and assertions are JavaScript.
 
 For analytics setup, see `TINYBIRD.md` for detailed instructions.
 
+## Implementation plan
+
+`docs/ghost-cli-replacement.md` is the plan this repository is being built
+against, including the architecture contracts (§2) and the step breakdown (§3).
+Read the relevant step and its dependencies before implementing one, and amend
+the affected contract in the same pull request when a decision changes. Steps
+land as stacked pull requests in the dependency order given in §3.
+
 ## Important Notes
 
-- Ghost runs internally on port 2368; Caddy exposes it on 80/443
+- Runtime prerequisites: `bash`, Docker Engine 25.0.0, Docker Compose v2.24.0,
+  and `jq` (used by the helpers for JSON). `install.sh` verifies
+  them in preflight; `scripts/migrate.sh` already required `jq`
+- Node.js is a development/test requirement only, never needed to run a site.
+  The exception is the legacy `scripts/migrate.sh`, retired by `install.sh --import`
+- Ghost runs internally on port 2368 and is published on `127.0.0.1` only;
+  Caddy exposes 80/443 in production
+- The default image is a `next` variant, which installs Ghost directly under
+  `/home/ghost` instead of the older `/var/lib/ghost/versions/<v>` + `current`
+  layout. `GHOST_CONTENT_PATH` and `GHOST_TINYBIRD_PATH` exist so pinning an
+  older `GHOST_VERSION` stays possible
+- Helpers use one Compose contract: `docker compose --project-directory "$DIR"
+  -f "$DIR/compose.yml"`, never `-C`, never `COMPOSE_FILE`
+- `ghost` and `db` have real readiness health checks; a running container is
+  not readiness
+- Container logs are capped via `LOG_MAX_SIZE` / `LOG_MAX_FILE`
 - Email configuration is critical even without newsletter features (used for admin notifications)
 - MySQL health checks ensure database is ready before Ghost starts
 - The compose file uses yaml-language-server schema for IDE completion support

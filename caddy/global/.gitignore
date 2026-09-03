@@ -1,0 +1,4 @@
+# Operator-managed global options. Never generated, never overwritten.
+*
+!.gitignore
+!README.md
