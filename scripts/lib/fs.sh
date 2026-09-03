@@ -11,15 +11,21 @@
 GD_FS_LIB_LOADED=1
 
 # fs_stat_mode PATH -> octal mode, or non-zero when the path does not exist
+#
+# GNU `-c` is tried before BSD `-f`, and the order matters: on Linux, BSD's
+# `stat -f '%Lp'` is `--file-system` with a bogus operand, which prints file
+# system status and *succeeds*, so a `-f`-first form never reaches the GNU
+# fallback and returns that blob as the mode. GNU `-c` on macOS fails cleanly
+# (unknown option), so `-c`-first is correct on both.
 fs_stat_mode() {
     [[ -e $1 ]] || return 1
-    stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1" 2>/dev/null
+    stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null
 }
 
 # _gd_stat_owner PATH -> uid:gid
 _gd_stat_owner() {
     [[ -e $1 ]] || return 1
-    stat -f '%u:%g' "$1" 2>/dev/null || stat -c '%u:%g' "$1" 2>/dev/null
+    stat -c '%u:%g' "$1" 2>/dev/null || stat -f '%u:%g' "$1" 2>/dev/null
 }
 
 # fs_mktemp_dir [PREFIX] -> path to a new private directory

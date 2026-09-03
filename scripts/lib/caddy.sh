@@ -175,7 +175,7 @@ caddy_install() {
     for f in "$staging"/*.caddy; do
         [[ -e $f ]] || continue
         base=$(basename "$f")
-        cat "$f" | fs_atomic_write "$live/$base" 0644 || return 1
+        fs_atomic_write "$live/$base" 0644 <"$f" || return 1
     done
 
     printf '%s\n' "$backup"

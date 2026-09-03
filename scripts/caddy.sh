@@ -13,7 +13,7 @@ set -euo pipefail
 . "$(dirname -- "$0")/lib/common.sh"
 
 cmd=${1:-}
-(($#)) && shift || true
+if (($#)); then shift; fi
 dir="${1:-$GD_ROOT_DIR}"
 
 case "$cmd" in

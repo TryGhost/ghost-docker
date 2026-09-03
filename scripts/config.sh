@@ -11,7 +11,7 @@ set -euo pipefail
 . "$(dirname -- "$0")/lib/common.sh"
 
 cmd=${1:-}
-(($#)) && shift || true
+if (($#)); then shift; fi
 
 case "$cmd" in
     validate)
