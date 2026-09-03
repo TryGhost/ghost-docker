@@ -44,6 +44,45 @@ jobs:
           GD_TEST_MIN_COMPOSE: ${{ runner.temp }}/min-compose/docker-compose
         run: node --test --test-timeout=120000 tests/*.test.mjs
 
+  # macOS is a supported host for local development (`install.sh --local`), so
+  # the shell helpers run on its BSD userland and bash 3.2, where a GNU-only
+  # construct that passes on Linux breaks. This job exercises them there.
+  #
+  # GitHub's macOS runners have no Docker daemon, so the daemon-backed tests
+  # (mode matrix, Caddy, ingress, the installer end to end) skip themselves
+  # through `dockerAvailable()`. The Docker *CLI* is installed anyway — no
+  # daemon — so the tests that only parse configuration (`docker compose
+  # config`) or probe for an unreachable daemon still run and are meaningful.
+  # Production ingress stays a Linux concern and is not run here.
+  helpers-macos:
+    name: Helpers on macOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: "22"
+
+      - name: Install host tools (Docker CLI only, no daemon)
+        run: |
+          set -eu
+          brew install jq docker docker-compose
+          jq --version
+          docker --version
+          docker compose version
+
+      - name: Run the helper tests under bash 3.2
+        env:
+          # macOS's system bash is 3.2, which the helpers target; the runner's
+          # own bash on PATH is newer and would hide a 3.2 incompatibility, so
+          # the suite is pointed at /bin/bash explicitly.
+          GD_TEST_BASH: /bin/bash
+        run: |
+          set -eu
+          /bin/bash --version | head -1
+          node --test --test-timeout=120000 tests/*.test.mjs
+
   ingress:
     name: Ingress smoke tests
     runs-on: ubuntu-latest

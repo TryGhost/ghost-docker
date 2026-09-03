@@ -22,9 +22,14 @@ const LIBS = ['fs', 'env', 'compose', 'config', 'caddy', 'meta', 'preflight', 'i
  * Returns { stdout, stderr, status }. Throws only if the shell itself cannot
  * be started.
  */
+// The helpers target bash 3.2 (macOS's system bash). GD_TEST_BASH points the
+// suite at a specific interpreter — the macOS CI job sets it to /bin/bash so a
+// bash-4+-ism that a newer Homebrew bash would tolerate is caught.
+const BASH = process.env.GD_TEST_BASH || 'bash';
+
 export function sh(script, { cwd = REPO_DIR, env = {}, input } = {}) {
   const preamble = LIBS.map((l) => `. "${REPO_DIR}/scripts/lib/${l}.sh"`).join('\n');
-  const result = spawnSync('bash', ['-c', `${preamble}\n${script}`], {
+  const result = spawnSync(BASH, ['-c', `${preamble}\n${script}`], {
     cwd,
     input,
     env: { ...process.env, ...env },
