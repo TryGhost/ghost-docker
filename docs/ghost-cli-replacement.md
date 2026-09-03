@@ -725,6 +725,90 @@ whether `install.sh` is the installer or a bootstrap that runs one. Steps
 already shipped in host shell (S1's `config.sh` and `caddy.sh`) stay where they
 are; the boundary does not run through them.
 
+#### When the manager image lands, and what its first tenant is
+
+Revised 2026-09-03, after S2. Two questions kept coming up — *should the image
+ship sooner?* and *should env validation and Caddy generation move into it?* —
+so the boundary above is stated concretely rather than left to inference: when
+the image lands, and exactly which helpers move onto it versus stay host shell.
+
+**The image's first tenant is the first stateful operation, at S4, not S8.**
+§2.6 already publishes a privileged supervisor image from this repo and requires
+it to "follow §2.5 rather than inventing a second upgrade/recovery algorithm."
+If S4–S7 implement backup, restore, upgrade and recovery in host shell and S8
+then re-implements them in an image, that algorithm exists twice, and the second
+copy is the one under the privileged supervisor. So the manager image is
+introduced in **S4**, with backup/restore as its first entrypoint; S5 (import),
+S7 (upgrade) and S8 (supervisor) are further entrypoints on the same image, not
+parallel codebases. This is a scheduling clarification, not a new component:
+§2.10 already defined the image and the dispatcher. It does **not** move S4's
+deliverable — S4 still ships backup/restore — it fixes the language they are
+written in so they are not rewritten at S8. The host dispatcher (this section's
+mount, identity and exit-code rules) is written in S4 alongside its first
+`docker run` target.
+
+**Some config helpers move into the manager CLI at S4; a specific subset must
+not.** The dividing line is not "config versus stateful" — it is whether the
+helper can run *before and without* a working daemon, and whether it derives its
+answer by asking Docker. This was worked out concretely after S2, against the
+real files, because "put the helpers in a node container so the scripts get
+smaller" is a reasonable instinct that turns out to be right for two files and
+wrong for two others.
+
+The manager image exists from S4 for backup/restore, and the dispatcher (§2.10's
+mount/identity/exit-code rules) is written there. Once both exist, moving the
+*pure* config logic onto them is close to free and is a real simplification, so
+S4 (or S5, whichever first needs them container-side) does it:
+
+- **Moves into the manager CLI.** `env.sh` (the `$$` serializer/parser, ~260
+  lines of bash regex state machine → ~60 lines of `JSON.parse`/stringify plus
+  one encoder) and `meta.sh` (`.ghost-docker.json`, ~245 lines of `jq` → native
+  JSON). Caddy *rendering* (`caddy_render` and `_caddy_site_block`, pure template
+  emission) moves with them. These are pure functions of files on disk; nothing
+  in them asks the daemon a question. The bash versions are deleted, not
+  wrapped — a straight substitution, which is the easy-to-review kind of diff.
+
+- **Stays host shell, permanently.** Two reasons, each disqualifying on its own:
+
+  - *Runs before/without the image.* The bootstrap resolves the manager from the
+    release tag and can have it write the first `.env`, but the bootstrap shim
+    itself, preflight, and `site.sh check`/doctor must diagnose a host where
+    Docker is missing, stopped, or wedged. They cannot be `docker run`. (S2
+    verified this the hard way: a wedged daemon mid-session was still diagnosed
+    by host-shell preflight precisely because it does not depend on the image.)
+  - *Derives its answer by asking Docker.* `config.sh validate` establishes the
+    container-owned keys by asking `docker compose config` what the container
+    receives (`config_ghost_environment`, the "derived, not listed" guarantee).
+    `caddy_validate`/`reload`/`verify` drive the running caddy container through
+    `compose_run`. Moving these into the manager would mean either bundling the
+    Docker/Compose CLI inside the manager and running compose-in-a-container over
+    a mounted socket, or reimplementing Compose interpolation in node — which is
+    exactly the drift that "ask Compose" was chosen to avoid. Neither is worth
+    it, so validation and caddy orchestration stay where they can call Compose
+    directly.
+
+Consequences to accept deliberately: config logic ends up split — `config
+get/set/unset` in the manager CLI, `config validate` in host shell — because the
+two halves have different daemon dependencies. That split is the honest cost, and
+it is smaller than the cost of dragging a Docker CLI into the manager image to
+avoid it. Containerizing the movable helpers also does **not** solve Compose's
+`$$` interpolation: a literal `$` is encoded `$$` regardless of implementation
+language, as recorded above. And the net line count of the move, counting the
+Dockerfile, publish pipeline and privileged dispatcher it rides on, is roughly a
+wash — the reason to do it is that env/meta stop being bash, not that the repo
+gets shorter. Which is why it waits for S4: on a PR that builds the image and
+dispatcher anyway, the env/meta deletion is pure upside; as a standalone change
+it would stand up a privileged image and publish pipeline to save ~130 counted
+lines, which does not clear the bar.
+
+So the dispatcher-plus-image model covers the **stateful** commands (backup,
+restore, import, upgrade, supervisor) and, from S4, the **pure** config helpers
+(`env`, `meta`, caddy render). Preflight, doctor, the bootstrap shim, `config
+validate` and caddy orchestration stay host shell — the first three because they
+must run when there is no usable image, the last two because they answer by
+asking Docker. Host requirements stay `bash`, `docker`, `docker compose`, `jq`;
+no host language runtime is added.
+
 ## 3. Implementation steps
 
 The numbering is revised from the original plan; use names as well as numbers when
@@ -822,6 +906,15 @@ blockers for dependent steps.
 ```
 
 ### S2 — Local and single-site production installer
+
+Status: implemented. `bootstrap.sh` is the release-selecting shim and
+`install.sh` the checkout-owned installer; `scripts/lib/meta.sh` is the
+`.ghost-docker.json` reader/writer deferred from S1, and `scripts/site.sh`
+provides `list` and `check`/doctor. See `docs/install.md` for the contract as
+built. Two deliberate notes for dependent steps: the bring-your-own-proxy path
+stays the documented manual edit of `compose.yml` from §2.1, and the operation
+lock in §2.2 is *not* implemented here — it lands with the other mutating
+operations in S4, so S4 must add it to installation as well as to its own.
 
 Repo: ghost-docker. Deps: S1. Implement §2.8 for fresh installs, exact version
 resolution, stable identity, scriptable prompts, custom proxy use, and optional
@@ -923,6 +1016,27 @@ explicit DB connection abstraction, operation lock, maintenance handling, retent
 and journals. Backups include required local application/configuration state and
 describe optional-service limitations. Define supported backup formats independently
 of migration bundles; a portable export is not a lossless recovery checkpoint.
+
+This is where the §2.10 manager image lands (see "When the manager image lands,
+and what its first tenant is"). Backup/restore is its first entrypoint, so the
+recovery algorithm S7 and S8 reuse exists once, in the image, not in host shell
+awaiting a rewrite. Write the host dispatcher here — the `docker run` mount,
+identity and exit-code rules from §2.10 — and route backup/restore through it.
+
+With the image and dispatcher built, migrate the **pure** config helpers onto
+them: `env.sh` and `meta.sh` become manager-CLI entrypoints (`config get/set/
+unset`, `meta ...`), and `caddy_render` moves with them; the bash versions are
+deleted, a straight substitution. This is optional to S4's backup/restore
+deliverable and may slip to S5 if it competes for review attention, but it is
+cheapest here because the image already exists. The helpers that must stay host
+shell do not move: preflight, the bootstrap shim and `site.sh check`/doctor
+(they run without the image), and `config validate` plus caddy
+orchestration (`caddy_validate`/`reload`/`verify`, which answer by asking
+`docker compose`). Expect config logic to end up split — `config get/set` in the
+manager, `config validate` in host shell — as §2.10 records.
+
+Also add the shared operation lock to installation/reconfigure retroactively:
+§2.2 requires install to take it, and S2 deferred it to this step.
 
 Acceptance: restore a representative site to a fresh destination and verify database,
 assets/theme/configuration; inject interrupted backup/restore, full disk, stale lock,

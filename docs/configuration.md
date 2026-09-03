@@ -166,17 +166,46 @@ contract.
 ## Installation metadata
 
 `.ghost-docker.json` records the schema version, installation time, mode,
-release channel, installed stack version/commit, project identity, resolved
-Ghost image and digest, and completed migrations. Its schema is specified in
-§2.2 of [the plan](ghost-cli-replacement.md). It is gitignored and machine
-generated — do not hand-edit it. Durable operation journals for in-progress
-work and recovery state are separate files.
+release channel, installed stack version/commit/ref, project identity, resolved
+Ghost image and digest, selected profiles, and completed migrations. Its schema
+is specified in §2.2 of [the plan](ghost-cli-replacement.md). It is gitignored,
+mode `0600`, and machine generated — do not hand-edit it. Durable operation
+journals for in-progress work and recovery state are separate files, and land
+with backup/restore in S4.
 
-An installation that predates this file is supported explicitly: readers must
-treat a missing file as "unknown, pre-metadata install", not as a broken site.
+```json
+{
+  "schemaVersion": 1,
+  "installedAt": "2026-09-03T09:12:44Z",
+  "mode": "production",
+  "channel": "stable",
+  "stack": { "version": "v1.2.3", "commit": "…", "ref": "v1.2.3" },
+  "site": {
+    "project": "ghost-example-com", "dir": "/opt/ghost/example.com",
+    "url": "https://example.com", "domain": "example.com", "adminDomain": null
+  },
+  "ghost": {
+    "image": "ghost", "tag": "6.62.0-next-alpine",
+    "version": "6.62.0", "digest": "sha256:…"
+  },
+  "profiles": ["production"],
+  "migrations": []
+}
+```
 
-**Not implemented yet.** `install.sh` is the first thing that writes this file,
-so the reader and writer land with it in S2 rather than sitting unused here.
+A field that was not supplied is `null` rather than an empty string, so "not
+known" and "deliberately empty" stay distinguishable. The digest is the
+immutable image identity, recorded so the exact image can be found again during
+recovery even after a tag moves.
+
+`scripts/lib/meta.sh` is the reader and writer. It writes atomically, refuses a
+document without the right `schemaVersion`, and refuses to *read* one written by
+a newer schema rather than misinterpreting it.
+
+An installation that predates this file is supported explicitly: `meta_present`
+answers that question, and readers must treat a missing file as "unknown,
+pre-metadata install", not as a broken site. `scripts/site.sh info` prints that
+state in words.
 
 ## The Compose invocation contract
 
@@ -222,10 +251,18 @@ Runtime, on the server:
   compatible with bash 3.2 so macOS's system bash works for local development.
 - Docker Engine 25.0.0 — for `healthcheck.start_interval`
 - Docker Compose v2.24.0 — for `env_file` `required` and `depends_on` `required`
-- `jq` — used by the helpers for JSON, including `.ghost-docker.json` (S2)
+- `jq` — used by the helpers for JSON, including `.ghost-docker.json`
 
-`install.sh` verifies all three during preflight (S2). `scripts/migrate.sh`
-already required `jq`, so this is not a new prerequisite for existing servers.
+`install.sh` verifies all three during preflight, and `bootstrap.sh` also needs
+`git`. `scripts/migrate.sh` already required `jq`, so this is not a new
+prerequisite for existing servers.
+
+Every other host utility the scripts invoke is POSIX and is listed in
+`GD_HOST_UTILITIES` in `scripts/lib/preflight.sh`. That list is the tool
+contract: `tests/install-e2e.test.mjs` runs a complete installation with a
+`PATH` built from exactly it, so a GNU-only or otherwise unusual dependency
+fails a test rather than someone's server. Nothing decides Docker access from
+`docker` group membership — see [install.md](install.md#host-tools).
 
 Development only, not needed on a server:
 
@@ -267,7 +304,7 @@ recovery testing.
 
 ## Why `jq` is a prerequisite
 
-The helpers use `jq` for JSON, starting with `.ghost-docker.json` in S2.
+The helpers use `jq` for JSON, starting with `.ghost-docker.json`.
 
 The implementation plan originally recorded "No host Node or jq requirement".
 That was changed during S1, deliberately, and §1 of
@@ -279,5 +316,5 @@ That was changed during S1, deliberately, and §1 of
   240 lines and bought nothing an operator can see.
 
 Node.js is **not** a runtime requirement. It is used only to run the test
-suite. `install.sh` (S2) must verify `docker`, `docker compose` and `jq` during
-preflight, and must not require Node.
+suite. `install.sh` verifies `docker`, `docker compose` and `jq` during
+preflight, and does not require Node.

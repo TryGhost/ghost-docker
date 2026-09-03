@@ -20,6 +20,12 @@ GD_ROOT_DIR=$(CDPATH='' cd -- "$GD_LIB_DIR/../.." && pwd)
 . "$GD_LIB_DIR/config.sh"
 # shellcheck source=scripts/lib/caddy.sh
 . "$GD_LIB_DIR/caddy.sh"
+# shellcheck source=scripts/lib/meta.sh
+. "$GD_LIB_DIR/meta.sh"
+# shellcheck source=scripts/lib/preflight.sh
+. "$GD_LIB_DIR/preflight.sh"
+# shellcheck source=scripts/lib/install.sh
+. "$GD_LIB_DIR/install.sh"
 
 # usage
 # Prints the calling script's header comment block: everything from the line
