@@ -62,3 +62,43 @@ jobs:
       - name: Show service logs on failure
         if: failure()
         run: docker ps -a && docker compose ls || true
+
+  install:
+    name: Installer, from a candidate release
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: "22"
+
+      # The installer must work for an operator who is not root and is not in
+      # the docker group in the way the tests assume; access is established by
+      # asking the daemon, so this only confirms it can be asked.
+      - name: Confirm the daemon answers as this user
+        run: docker info --format '{{.ServerVersion}}'
+
+      # 80 and 443 are used by the existing-proxy and production cases, and
+      # must be free before they run.
+      - name: Confirm the ingress ports are free
+        run: |
+          set -eu
+          for port in 80 443; do
+            if (exec 3<>/dev/tcp/127.0.0.1/"$port") 2>/dev/null; then
+              echo "port $port is already in use on this runner" >&2
+              exit 1
+            fi
+          done
+
+      - name: Install local and production sites from a candidate release
+        env:
+          GD_TEST_INSTALL: "1"
+        run: node --test --test-timeout=1800000 tests/install-e2e.test.mjs
+
+      - name: Show what was left behind on failure
+        if: failure()
+        run: |
+          docker ps -a
+          docker compose ls || true
