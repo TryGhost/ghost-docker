@@ -220,15 +220,25 @@ esac
 
 stack_ref=""
 stack_commit=""
+tags_here=""
 if command -v git >/dev/null 2>&1 && git -C "$dir" rev-parse --git-dir >/dev/null 2>&1; then
     stack_commit=$(git -C "$dir" rev-parse HEAD 2>/dev/null || printf '')
+    tags_here=$(git -C "$dir" tag --points-at HEAD 2>/dev/null || printf '')
     stack_ref=$(git -C "$dir" describe --tags --exact-match HEAD 2>/dev/null ||
         git -C "$dir" rev-parse --abbrev-ref HEAD 2>/dev/null || printf '')
 fi
-if [[ -n $ref && -n $stack_ref && $ref != "$stack_ref" ]]; then
-    die "--ref is $ref but this checkout is at $stack_ref.
+# When --ref names a tag that points at this commit, it is authoritative even
+# if `git describe` reported a different tag on the same commit — a release and
+# its prerelease can share a commit. Only a --ref that is nowhere near this
+# checkout is a real disagreement.
+if [[ -n $ref ]]; then
+    if [[ -n $tags_here ]] && printf '%s\n' "$tags_here" | grep -qxF "$ref"; then
+        stack_ref=$ref
+    elif [[ -n $stack_ref && $ref != "$stack_ref" ]]; then
+        die "--ref is $ref but this checkout is at $stack_ref.
   install.sh installs the release it belongs to. Use bootstrap.sh --ref $ref to
   select a different one." "$EXIT_USAGE"
+    fi
 fi
 [[ -n $ref ]] || ref=$stack_ref
 

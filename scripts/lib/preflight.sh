@@ -32,7 +32,7 @@ readonly GD_REQUIRED_COMMANDS=(docker jq)
 # is the point: it is how a GNU-only or unusual dependency gets noticed.
 readonly GD_HOST_UTILITIES=(
     awk basename bash cat chmod chown cp cut date df dirname env grep head id
-    ls mkdir mktemp mv od rm sed sleep sort stat tr uname
+    ls mkdir mktemp mv od rm sed sleep sort stat sysctl tr uname
 )
 
 # Recommended free space for a site: Ghost and MySQL images, the database, and
