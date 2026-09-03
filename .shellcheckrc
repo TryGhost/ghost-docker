@@ -1,0 +1,4 @@
+# Follow `.` / `source` directives so the shared libraries in scripts/lib are
+# analysed together with their callers.
+external-sources=true
+source-path=SCRIPTDIR

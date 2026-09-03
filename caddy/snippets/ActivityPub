@@ -1,13 +1,15 @@
-# ActivityPub
-# Proxy activitypub requests /.ghost/activitypub/
+# ActivityPub.
+#
+# args[0] — ActivityPub upstream. Either the site's own service
+# (activitypub-<project>:8080) or the hosted service.
 handle /.ghost/activitypub/* {
-	reverse_proxy {$ACTIVITYPUB_TARGET}
+	reverse_proxy {args[0]}
 }
 
 handle /.well-known/webfinger {
-	reverse_proxy {$ACTIVITYPUB_TARGET}
+	reverse_proxy {args[0]}
 }
 
 handle /.well-known/nodeinfo {
-	reverse_proxy {$ACTIVITYPUB_TARGET}
+	reverse_proxy {args[0]}
 }
