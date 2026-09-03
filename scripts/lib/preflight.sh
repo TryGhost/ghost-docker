@@ -238,16 +238,19 @@ preflight_docker() {
         _gd_report error "docker daemon" "did not answer within ${GD_DOCKER_PROBE_TIMEOUT}s; it is running but not responding ($(_gd_daemon_hint))"
         return
     fi
-    if ((rc != 0)); then
+
+    # Reachability is decided by the output, not the exit code: with
+    # `info --format`, some docker CLIs print "Cannot connect to the Docker
+    # daemon ..." and still exit 0, so a non-zero rc cannot be relied on. The
+    # server version is a dotted number when the daemon answers; extract it, and
+    # its absence means the daemon did not answer whatever the exit code said.
+    version=$(printf '%s\n' "$out" | sed -n 's/^\([0-9][0-9]*\(\.[0-9][0-9]*\)*\).*/\1/p' | head -1)
+    if [[ -z $version ]]; then
         _gd_report error "docker daemon" "not reachable ($(_gd_daemon_hint)); docker said: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-160)"
         return
     fi
-    version=$out
-    [[ -n $version ]] || version=$(_gd_docker "$GD_DOCKER_PROBE_TIMEOUT" version --format '{{.Server.Version}}' || printf '')
 
-    if [[ -z $version ]]; then
-        _gd_report warn "docker engine" "reachable, but the version could not be determined"
-    elif version_at_least "$version" "$GD_MIN_DOCKER_VERSION"; then
+    if version_at_least "$version" "$GD_MIN_DOCKER_VERSION"; then
         _gd_report ok "docker engine" "$version"
     else
         _gd_report error "docker engine" "$version is older than the required $GD_MIN_DOCKER_VERSION (healthcheck start_interval)"
