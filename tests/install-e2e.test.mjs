@@ -10,7 +10,7 @@
 // real host ports, including 80 and 443.
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, statSync, readFileSync, writeFileSync, mkdirSync, symlinkSync } from 'node:fs';
+import { existsSync, statSync, readFileSync, writeFileSync, mkdirSync, symlinkSync, realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { delimiter } from 'node:path';
@@ -29,11 +29,13 @@ const PROXY_CONTAINER = 'ghost-docker-test-proxy';
 
 let dir;
 let repo;
+let repoUrl;
+const installed = new Set();
 
 /** Clone the candidate release into a directory, as bootstrap.sh would. */
 const clone = (name) => {
   const target = join(dir, name);
-  execFileSync('git', ['clone', '--quiet', '--depth', '1', '--branch', CANDIDATE_TAG, repo, target]);
+  execFileSync('git', ['clone', '--quiet', '--depth', '1', '--branch', CANDIDATE_TAG, repoUrl, target]);
   return target;
 };
 
@@ -56,6 +58,11 @@ const down = (site) => {
   if (existsSync(join(site, '.env'))) compose(site, ['down', '-v', '--remove-orphans']);
 };
 
+// Sites are torn down together at the very end, not in each suite's own after:
+// two of the checks need an earlier suite's site still running alongside a
+// later one, so no site may be downed while a sibling suite is still asserting.
+const track = (site) => { installed.add(site); return site; };
+
 /**
  * Caddy issues from its own internal CA rather than attempting a real ACME
  * order for a name that does not resolve. caddy/global/ is operator owned and
@@ -69,21 +76,23 @@ const useInternalCerts = (site) => {
 describe('installing from a candidate release', { skip, concurrency: 1 }, () => {
   before(() => {
     dir = tempDir('install-e2e');
-    ({ repo } = makeCandidateRelease(dir, ['v1.0.0', CANDIDATE_TAG]));
+    ({ repo, url: repoUrl } = makeCandidateRelease(dir, ['v1.0.0', CANDIDATE_TAG]));
   });
-  after(() => cleanup(dir));
+  after(() => {
+    for (const site of installed) down(site);
+    cleanup(dir);
+  });
 
   describe('a local site, through the bootstrap', () => {
     let site;
     before(() => {
-      site = join(dir, 'local-a');
+      site = track(join(dir, 'local-a'));
     });
-    after(() => down(site));
 
     test('bootstrap resolves the release, clones it and runs its installer', () => {
       const result = run(join(REPO_DIR, 'bootstrap.sh'),
         ['--channel', 'beta', '--dir', site, '--local', '--no-prompt'],
-        { env: { GD_BOOTSTRAP_REPO: repo }, timeout: 900_000 });
+        { env: { GD_BOOTSTRAP_REPO: repoUrl }, timeout: 900_000 });
       assert.equal(result.status, 0, result.output);
       assert.match(result.stdout, new RegExp(CANDIDATE_TAG.replace(/\./g, '\\.')));
       assert.match(result.stdout, /Ghost is installed/);
@@ -105,7 +114,9 @@ describe('installing from a candidate release', { skip, concurrency: 1 }, () => 
       assert.equal(recorded.channel, 'beta');
       assert.equal(recorded.stack.ref, CANDIDATE_TAG);
       assert.match(recorded.stack.commit, /^[0-9a-f]{40}$/);
-      assert.equal(recorded.site.dir, site);
+      // §2.10: the recorded dir is the resolved real host path (pwd -P), so
+      // compare against the realpath, not the possibly-symlinked test path.
+      assert.equal(recorded.site.dir, realpathSync(site));
       assert.match(recorded.ghost.version, /^\d+\.\d+\.\d+$/);
       assert.match(recorded.ghost.digest, /^sha256:[0-9a-f]{64}$/, 'no digest recorded for recovery');
       assert.deepEqual(recorded.profiles, ['local']);
@@ -159,9 +170,8 @@ describe('installing from a candidate release', { skip, concurrency: 1 }, () => 
     let second;
     before(() => {
       first = join(dir, 'local-a');
-      second = clone('local-b');
+      second = track(clone('local-b'));
     });
-    after(() => down(second));
 
     test('installs without disturbing the first', () => {
       const result = install(second, ['--local', '--no-prompt']);
@@ -247,10 +257,9 @@ describe('installing from a candidate release', { skip, concurrency: 1 }, () => 
   describe('a production site', () => {
     let site;
     before(() => {
-      site = clone('production');
+      site = track(clone('production'));
       useInternalCerts(site);
     });
-    after(() => down(site));
 
     test('installs, renders routes, and verifies its own ingress', () => {
       const result = install(site, ['--domain', 'ghost.test', '--no-prompt']);
@@ -276,13 +285,16 @@ describe('installing from a candidate release', { skip, concurrency: 1 }, () => 
       assert.equal(readFileSync(join(site, 'caddy', 'global', 'tls.caddy'), 'utf8'), 'local_certs\n');
     });
 
-    test('HTTP on the ingress port redirects to HTTPS for the site domain', async () => {
-      const response = await fetch(`http://127.0.0.1:${env(site, 'HTTP_PORT')}/`, {
-        headers: { Host: 'ghost.test' },
-        redirect: 'manual',
-      });
-      assert.ok(response.status >= 300 && response.status < 400, `got ${response.status}`);
-      assert.match(response.headers.get('location') ?? '', /^https:\/\/ghost\.test/);
+    // Node's fetch forbids overriding the Host header, so Caddy would see
+    // 127.0.0.1 and redirect there; the request has to carry Host: ghost.test.
+    // The installer's own /dev/tcp helper sets it, which is what it verifies
+    // with too, so drive the check through that rather than fetch.
+    test('HTTP on the ingress port redirects to HTTPS for the site domain', () => {
+      const head = run('bash', ['-c',
+        `. ${JSON.stringify(join(site, 'scripts', 'lib', 'common.sh'))}\n` +
+        `install_http_head 127.0.0.1 ${env(site, 'HTTP_PORT')} / ghost.test`], { timeout: 60_000 });
+      assert.match(head.stdout, /^HTTP\/[0-9.]+ 3\d\d/m, head.output);
+      assert.match(head.stdout, /^location: https:\/\/ghost\.test/im, head.output);
     });
 
     // The whole intended ingress, end to end: TLS terminated by Caddy for this
@@ -301,9 +313,8 @@ describe('installing from a candidate release', { skip, concurrency: 1 }, () => 
   describe('--no-start', () => {
     let site;
     before(() => {
-      site = clone('no-start');
+      site = track(clone('no-start'));
     });
-    after(() => down(site));
 
     test('configures the site and starts no application services', () => {
       const result = install(site, ['--local', '--no-prompt', '--no-start']);
@@ -326,27 +337,40 @@ describe('installing from a candidate release', { skip, concurrency: 1 }, () => 
   describe('the declared minimum host tools', () => {
     let site;
     before(() => {
-      site = clone('minimum-tools');
+      site = track(clone('minimum-tools'));
     });
-    after(() => down(site));
 
     test('an install completes with only the recorded utilities on PATH', () => {
-      const declared = [
-        ...shOk('printf "%s\\n" "${GD_REQUIRED_COMMANDS[@]}"').trim().split('\n'),
-        ...shOk('printf "%s\\n" "${GD_HOST_UTILITIES[@]}"').trim().split('\n'),
-      ];
+      const utilities = shOk('printf "%s\\n" "${GD_HOST_UTILITIES[@]}"').trim().split('\n');
+      const commands = shOk('printf "%s\\n" "${GD_REQUIRED_COMMANDS[@]}"').trim().split('\n');
+      const realPath = process.env.PATH;
+
       const bin = join(dir, 'minimum-bin');
       mkdirSync(bin, { recursive: true });
+
+      // `docker` (and `jq`) are declared *commands*, not POSIX utilities: their
+      // own subprocess needs are their business, not the installer's. What this
+      // test isolates is whether our shell reaches for a coreutil that is not
+      // in the contract — so the utilities are the only things symlinked bare,
+      // and the commands are wrapped to run with the full PATH restored. A
+      // command that shelled out to an unlisted tool would still pass; a script
+      // of ours that did would not, which is the line this test draws.
       const missing = [];
-      for (const tool of declared) {
+      for (const tool of utilities) {
         const found = run('sh', ['-c', `command -v ${tool}`]).stdout.trim();
-        if (!found) {
-          missing.push(tool);
-          continue;
-        }
-        symlinkSync(found, join(bin, tool));
+        if (!found) missing.push(tool);
+        else symlinkSync(found, join(bin, tool));
       }
       assert.deepEqual(missing, [], 'a declared utility is not installed on this host');
+
+      for (const command of commands) {
+        const found = run('sh', ['-c', `command -v ${command}`]).stdout.trim();
+        assert.ok(found, `${command} is not installed on this host`);
+        const wrapper = join(bin, command);
+        writeFileSync(wrapper,
+          `#!/bin/sh\nexec env PATH=${JSON.stringify(realPath)} ${JSON.stringify(found)} "$@"\n`,
+          { mode: 0o755 });
+      }
 
       const result = install(site, ['--local', '--no-prompt', '--no-start'], {
         env: { PATH: [bin, '/nonexistent'].join(delimiter) },

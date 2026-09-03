@@ -223,7 +223,13 @@ export function git(repo, args) {
 /**
  * A candidate release of the working tree: a real git repository with real
  * tags, so bootstrap.sh resolves and clones it exactly as it would the
- * published one.
+ * published one. Each tag lands on its own commit — a release and a prerelease
+ * do not share one — so `git describe` on a checkout is unambiguous, matching a
+ * real published history rather than a pile of tags on one commit.
+ *
+ * `url` is a file:// form of the repository. `--depth` is honoured over that,
+ * unlike a bare local path, so the shallow-clone path the bootstrap really uses
+ * is exercised without the "depth ignored in local clones" warning.
  */
 export function makeCandidateRelease(dir, tags = ['v9.9.9']) {
   const repo = join(dir, 'release');
@@ -231,8 +237,11 @@ export function makeCandidateRelease(dir, tags = ['v9.9.9']) {
   git(repo, ['init', '-q', '-b', 'main']);
   git(repo, ['add', '-A']);
   git(repo, ['commit', '-q', '-m', 'candidate release']);
-  for (const tag of tags) git(repo, ['tag', tag]);
-  return { repo, tags };
+  tags.forEach((tag, index) => {
+    if (index > 0) git(repo, ['commit', '-q', '--allow-empty', '-m', `release ${tag}`]);
+    git(repo, ['tag', tag]);
+  });
+  return { repo, tags, url: `file://${repo}` };
 }
 
 /** Run a script with a captured status, without throwing. */

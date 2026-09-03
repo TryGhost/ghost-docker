@@ -261,6 +261,7 @@ describe('Ghost version resolution', () => {
 describe('release selection', () => {
   let dir;
   let repo;
+  let repoUrl;
 
   // bootstrap.sh is sourced in library mode so that ordering can be tested
   // without cloning anything.
@@ -269,7 +270,7 @@ describe('release selection', () => {
 
   before(() => {
     dir = tempDir('release');
-    ({ repo } = makeCandidateRelease(dir, [
+    ({ repo, url: repoUrl } = makeCandidateRelease(dir, [
       'v1.9.0', 'v1.10.0', 'v1.11.0-beta.2', 'v1.11.0-beta.10', 'v0.1.0', 'not-a-release',
     ]));
   });
@@ -308,7 +309,7 @@ describe('release selection', () => {
     mkdirSync(occupied, { recursive: true });
     writeFileSync(join(occupied, 'something'), 'x');
     const result = run(join(REPO_DIR, 'bootstrap.sh'), ['--dir', occupied, '--ref', 'v1.10.0', '--local'], {
-      env: { GD_BOOTSTRAP_REPO: repo },
+      env: { GD_BOOTSTRAP_REPO: repoUrl },
       timeout: 60_000,
     });
     assert.notEqual(result.status, 0);

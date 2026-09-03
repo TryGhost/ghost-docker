@@ -725,6 +725,57 @@ whether `install.sh` is the installer or a bootstrap that runs one. Steps
 already shipped in host shell (S1's `config.sh` and `caddy.sh`) stay where they
 are; the boundary does not run through them.
 
+#### When the manager image lands, and what its first tenant is
+
+Revised 2026-09-03, after S2. Two questions kept coming up — *should the image
+ship sooner?* and *should env validation and Caddy generation move into it?* —
+so the boundary above is stated as two rules rather than left to inference.
+
+**The image's first tenant is the first stateful operation, at S4, not S8.**
+§2.6 already publishes a privileged supervisor image from this repo and requires
+it to "follow §2.5 rather than inventing a second upgrade/recovery algorithm."
+If S4–S7 implement backup, restore, upgrade and recovery in host shell and S8
+then re-implements them in an image, that algorithm exists twice, and the second
+copy is the one under the privileged supervisor. So the manager image is
+introduced in **S4**, with backup/restore as its first entrypoint; S5 (import),
+S7 (upgrade) and S8 (supervisor) are further entrypoints on the same image, not
+parallel codebases. This is a scheduling clarification, not a new component:
+§2.10 already defined the image and the dispatcher. It does **not** move S4's
+deliverable — S4 still ships backup/restore — it fixes the language they are
+written in so they are not rewritten at S8. The host dispatcher (this section's
+mount, identity and exit-code rules) is written in S4 alongside its first
+`docker run` target.
+
+**Env validation, Caddy generation, preflight and version resolution do not
+move into the image.** They are not stateful operations; they are the pure logic
+that runs *before and without* a working container, and the boundary is set by
+exactly that. Concretely:
+
+- The bootstrap writes `.env` before any image exists. A container cannot be the
+  only writer of the file that configures the container.
+- `config.sh validate` runs inside preflight, before anything starts, and inside
+  `site.sh check` on a host whose daemon is missing or wedged. Behind `docker
+  run` it could not validate offline — the case it exists for — and would add an
+  image pull to every invocation. (S2 verified this matters: a wedged daemon
+  mid-session was still diagnosed by host-shell preflight because it does not
+  depend on the image.)
+- Containerizing them does **not** solve the one hard problem, Compose's `$$`
+  interpolation: anything writing `.env` encodes a literal `$` as `$$`
+  regardless of implementation language, as recorded above.
+- Moving them to JS forces a lose-lose: JS-in-container breaks offline validate
+  and still needs a host writer for the bootstrap; JS-on-host reintroduces the
+  host Node requirement S1 deliberately removed with `config-to-env.js`. Host
+  requirements stay `bash`, `docker`, `docker compose`, `jq`.
+
+So the dispatcher-plus-image model applies to the **stateful** commands (backup,
+restore, import, upgrade, and the supervisor), which become thin host wrappers
+around `docker run` of the manager image. Preflight, doctor, bootstrap, config
+validation and Caddy rendering stay in host shell — not because bash is
+preferable, but because they must run when there is no usable image. If shared
+serialization between host and image is ever wanted, the host side stays the
+jq-backed bash helpers; the image reimplements what it needs rather than the
+host taking a language runtime.
+
 ## 3. Implementation steps
 
 The numbering is revised from the original plan; use names as well as numbers when
@@ -932,6 +983,16 @@ explicit DB connection abstraction, operation lock, maintenance handling, retent
 and journals. Backups include required local application/configuration state and
 describe optional-service limitations. Define supported backup formats independently
 of migration bundles; a portable export is not a lossless recovery checkpoint.
+
+This is where the §2.10 manager image lands (see "When the manager image lands,
+and what its first tenant is"). Backup/restore is its first entrypoint, so the
+recovery algorithm S7 and S8 reuse exists once, in the image, not in host shell
+awaiting a rewrite. Write the host dispatcher here — the `docker run` mount,
+identity and exit-code rules from §2.10 — and route backup/restore through it.
+The S2 host-shell helpers that must run without the image (preflight, config
+validation, Caddy rendering, `site.sh check`) stay in host shell. Also add the
+shared operation lock to installation/reconfigure retroactively: §2.2 requires
+install to take it, and S2 deferred it to this step.
 
 Acceptance: restore a representative site to a fresh destination and verify database,
 assets/theme/configuration; inject interrupted backup/restore, full disk, stale lock,

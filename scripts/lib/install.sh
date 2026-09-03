@@ -364,8 +364,16 @@ install_verify_ingress() {
     path=$(env_get "$dir/.env" GHOST_HEALTHCHECK_PATH 2>/dev/null) || path=/ghost/api/admin/site/
     [[ -n $path ]] || path=/ghost/api/admin/site/
 
-    if status=$(install_http_status 127.0.0.1 "$ghost_port" "$path" localhost); then
-        if [[ $status == 200 ]]; then
+    # The direct loopback probe proves the Ghost process is answering. In local
+    # mode the site's canonical URL is that loopback address, so a 200 is
+    # expected. In production the canonical URL is https://DOMAIN, so a plain
+    # http request straight to the container — bypassing Caddy, without
+    # X-Forwarded-Proto — is redirected to HTTPS by design; a 3xx there is Ghost
+    # working, not a fault. The authoritative production checks are Caddy's.
+    local host_header=localhost
+    [[ $mode == production ]] && host_header=$domain
+    if status=$(install_http_status 127.0.0.1 "$ghost_port" "$path" "$host_header"); then
+        if [[ $status == 200 || ( $mode == production && $status =~ ^3 ) ]]; then
             printf 'ok       Ghost answers on 127.0.0.1:%s%s\n' "$ghost_port" "$path"
         else
             printf 'ERROR    Ghost answered %s on 127.0.0.1:%s%s\n' "$status" "$ghost_port" "$path" >&2
