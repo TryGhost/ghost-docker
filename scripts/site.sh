@@ -147,7 +147,7 @@ site_check() {
 }
 
 cmd=${1:-}
-(($#)) && shift || true
+if (($#)); then shift; fi
 
 case "$cmd" in
     list) site_list ;;

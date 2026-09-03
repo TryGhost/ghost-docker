@@ -92,6 +92,11 @@ _gd_docker() {
 # never by inspecting group membership: neither rootless Docker nor a remote
 # DOCKER_HOST involves the docker group, and being in it does not mean the
 # daemon is running.
+#
+# The SECONDS argument is optional; a bare call using the default deadline is
+# the common one, so the "argument never passed" lint is silenced here rather
+# than at every call site.
+# shellcheck disable=SC2120
 docker_responsive() {
     command -v docker >/dev/null 2>&1 || return 1
     _gd_docker "${1:-$GD_DOCKER_PROBE_TIMEOUT}" info >/dev/null 2>&1
