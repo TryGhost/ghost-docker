@@ -159,8 +159,15 @@ env_get() {
             printf 'error: %s spans several lines; edit it by hand\n' "$2" >&2
             return 1
             ;;
-        # Single quoted: literal, and a backslash before a quote is the only escape.
-        s) printf '%s\n' "${found_body//\\\'/\'}" ;;
+        # Single quoted: literal, and a backslash before a quote is the only
+        # escape. The substitution is done in an unquoted assignment rather than
+        # inside the printf's double quotes: bash 3.2 (macOS's system bash) and
+        # bash 4+ parse the backslashes in a double-quoted `${v//\\\'/\'}`
+        # pattern differently, and only the unquoted form agrees on both.
+        s)
+            local unescaped=${found_body//\\\'/\'}
+            printf '%s\n' "$unescaped"
+            ;;
         *)
             _gd_env_unescape "$found_body"
             printf '\n'
