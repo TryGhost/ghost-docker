@@ -64,13 +64,24 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Install host tools (Docker CLI only, no daemon)
+      - name: Install the Docker Compose plugin (CLI only, no daemon)
+        env:
+          # A current Compose is enough: it is only used to *parse* configuration
+          # (`docker compose config`), never to reach a daemon.
+          COMPOSE_PLUGIN_VERSION: "2.29.7"
         run: |
-          set -eu
-          brew install jq docker docker-compose
-          jq --version
+          set -euo pipefail
+          # The runner already ships the Docker CLI; only the compose plugin is
+          # missing, and `brew install docker-compose` does not wire it up as a
+          # `docker compose` subcommand. Install it as a CLI plugin directly.
           docker --version
+          mkdir -p ~/.docker/cli-plugins
+          curl -fsSL \
+            "https://github.com/docker/compose/releases/download/v${COMPOSE_PLUGIN_VERSION}/docker-compose-darwin-aarch64" \
+            -o ~/.docker/cli-plugins/docker-compose
+          chmod +x ~/.docker/cli-plugins/docker-compose
           docker compose version
+          jq --version
 
       - name: Run the helper tests under bash 3.2
         env:
