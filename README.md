@@ -4,6 +4,30 @@ Configuration to run Ghost and its services with Docker Compose.
 
 Requires **bash**, **Docker Engine 25.0+**, **Docker Compose v2.24+** and **jq**.
 
+## Install
+
+```sh
+# A production site with HTTPS
+curl -fsSL https://ghost.org/docker/bootstrap.sh | bash -s -- --domain example.com
+
+# A local development site
+curl -fsSL https://ghost.org/docker/bootstrap.sh | bash -s -- --local
+```
+
+`bootstrap.sh` selects a release, clones it, and runs that checkout's
+`install.sh`, which does everything else: preflight, an exact Ghost version pin,
+generated passwords, configuration, routing, and verifying that the site answers
+through its own ingress before it says it is installed.
+
+Every prompt has a flag, so `--no-prompt` is fully scriptable. Installation
+never stops or reconfigures anything already running on this host: a port that
+is in use is an error naming what holds it. See [docs/install.md](docs/install.md).
+
+```sh
+scripts/site.sh check    # diagnose this site
+scripts/site.sh list     # every ghost-docker container on this host
+```
+
 ## Configuration
 
 Two files, deliberately separate:
@@ -19,8 +43,10 @@ cp ghost.env.example ghost.env && chmod 0600 ghost.env
 scripts/config.sh validate
 ```
 
-See [docs/configuration.md](docs/configuration.md) for the full contract:
-value encoding, site modes, profiles, lifecycle, service aliases and metadata.
+Both are written for you by `install.sh`; the examples are for hand-built
+sites and for reference. See [docs/configuration.md](docs/configuration.md) for
+the full contract: value encoding, site modes, profiles, lifecycle, service
+aliases and metadata.
 
 ## Site modes
 
@@ -109,11 +135,14 @@ dependencies and no `package.json`: Node is a development requirement only, and
 the repository is not a Node package.
 
 ```sh
-# helpers, mode matrix, Caddy routes
+# helpers, mode matrix, Caddy routes, installer decisions, metadata
 node --test --test-timeout=120000 tests/*.test.mjs
 
 # local and production ingress, against real containers
 GD_TEST_INGRESS=1 node --test --test-timeout=900000 tests/ingress.test.mjs
+
+# real installations from a candidate release built out of the working tree
+GD_TEST_INSTALL=1 node --test --test-timeout=1800000 tests/install-e2e.test.mjs
 ```
 
 Docker-dependent tests are skipped when no daemon is reachable. Set

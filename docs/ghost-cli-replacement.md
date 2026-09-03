@@ -823,6 +823,15 @@ blockers for dependent steps.
 
 ### S2 — Local and single-site production installer
 
+Status: implemented. `bootstrap.sh` is the release-selecting shim and
+`install.sh` the checkout-owned installer; `scripts/lib/meta.sh` is the
+`.ghost-docker.json` reader/writer deferred from S1, and `scripts/site.sh`
+provides `list` and `check`/doctor. See `docs/install.md` for the contract as
+built. Two deliberate notes for dependent steps: the bring-your-own-proxy path
+stays the documented manual edit of `compose.yml` from §2.1, and the operation
+lock in §2.2 is *not* implemented here — it lands with the other mutating
+operations in S4, so S4 must add it to installation as well as to its own.
+
 Repo: ghost-docker. Deps: S1. Implement §2.8 for fresh installs, exact version
 resolution, stable identity, scriptable prompts, custom proxy use, and optional
 service setup. `--import`/supervisor behavior may initially fail as unimplemented

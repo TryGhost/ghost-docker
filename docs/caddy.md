@@ -1,5 +1,9 @@
 # Caddy routing
 
+`install.sh` runs `caddy_apply` for a production site, so a fresh installation
+already has validated, installed and verified routes. Everything below is for
+changing them afterwards.
+
 ## Layout
 
 | Path | Tracked | Owner |
