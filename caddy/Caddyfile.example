@@ -1,60 +1,55 @@
-{$DOMAIN} {
-	import snippets/Logging
+# Reference example, not used by the running stack.
+#
+# The stack serves `caddy/Caddyfile`, which imports generated routes from
+# `caddy/sites/`, your own routes from `caddy/custom/`, and global options
+# from `caddy/global/`. Generate the site routes with:
+#
+#     scripts/caddy.sh apply
+#
+# This file shows what those generated routes look like, for a
+# bring-your-own-proxy setup or to compare against a hand-written Caddyfile
+# from a pre-1.0 installation. Snippets are imported by absolute path and take
+# their upstreams and domains as arguments: a missing argument is only a Caddy
+# warning and fails at runtime.
+#
+# Substitute your own values for `example.com` and `my-site`
+# (your COMPOSE_PROJECT_NAME).
 
-	# Traffic Analytics service
-	import snippets/TrafficAnalytics
+example.com {
+	import /etc/caddy/snippets/Logging
 
-	# ActivityPub Service
-	import snippets/ActivityPub
+	# Traffic Analytics service (only when the `analytics` profile is enabled)
+	import /etc/caddy/snippets/TrafficAnalytics traffic-analytics-my-site:3000
 
-	# Default proxy everything else to Ghost
+	# ActivityPub service. Use `activitypub-my-site:8080` when the
+	# `activitypub` profile is enabled, or the hosted service otherwise.
+	import /etc/caddy/snippets/ActivityPub https://ap.ghost.org
+
+	# Default: proxy everything else to Ghost, through its unique alias.
 	handle {
-		reverse_proxy ghost:2368
+		reverse_proxy ghost-my-site:2368
 	}
 
-	# Optional: Enable gzip compression
+	# Optional: gzip compression
 	encode gzip
 
-	# Optional: Add security headers
-	import snippets/SecurityHeaders
+	# Optional: security headers. The argument is the admin domain allowed to
+	# frame this site, or "" when there is none.
+	import /etc/caddy/snippets/SecurityHeaders ""
 }
 
-# Separate admin domains
-# To use a separate domain for Ghost Admin uncomment the block below (recommended)
-# {$ADMIN_DOMAIN} {
-# 	import snippets/Logging
-#
-# 	# Traffic Analytics service
-# 	import snippets/TrafficAnalytics
-#
-# 	# ActivityPub Service
-# 	import snippets/ActivityPub
-#
-# 	# Default proxy everything else to Ghost
-# 	handle {
-# 		reverse_proxy ghost:2368
-# 	}
-#
-# 	# Optional: Enable gzip compression
-# 	encode gzip
-#
-# 	# Optional: Add security headers
-# 	import snippets/SecurityHeaders
-# }
+# Separate admin domain
+# Set ADMIN_DOMAIN in .env and `scripts/caddy.sh apply` renders this block for
+# you. It is identical to the block above, served on the admin domain, with the
+# admin domain passed to SecurityHeaders.
 
 # Redirect www -> root domain
-# To redirect the www variant of your domain to the non-www variant uncomment the 4 lines below
-# Note: You must have DNS setup correctly for both domains for this to work
-# www.{$DOMAIN} {
-# 	import snippets/Logging
-# 	redir https://{$DOMAIN}{uri}
+# Set WWW_REDIRECT=www.example.com in .env and `scripts/caddy.sh apply` renders:
+#
+# www.example.com {
+# 	import /etc/caddy/snippets/Logging
+# 	redir https://example.com{uri}
 # }
-
-# Redirect root -> www domain
-# To redirect the non-www variant of your domain to the www variant uncomment the 4 lines below and change CHANGE_ME to your root domain
-# Note: You must have DNS setup correctly for both domains for this to work
-# When using ActivityPub with a www. domain, you must enable this redirect for ActivityPub to work correctly
-# CHANGE_ME {
-# 	import snippets/Logging
-# 	redir https://{$DOMAIN}{uri}
-# }
+#
+# Note: DNS must be set up for both names. When using ActivityPub with a `www.`
+# domain, this redirect is required for ActivityPub to work correctly.

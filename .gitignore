@@ -73,3 +73,23 @@ typings/
 
 # Where we store docker data by default
 data
+
+# Ghost Docker generated/operator files
+# Application configuration (credentials)
+ghost.env
+# Installation metadata
+.ghost-docker.json
+# Generated and operator-managed Caddy routes, and the validation staging tree
+caddy/sites/*
+!caddy/sites/.gitignore
+caddy/custom/*
+!caddy/custom/.gitignore
+!caddy/custom/README.md
+caddy/global/*
+!caddy/global/.gitignore
+!caddy/global/README.md
+caddy/.staging/
+# Operator's own Caddyfile from pre-1.0 installations (see the S6 migration)
+caddy/Caddyfile.local
+# Backups written by the helpers
+*.bak.*

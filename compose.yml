@@ -1,48 +1,87 @@
 ---
 # yaml-language-server: $schema=https://raw.githubusercontent.com/compose-spec/compose-spec/main/schema/compose-spec.json
-services:
-  caddy:
-    image: caddy:2.10.2-alpine@sha256:953131cfea8e12bfe1c631a36308e9660e4389f0c3dfb3be957044d3ac92d446
-    restart: always
-    ports:
-      - "${HTTP_PORT:-80}:80"
-      - "${HTTPS_PORT:-443}:443"
-    environment:
-      DOMAIN: ${DOMAIN:?DOMAIN environment variable is required}
-      ADMIN_DOMAIN: ${ADMIN_DOMAIN:-}
-      ACTIVITYPUB_TARGET: ${ACTIVITYPUB_TARGET:-https://ap.ghost.org}
-    volumes:
-      - ./caddy:/etc/caddy
-      - caddy_data:/data
-      - caddy_config:/config
-    depends_on:
-      - ghost
-    networks:
-      - ghost_network
+#
+# Ghost Docker — single-site Compose foundation.
+#
+# Requires Docker Engine >= 25.0.0 and Docker Compose >= v2.24.0.
+#
+# Operator/Compose settings live in `.env` (see `.env.example`).
+# Ghost application settings live in `ghost.env` (see `ghost.env.example`).
+# `.env` is NEVER passed into the Ghost container: it holds infrastructure
+# credentials (MySQL root) that Ghost must not receive.
+#
+# Site modes are selected through COMPOSE_PROFILES and are additive:
+#   local       ghost + db, Ghost published on 127.0.0.1:${GHOST_PORT}
+#   production  ghost + db + caddy (HTTPS ingress)
+# Optional, per-site profiles: analytics, activitypub.
+# `supervisor` is reserved for the upgrade supervisor and defines no service yet.
 
+x-logging: &default-logging
+  driver: ${LOG_DRIVER:-json-file}
+  options:
+    max-size: ${LOG_MAX_SIZE:-10m}
+    max-file: "${LOG_MAX_FILE:-3}"
+
+x-site-labels: &site-labels
+  org.ghost.docker.managed: "true"
+  org.ghost.docker.site: ${COMPOSE_PROJECT_NAME:-ghost}
+  org.ghost.docker.mode: ${SITE_MODE:-production}
+
+services:
   ghost:
     # Do not alter this without updating the Tinybird Sync container as well
-    image: ghost:${GHOST_VERSION:-6-alpine}
-    restart: always
-    # This is required to import current config when migrating
+    image: ${GHOST_IMAGE:-ghost}:${GHOST_VERSION:-6-next-alpine}
+    restart: ${RESTART_POLICY:-unless-stopped}
+    profiles: [local, production]
+    labels:
+      <<: *site-labels
+      org.ghost.docker.role: ghost
+      org.ghost.docker.lifecycle: long-running
+    logging: *default-logging
+    # Loopback only: production ingress is Caddy, and a bring-your-own proxy
+    # connects over the host loopback interface.
+    ports:
+      - "127.0.0.1:${GHOST_PORT:-2368}:2368"
+    # Application configuration only. Never `.env`.
     env_file:
-      - .env
+      - path: ghost.env
+        required: false
+    # Container-owned keys. These override anything set in ghost.env.
     environment:
-      NODE_ENV: production
-      url: https://${DOMAIN:?DOMAIN environment variable is required}
-      admin__url: ${ADMIN_DOMAIN:+https://${ADMIN_DOMAIN}}
+      NODE_ENV: ${NODE_ENV:-production}
+      url: ${URL:?URL is required (for example https://example.com or http://localhost:2368)}
+      admin__url: ${ADMIN_URL:-}
+      server__host: 0.0.0.0
+      server__port: "2368"
+      paths__contentPath: ${GHOST_CONTENT_PATH:-/home/ghost/content}
       database__client: mysql
-      database__connection__host: db
+      database__connection__host: ${DATABASE_HOST:-db}
+      database__connection__port: ${DATABASE_PORT:-3306}
       database__connection__user: ${DATABASE_USER:-ghost}
-      database__connection__password: ${DATABASE_PASSWORD:?DATABASE_PASSWORD environment variable is required}
-      database__connection__database: ghost
-      tinybird__tracker__endpoint: https://${DOMAIN:?DOMAIN environment variable is required}/.ghost/analytics/api/v1/page_hit
+      database__connection__password: ${DATABASE_PASSWORD:?DATABASE_PASSWORD is required}
+      database__connection__database: ${DATABASE_NAME:-ghost}
+      tinybird__tracker__endpoint: ${URL}/.ghost/analytics/api/v1/page_hit
+      tinybird__tracker__datasource: analytics_events
       tinybird__adminToken: ${TINYBIRD_ADMIN_TOKEN:-}
       tinybird__workspaceId: ${TINYBIRD_WORKSPACE_ID:-}
-      tinybird__tracker__datasource: analytics_events
       tinybird__stats__endpoint: ${TINYBIRD_API_URL:-https://api.tinybird.co}
     volumes:
-      - ${UPLOAD_LOCATION:-./data/ghost}:/var/lib/ghost/content
+      - ${UPLOAD_LOCATION:-./data/ghost}:${GHOST_CONTENT_PATH:-/home/ghost/content}
+    # A real readiness probe: Ghost has booted and is serving its Admin API.
+    # A running container or a redirect is not readiness.
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - >-
+          require('http').get('http://127.0.0.1:2368${GHOST_HEALTHCHECK_PATH:-/ghost/api/admin/site/}',
+          r => process.exit(r.statusCode < 400 ? 0 : 1)).on('error', () => process.exit(1))
+      interval: 30s
+      timeout: 10s
+      start_period: 180s
+      start_interval: 5s
+      retries: 5
     depends_on:
       db:
         condition: service_healthy
@@ -56,102 +95,197 @@ services:
         condition: service_started
         required: false
     networks:
-      - ghost_network
+      ghost_network:
+        aliases:
+          # Unique alias. Generated proxy routes and helper clients address Ghost
+          # through this name, never through the bare `ghost` service name.
+          - ghost-${COMPOSE_PROJECT_NAME:-ghost}
 
   db:
     image: mysql:8.0.44@sha256:f37951fc3753a6a22d6c7bf6978c5e5fefcf6f31814d98c582524f98eae52b21
-    restart: always
+    restart: ${RESTART_POLICY:-unless-stopped}
+    profiles: [local, production]
+    labels:
+      <<: *site-labels
+      org.ghost.docker.role: db
+      org.ghost.docker.lifecycle: long-running
+    logging: *default-logging
     expose:
       - "3306"
     environment:
-      MYSQL_ROOT_PASSWORD: ${DATABASE_ROOT_PASSWORD:?DATABASE_ROOT_PASSWORD environment variable is required}
+      MYSQL_ROOT_PASSWORD: ${DATABASE_ROOT_PASSWORD:?DATABASE_ROOT_PASSWORD is required}
       MYSQL_USER: ${DATABASE_USER:-ghost}
-      MYSQL_PASSWORD: ${DATABASE_PASSWORD:?DATABASE_PASSWORD environment variable is required}
-      MYSQL_DATABASE: ghost
-      MYSQL_MULTIPLE_DATABASES: activitypub
+      MYSQL_PASSWORD: ${DATABASE_PASSWORD:?DATABASE_PASSWORD is required}
+      MYSQL_DATABASE: ${DATABASE_NAME:-ghost}
+      MYSQL_MULTIPLE_DATABASES: ${DATABASE_EXTRA_DATABASES:-activitypub}
     volumes:
       - ${MYSQL_DATA_LOCATION:-./data/mysql}:/var/lib/mysql
       - ./mysql-init:/docker-entrypoint-initdb.d
+    # Verifies real client connectivity to the application database, not just
+    # that a server process answers.
     healthcheck:
-      test: mysqladmin ping -p$$MYSQL_ROOT_PASSWORD -h 127.0.0.1
-      interval: 1s
-      start_period: 30s
-      start_interval: 10s
-      retries: 120
+      test:
+        - CMD-SHELL
+        - >-
+          mysql -h 127.0.0.1 -u"$$MYSQL_USER" -p"$$MYSQL_PASSWORD"
+          -e 'SELECT 1' "$$MYSQL_DATABASE" >/dev/null 2>&1
+      interval: 30s
+      timeout: 10s
+      start_period: 120s
+      start_interval: 2s
+      retries: 5
+    networks:
+      ghost_network:
+        aliases:
+          - db-${COMPOSE_PROJECT_NAME:-ghost}
+
+  caddy:
+    image: caddy:2.10.2-alpine@sha256:953131cfea8e12bfe1c631a36308e9660e4389f0c3dfb3be957044d3ac92d446
+    restart: ${RESTART_POLICY:-unless-stopped}
+    profiles: [production]
+    labels:
+      <<: *site-labels
+      org.ghost.docker.role: caddy
+      org.ghost.docker.lifecycle: long-running
+    logging: *default-logging
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    environment:
+      # Consumed by caddy/Caddyfile so a candidate tree can be validated with the
+      # exact tracked Caddyfile before it is installed.
+      CADDY_SITES_DIR: ${CADDY_SITES_DIR:-/etc/caddy/sites}
+      CADDY_CUSTOM_DIR: ${CADDY_CUSTOM_DIR:-/etc/caddy/custom}
+      CADDY_GLOBAL_DIR: ${CADDY_GLOBAL_DIR:-/etc/caddy/global}
+    volumes:
+      - ./caddy:/etc/caddy
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      ghost:
+        condition: service_started
     networks:
       - ghost_network
 
   traffic-analytics:
     image: ghost/traffic-analytics:1.0.368@sha256:f44abf4379f53d349c91a9a6298c252d0d390d0f24f94087bcdb2b627b4c1d4f
-    restart: always
+    restart: ${RESTART_POLICY:-unless-stopped}
+    profiles: [analytics]
+    labels:
+      <<: *site-labels
+      org.ghost.docker.role: traffic-analytics
+      org.ghost.docker.lifecycle: long-running
+    logging: *default-logging
     expose:
       - "3000"
     volumes:
       - traffic_analytics_data:/data
     environment:
-      NODE_ENV: production
+      NODE_ENV: ${NODE_ENV:-production}
       PROXY_TARGET: ${TINYBIRD_API_URL:-https://api.tinybird.co}/v0/events
       SALT_STORE_TYPE: ${SALT_STORE_TYPE:-file}
       SALT_STORE_FILE_PATH: /data/salts.json
       TINYBIRD_TRACKER_TOKEN: ${TINYBIRD_TRACKER_TOKEN:-}
-      LOG_LEVEL: debug
-    profiles: [analytics]
+      LOG_LEVEL: ${TRAFFIC_ANALYTICS_LOG_LEVEL:-info}
     networks:
-      - ghost_network
+      ghost_network:
+        aliases:
+          - traffic-analytics-${COMPOSE_PROJECT_NAME:-ghost}
 
   activitypub:
     image: ghcr.io/tryghost/activitypub:1.2.9@sha256:f950017169c778f90bc1d4097c0c83735dd88ee26a7dfacda56fb6325d4053a0
-    restart: always
+    restart: ${RESTART_POLICY:-unless-stopped}
+    profiles: [activitypub]
+    labels:
+      <<: *site-labels
+      org.ghost.docker.role: activitypub
+      org.ghost.docker.lifecycle: long-running
+    logging: *default-logging
     expose:
       - "8080"
     volumes:
       - ${UPLOAD_LOCATION:-./data/ghost}:/opt/activitypub/content
     environment:
       # See https://github.com/TryGhost/ActivityPub/blob/main/docs/env-vars.md
-      NODE_ENV: production
-      MYSQL_HOST: db
+      NODE_ENV: ${NODE_ENV:-production}
+      MYSQL_HOST: ${DATABASE_HOST:-db}
+      MYSQL_PORT: ${DATABASE_PORT:-3306}
       MYSQL_USER: ${DATABASE_USER:-ghost}
-      MYSQL_PASSWORD: ${DATABASE_PASSWORD:?DATABASE_PASSWORD environment variable is required}
-      MYSQL_DATABASE: activitypub
+      MYSQL_PASSWORD: ${DATABASE_PASSWORD:?DATABASE_PASSWORD is required}
+      MYSQL_DATABASE: ${ACTIVITYPUB_DATABASE_NAME:-activitypub}
       LOCAL_STORAGE_PATH: /opt/activitypub/content/images/activitypub
-      LOCAL_STORAGE_HOSTING_URL: https://${DOMAIN}/content/images/activitypub
+      LOCAL_STORAGE_HOSTING_URL: ${URL}/content/images/activitypub
     depends_on:
       db:
         condition: service_healthy
       activitypub-migrate:
         condition: service_completed_successfully
+    networks:
+      ghost_network:
+        aliases:
+          - activitypub-${COMPOSE_PROJECT_NAME:-ghost}
+
+  # Supporting one-shot jobs.
+  #
+  # These are not long-running services: they keep `restart: "no"` so a completed
+  # or failed job stays stopped instead of being restarted by the daemon.
+
+  activitypub-migrate:
+    image: ghcr.io/tryghost/activitypub-migrations:1.2.9@sha256:f8a376e83187cc927fd6286a9e825b71056b2ac7dd8afcd1af1c8c7dc4657a8e
+    restart: "no"
     profiles: [activitypub]
+    labels:
+      <<: *site-labels
+      org.ghost.docker.role: activitypub-migrate
+      org.ghost.docker.lifecycle: one-shot
+    logging: *default-logging
+    environment:
+      MYSQL_DB: mysql://${DATABASE_USER:-ghost}:${DATABASE_PASSWORD:?DATABASE_PASSWORD is required}@tcp(${DATABASE_HOST:-db}:${DATABASE_PORT:-3306})/${ACTIVITYPUB_DATABASE_NAME:-activitypub}
+    depends_on:
+      db:
+        condition: service_healthy
     networks:
       - ghost_network
-
-  # Supporting Services
 
   tinybird-login:
     build:
       context: ./tinybird
       dockerfile: Dockerfile
+    restart: "no"
+    profiles: [analytics]
+    labels:
+      <<: *site-labels
+      org.ghost.docker.role: tinybird-login
+      org.ghost.docker.lifecycle: one-shot
+    logging: *default-logging
     working_dir: /home/tinybird
     command: /usr/local/bin/tinybird-login
     volumes:
       - tinybird_home:/home/tinybird
       - tinybird_files:/data/tinybird
-    profiles: [analytics]
     networks:
       - ghost_network
     tty: false
-    restart: no
 
   tinybird-sync:
     # Do not alter this without updating the Ghost container as well
-    image: ghost:${GHOST_VERSION:-6-alpine}
+    image: ${GHOST_IMAGE:-ghost}:${GHOST_VERSION:-6-next-alpine}
+    restart: "no"
+    profiles: [analytics]
+    labels:
+      <<: *site-labels
+      org.ghost.docker.role: tinybird-sync
+      org.ghost.docker.lifecycle: one-shot
+    logging: *default-logging
     command: >
       sh -c "
-        if [ -d /var/lib/ghost/current/core/server/data/tinybird ]; then
+        if [ -d ${GHOST_TINYBIRD_PATH:-/home/ghost/core/server/data/tinybird} ]; then
           rm -rf /data/tinybird/*;
-          cp -rf /var/lib/ghost/current/core/server/data/tinybird/* /data/tinybird/;
+          cp -rf ${GHOST_TINYBIRD_PATH:-/home/ghost/core/server/data/tinybird}/* /data/tinybird/;
           echo 'Tinybird files synced into shared volume.';
         else
           echo 'Tinybird source directory not found.';
+          exit 1;
         fi
       "
     volumes:
@@ -161,13 +295,18 @@ services:
         condition: service_completed_successfully
     networks:
       - ghost_network
-    profiles: [analytics]
-    restart: no
 
   tinybird-deploy:
     build:
       context: ./tinybird
       dockerfile: Dockerfile
+    restart: "no"
+    profiles: [analytics]
+    labels:
+      <<: *site-labels
+      org.ghost.docker.role: tinybird-deploy
+      org.ghost.docker.lifecycle: one-shot
+    logging: *default-logging
     working_dir: /data/tinybird
     command: >
       sh -c "
@@ -179,22 +318,9 @@ services:
     depends_on:
       tinybird-sync:
         condition: service_completed_successfully
-    profiles: [analytics]
     networks:
       - ghost_network
     tty: true
-
-  activitypub-migrate:
-    image: ghcr.io/tryghost/activitypub-migrations:1.2.9@sha256:f8a376e83187cc927fd6286a9e825b71056b2ac7dd8afcd1af1c8c7dc4657a8e
-    environment:
-      MYSQL_DB: mysql://${DATABASE_USER:-ghost}:${DATABASE_PASSWORD:?DATABASE_PASSWORD environment variable is required}@tcp(db:3306)/activitypub
-    networks:
-      - ghost_network
-    depends_on:
-      db:
-        condition: service_healthy
-    profiles: [activitypub]
-    restart: no
 
 volumes:
   caddy_data:

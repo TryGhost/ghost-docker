@@ -1,17 +1,43 @@
 #!/usr/bin/env bash
 
-cat << 'EOF'
+cat << 'HELPEOF'
 ════════════════════════════════════════════════════════════════════
                     GHOST DOCKER HELP & COMMANDS
 ════════════════════════════════════════════════════════════════════
 
+SITE MODES (exactly one, selected in COMPOSE_PROFILES in .env):
+  local       ghost + db, published on 127.0.0.1:${GHOST_PORT}
+  production  ghost + db + caddy, HTTPS on ${HTTP_PORT}/${HTTPS_PORT}
+
+  Optional, additive, per-site profiles: analytics, activitypub
+
 COMMON COMMANDS:
-  docker compose logs -f ghost      # View real-time logs
-  docker compose logs -f caddy      # View Caddy webserver logs
-  docker compose ps                 # Check service status
+  docker compose up -d              # Start the services for the selected mode
   docker compose down               # Stop all services
-  docker compose up -d              # Start all services
+  docker compose ps                 # Check service status
+  docker compose logs -f ghost      # View real-time Ghost logs
+  docker compose logs -f caddy      # View Caddy webserver logs
   docker compose restart ghost      # Restart Ghost container
+
+CONFIGURATION:
+  .env         Compose and operator settings, including the MySQL root
+               password. Never passed into the Ghost container.
+  ghost.env    Ghost application settings only (section__key form).
+
+  scripts/config.sh validate                    # Check both files by mode
+  scripts/config.sh set ghost.env KEY VALUE     # Write safely and atomically
+  scripts/config.sh unset ghost.env KEY         # Remove a setting
+
+  Restart Ghost after changes: docker compose up -d
+
+ROUTING (production):
+  scripts/caddy.sh apply       # Render, validate, install, reload, verify
+  scripts/caddy.sh render      # Render the candidate without installing it
+  scripts/caddy.sh validate    # Validate the installed configuration
+
+  Generated routes:  caddy/sites/*.caddy   (do not edit)
+  Your own routes:   caddy/custom/*.caddy
+  Global options:    caddy/global/*.caddy
 
 TROUBLESHOOTING:
   docker compose exec ghost sh      # Access Ghost container shell
@@ -19,7 +45,7 @@ TROUBLESHOOTING:
   docker stats                      # Monitor resource usage
 
 DATABASE ACCESS:
-  docker compose exec mysql mysql -u root -p
+  docker compose exec db mysql -u root -p
   # Use the DATABASE_ROOT_PASSWORD from your .env file
 
 UPGRADES:
@@ -32,17 +58,18 @@ UPGRADES:
   2. Read Ghost's release notes
   3. Test in a staging environment
 
-CONFIGURATION:
-  - Edit .env file for environment variables
-  - Restart Ghost after changes: docker compose up -d
-
 USEFUL PATHS:
-  Content: ./data/ghost/
-  Database: ./data/mysql/
+  Content: ${UPLOAD_LOCATION:-./data/ghost}
+  Database: ${MYSQL_DATA_LOCATION:-./data/mysql}
+  Metadata: ./.ghost-docker.json
   Logs: docker compose logs
-  Config: ./.env
+
+DOCUMENTATION:
+  docs/configuration.md   Configuration split, profiles, lifecycle, metadata
+  docs/caddy.md           Route generation, custom routes, validation
+  docs/bundle-v1.md       Migration bundle contract
 
 MORE HELP:
   Ghost Docs: https://ghost.org/docs/
   Ghost Community: https://forum.ghost.org/
-EOF
+HELPEOF
