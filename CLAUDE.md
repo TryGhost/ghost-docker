@@ -37,6 +37,12 @@ one-shot jobs (`activitypub-migrate`, `tinybird-*`) keep `restart: "no"`.
 ## Common Commands
 
 ```bash
+# Installation
+curl -fsSL .../bootstrap.sh | bash -s -- --domain example.com   # release-selecting shim
+./install.sh --local --no-prompt --no-start                     # checkout-owned installer
+scripts/site.sh check                   # doctor: config, health, DB, ingress
+scripts/site.sh list                    # every managed container on this host
+
 # Core operations
 docker compose up -d                    # Start the services for the selected mode
 docker compose down                     # Stop all services
@@ -71,6 +77,7 @@ scripts/caddy.sh apply                  # Render, validate, install, reload, ver
 # docker tests skip without a daemon)
 node --test --test-timeout=120000 tests/*.test.mjs
 GD_TEST_INGRESS=1 node --test --test-timeout=900000 tests/ingress.test.mjs
+GD_TEST_INSTALL=1 node --test --test-timeout=1800000 tests/install-e2e.test.mjs
 ```
 
 ## Configuration
@@ -97,14 +104,20 @@ safely. Never source an env file; use `scripts/lib/env.sh`.
 - **Data persistence**: `UPLOAD_LOCATION` and `MYSQL_DATA_LOCATION`
 
 ### Key files
+- `bootstrap.sh` — curl-able release-selecting shim; bootstrap logic only
+- `install.sh` — checkout-owned installer. One checkout is one site
 - `.env` / `.env.example` — operator configuration
 - `ghost.env` / `ghost.env.example` — application configuration
-- `.ghost-docker.json` — generated installation metadata (schema v1, written from S2)
+- `.ghost-docker.json` — generated installation metadata (schema v1, read and
+  written by `scripts/lib/meta.sh`; a missing file means "pre-metadata install",
+  not a broken site)
 - `compose.yml` — service definitions
 - `caddy/Caddyfile` — tracked generic entry point; site routes are generated
   into `caddy/sites/`, operator routes live in `caddy/custom/`, global options
   in `caddy/global/`
-- `scripts/lib/*.sh` — shared helpers (env, fs, compose, config, caddy)
+- `scripts/lib/*.sh` — shared helpers (env, fs, compose, config, caddy, meta,
+  preflight, install)
+- `scripts/site.sh` — `list`, `check`/doctor, `info`
 - `mysql-init/create-multiple-databases.sh` — MySQL multi-database initialization
 
 ## Migration from Ghost CLI
@@ -126,10 +139,37 @@ The repository includes comprehensive migration tools:
   by default. This is the only host Node dependency, and `install.sh --import`
   removes it
 
+## Installer
+
+`install.sh` is checkout-owned and installs into its own directory; `--dir`
+elsewhere is refused. `bootstrap.sh` selects a release by semver order (never
+lexically), clones it, and `exec`s that checkout's installer. Ghost versions are
+resolved to an exact tag by asking the pulled image for its own `GHOST_VERSION`,
+`GHOST_CONTENT` and `GHOST_INSTALL`; the digest goes into `.ghost-docker.json`.
+
+Rules that must not regress:
+
+- Installation never stops or reconfigures anything already running. A chosen
+  port moves out of the way; an explicitly requested busy port is an error, and
+  so is an occupied 80/443 in production.
+- Every prompt reads `/dev/tty` and has a flag or environment-variable
+  equivalent. No prompt has a silent default.
+- Docker access is established by asking the daemon, never from `docker` group
+  membership. Read-only probes have deadlines so a wedged daemon is reported
+  rather than hung on.
+- Host tools are `docker` + `jq` (+ `git` for the bootstrap) plus the POSIX
+  utilities in `GD_HOST_UTILITIES`; `tests/install-e2e.test.mjs` installs with a
+  `PATH` of exactly that list.
+- Options for steps that have not landed (`--import`, `--with supervisor`,
+  `--image-registry`, `--ghost-channel`, `--without`) exit 3 naming the step,
+  not as unknown options.
+
+See `docs/install.md`.
+
 ## Development Workflow
 
 1. Copy `.env.example` to `.env` and `ghost.env.example` to `ghost.env`
-   (both mode `0600`)
+   (both mode `0600`) — or let `install.sh` do it
 2. Configure the required variables for the mode; run `scripts/config.sh validate`
 3. Production only: `scripts/caddy.sh apply`
 4. Run `docker compose up -d`

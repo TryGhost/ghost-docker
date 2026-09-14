@@ -1,6 +1,6 @@
 import { execFileSync, execFile, spawnSync } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtempSync, mkdirSync, rmSync, cpSync, writeFileSync, chmodSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, cpSync, writeFileSync, chmodSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,7 +10,7 @@ const execFileAsync = promisify(execFile);
 export const TESTS_DIR = dirname(fileURLToPath(import.meta.url));
 export const REPO_DIR = join(TESTS_DIR, '..');
 
-const LIBS = ['fs', 'env', 'compose', 'config', 'caddy'];
+const LIBS = ['fs', 'env', 'compose', 'config', 'caddy', 'meta', 'preflight', 'install'];
 
 /**
  * Run a bash snippet with every ghost-docker library sourced.
@@ -174,4 +174,101 @@ export function composeBinaries() {
 function composeVersion(bin) {
   const argv = bin ? ['version', '--short'] : ['compose', 'version', '--short'];
   return execFileSync(bin ?? 'docker', argv, { encoding: 'utf8' }).trim().replace(/^v/, '');
+}
+
+// --- Installation ----------------------------------------------------------
+//
+// The installer is exercised the way an operator reaches it: a candidate
+// release is built from the working tree, tagged, and installed through
+// bootstrap.sh or the checkout's own install.sh.
+
+/** Never travels with a release: local state, secrets, and generated routes. */
+const RELEASE_EXCLUDE = new Set([
+  '.git', 'data', 'node_modules', '.env', 'ghost.env', '.ghost-docker.json',
+]);
+
+/** Copy the working tree into `dest` as a release would ship it. */
+export function copyWorktree(dest) {
+  mkdirSync(dest, { recursive: true });
+  for (const entry of readdirSync(REPO_DIR)) {
+    if (RELEASE_EXCLUDE.has(entry)) continue;
+    cpSync(join(REPO_DIR, entry), join(dest, entry), { recursive: true });
+  }
+  // Generated and operator-owned routes are per-site, not part of a release.
+  for (const sub of ['sites', 'custom', 'global']) {
+    const routes = join(dest, 'caddy', sub);
+    for (const file of readdirSync(routes)) {
+      if (file.endsWith('.caddy')) rmSync(join(routes, file), { force: true });
+    }
+  }
+  rmSync(join(dest, 'caddy', '.staging'), { recursive: true, force: true });
+  return dest;
+}
+
+const GIT_IDENTITY = {
+  GIT_AUTHOR_NAME: 'ghost-docker tests',
+  GIT_AUTHOR_EMAIL: 'tests@example.com',
+  GIT_COMMITTER_NAME: 'ghost-docker tests',
+  GIT_COMMITTER_EMAIL: 'tests@example.com',
+};
+
+export function git(repo, args) {
+  return execFileSync('git', ['-C', repo, ...args], {
+    encoding: 'utf8',
+    env: { ...process.env, ...GIT_IDENTITY },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+}
+
+/**
+ * A candidate release of the working tree: a real git repository with real
+ * tags, so bootstrap.sh resolves and clones it exactly as it would the
+ * published one. Each tag lands on its own commit — a release and a prerelease
+ * do not share one — so `git describe` on a checkout is unambiguous, matching a
+ * real published history rather than a pile of tags on one commit.
+ *
+ * `url` is a file:// form of the repository. `--depth` is honoured over that,
+ * unlike a bare local path, so the shallow-clone path the bootstrap really uses
+ * is exercised without the "depth ignored in local clones" warning.
+ */
+export function makeCandidateRelease(dir, tags = ['v9.9.9']) {
+  const repo = join(dir, 'release');
+  copyWorktree(repo);
+  git(repo, ['init', '-q', '-b', 'main']);
+  git(repo, ['add', '-A']);
+  git(repo, ['commit', '-q', '-m', 'candidate release']);
+  tags.forEach((tag, index) => {
+    if (index > 0) git(repo, ['commit', '-q', '--allow-empty', '-m', `release ${tag}`]);
+    git(repo, ['tag', tag]);
+  });
+  return { repo, tags, url: `file://${repo}` };
+}
+
+/** Run a script with a captured status, without throwing. */
+export function run(command, args, { cwd, env = {}, input, timeout } = {}) {
+  const result = spawnSync(command, args, {
+    cwd,
+    input,
+    timeout,
+    encoding: 'utf8',
+    env: { ...process.env, ...env },
+  });
+  if (result.error && result.error.code !== 'ETIMEDOUT') throw result.error;
+  return {
+    stdout: result.stdout ?? '',
+    stderr: result.stderr ?? '',
+    status: result.status,
+    output: `${result.stdout ?? ''}${result.stderr ?? ''}`,
+  };
+}
+
+/** Occupy a TCP port for the duration of a test, so a conflict is real. */
+export async function occupyPort(port, host = '127.0.0.1') {
+  const { createServer } = await import('node:net');
+  const server = createServer(() => {});
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, host, resolve);
+  });
+  return () => new Promise((resolve) => server.close(resolve));
 }

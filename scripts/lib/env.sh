@@ -41,7 +41,7 @@ _gd_env_scan() {
     local trailing_comment='^(.*)[[:space:]]#'
 
     while IFS= read -r line || [[ -n $line ]]; do
-        ((n++))
+        n=$((n + 1))
 
         # Inside a multi-line value: skip it rather than mistaking one of its
         # lines for an assignment.
@@ -188,7 +188,7 @@ _gd_env_write() {
     local file=$1 target=${2:-0} replacement=${3:-} mode=${4:-} line n=0
     {
         while IFS= read -r line || [[ -n $line ]]; do
-            ((n++))
+            n=$((n + 1))
             if ((n == target)); then
                 if [[ -n $replacement ]]; then
                     printf '%s\n' "$replacement"

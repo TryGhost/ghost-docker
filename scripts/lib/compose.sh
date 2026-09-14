@@ -75,7 +75,7 @@ compose_site_mode() {
         for mode in "${GD_SITE_MODES[@]}"; do
             if [[ $profile == "$mode" ]]; then
                 found=$profile
-                ((count++))
+                count=$((count + 1))
             fi
         done
     done < <(_gd_split_profiles "$1")

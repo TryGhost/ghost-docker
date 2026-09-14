@@ -5,6 +5,15 @@ cat << 'HELPEOF'
                     GHOST DOCKER HELP & COMMANDS
 ════════════════════════════════════════════════════════════════════
 
+INSTALLATION:
+  curl -fsSL .../bootstrap.sh | bash -s -- --domain example.com
+  curl -fsSL .../bootstrap.sh | bash -s -- --local
+
+  ./install.sh --help          # every option, in this checkout
+  scripts/site.sh check        # diagnose this site
+  scripts/site.sh list         # every ghost-docker container on this host
+  scripts/site.sh info         # recorded installation metadata
+
 SITE MODES (exactly one, selected in COMPOSE_PROFILES in .env):
   local       ghost + db, published on 127.0.0.1:${GHOST_PORT}
   production  ghost + db + caddy, HTTPS on ${HTTP_PORT}/${HTTPS_PORT}
@@ -65,6 +74,7 @@ USEFUL PATHS:
   Logs: docker compose logs
 
 DOCUMENTATION:
+  docs/install.md         Installation, ports, optional services, doctor
   docs/configuration.md   Configuration split, profiles, lifecycle, metadata
   docs/caddy.md           Route generation, custom routes, validation
   docs/bundle-v1.md       Migration bundle contract
