@@ -29,11 +29,11 @@ of those contracts. Update operator documentation and tests with each step.
 | ActivityPub and analytics | Per-site initially, including for future members of shared infrastructure. Each site owns its ActivityPub database/storage and Tinybird configuration/deployment lifecycle. No shared ActivityPub or analytics service in S13. |
 | Versions | Resolve and persist an exact Ghost image version on installation. Ghost upgrades and stack/repository updates are separate operations. Record resolved image digests for recovery. |
 | Distribution | Clone at a release tag. Stable tags `vX.Y.Z`; beta tags `vX.Y.Z-beta.N`. A bootstrap shim selects the release and delegates to that checkout. |
-| Installation | Scriptable `install.sh`, with flags for every required prompt. Local mode uses MySQL too. Requires `bash`, `docker`, `docker compose` and `jq` on the host, verified in preflight; `scripts/migrate.sh` already required both `bash` and `jq`. Helper scripts stay bash 3.2 compatible so macOS's system bash works. No host Node requirement for a new install; Node is otherwise only used to run the test suite. The one exception is the legacy `scripts/migrate.sh`, which shells out to `scripts/config-to-env.js` and therefore still needs Node until `install.sh --import` replaces it. |
+| Installation | Scriptable `install.sh`, with flags for every required prompt. Local mode uses MySQL too. Requires `bash`, `docker`, `docker compose`, `jq` and `curl` on the host, verified in preflight; `scripts/migrate.sh` already required both `bash` and `jq`. Helper scripts stay bash 3.2 compatible so macOS's system bash works. No host Node requirement for a new install; Node is otherwise only used to run the test suite. The one exception is the legacy `scripts/migrate.sh`, which shells out to `scripts/config-to-env.js` and therefore still needs Node until `install.sh --import` replaces it. |
 | Migration | Ghost-CLI exports a bundle; Docker imports it. Fix the encoding contract before declaring v1 frozen. `install.sh --import` replaces `scripts/migrate.sh` outright rather than living alongside it; retire the old scripts, and with them the last host Node dependency, only after replacement fidelity and recovery tests pass. |
 | Upgrades | Optional supervisor using a file exchange and Docker socket. Ship a tested host-driven upgrade operation first, then reuse its recovery contract in the supervisor. |
 | UX | Standard Compose commands for daily operation; scripts for installation, doctor/list, migration, backup/restore, and upgrades. No wrapper binary named `ghost`. |
-| Where tooling runs | A thin host shell layer (bootstrap, preflight/doctor, dispatch) plus a pinned manager image that holds the stateful operations. See §2.10. Host requirements stay `bash`, `docker`, `docker compose`, `jq`; no host language runtime. |
+| Where tooling runs | A thin host shell layer (bootstrap, preflight/doctor, dispatch) plus a pinned manager image that holds the stateful operations. See §2.10. Host requirements stay `bash`, `docker`, `docker compose`, `jq`, `curl`; no host language runtime. |
 | Configuration | `.env` contains Compose/operator settings; `ghost.env` contains only Ghost application settings. Do not pass the whole `.env` into Ghost. A mounted Ghost JSON config file was evaluated as a replacement for `ghost.env` and rejected; see §2.1. |
 | Ghost nightly channel | Future explicit opt-in via `--ghost-channel nightly`; published to GHCR, independently of the stack release channel. Stable remains the default. |
 | Service image registry | Future `--image-registry dockerhub|ghcr` selects dual-published traffic-analytics and ActivityPub images, including migrations. Preserve existing selections when updating. |
@@ -124,7 +124,7 @@ Requirements:
   before adding infra-only mode in S13.
 - Keep the initial default network naming unchanged. Do not introduce an empty
   `name:` as a guessed equivalent of an omitted field.
-- `ghost.env` is the only application `env_file`, and is transitional. Explicit
+- `ghost.env` is the only application `env_file` for the initial release. Explicit
   Compose environment entries override container-owned keys; the importer
   rejects/omits those keys.
 
@@ -174,116 +174,10 @@ values with `scripts/config.sh set`, which encodes correctly, and `env_lint`,
 which catches the bare-`$` case. Document that hand-editing a value containing
 `$` is unsafe.
 
-Caddy is part of the `production` mode, not an optional profile. Making
-bring-your-own-proxy a first-class path was considered and rejected: it would
-mean owning validation of the operator's proxy configuration, and the failure it
-guards against is subtle — a wrong `X-Forwarded-Proto` yields incorrect absolute
-URLs and non-secure cookies, so the site half works rather than failing. That is
-a poor thing to support on someone else's proxy.
+The initial release keeps `ghost.env`, including for imports of older Ghost
+versions. A future JSONC format would require a Ghost loader change and an
+explicit compatibility/migration design; it is not an S1-S5 dependency.
 
-An operator who already runs nginx or Apache can still do it, as a manual
-customization rather than a supported mode: Ghost publishes on
-`127.0.0.1:${GHOST_PORT}` in every mode, so they point their proxy there and
-edit `compose.yml` to drop the caddy service or move it off 80/443. Document
-that this is unsupported and that stack updates may touch `compose.yml`.
-
-Profiles are additive, not mutually exclusive or conditional configuration. Validate
-that exactly one site mode is selected. Optional services must not accidentally
-activate unrelated modes. Explicitly targeted Compose services can run even when
-their profiles are inactive; helper commands must account for dependencies.
-
-Example generated Compose settings (credentials omitted):
-
-```dotenv
-# Local
-COMPOSE_PROFILES=local
-COMPOSE_PROJECT_NAME=ghost-local-example
-PROJECT_DIR=/absolute/path/to/site
-NODE_ENV=development
-URL=http://localhost:2368
-GHOST_PORT=2368
-RESTART_POLICY=no
-GHOST_VERSION=6.3.1-alpine
-DATABASE_HOST=db
-DATABASE_NAME=ghost
-DATABASE_USER=ghost
-
-# Production uses the same variable contract with:
-# COMPOSE_PROFILES=production
-# NODE_ENV=production
-# URL=https://example.com
-# DOMAIN=example.com
-# RESTART_POLICY=unless-stopped
-# Optional: ADMIN_DOMAIN=admin.example.com
-# Optional profiles are added only after their configuration is validated.
-```
-
-Requirements:
-
-- Ghost publishes `127.0.0.1:${GHOST_PORT:-2368}:2368`. The installer picks a free
-  port when none is supplied; an explicit occupied port is an error.
-- Parameterize database host, name, and user now, even though single-site defaults
-  remain `db`/`ghost`/`ghost`. Use the same connection contract for backup and import.
-- Set a unique Ghost network alias `ghost-${COMPOSE_PROJECT_NAME}` and use it in
-  generated proxy routes and helper clients. Never rely on `ghost` for shared-network
-  addressing when S13 is introduced.
-- Persist the project name independently of the directory name. Moving a site still
-  requires updating and validating `PROJECT_DIR` and bind mounts.
-- Use `restart: ${RESTART_POLICY:-unless-stopped}` only for long-running services.
-  Setup, migration, and deployment jobs retain `restart: "no"`.
-- Initially `URL` may be required because every supported mode contains Ghost. Do
-  not put `:?` guards on optional-service variables such as `PROJECT_DIR` or DOMAIN.
-  Validate requirements by mode before provisioning or startup. Revisit URL's guard
-  before adding infra-only mode in S13.
-- Keep the initial default network naming unchanged. Do not introduce an empty
-  `name:` as a guessed equivalent of an omitted field.
-- `ghost.env` is the only application `env_file`, and is transitional. Explicit
-  Compose environment entries override container-owned keys; the importer
-  rejects/omits those keys.
-
-Application configuration is moving from `ghost.env` to a mounted JSON config
-file, because dotenv cannot hold an arbitrary value safely: Compose interpolates
-`env_file` values, so an SMTP password of `Pa$$w0rd!` reaches Ghost as
-`Pa$w0rd!` with no error anywhere. Verified against `ghost:6-alpine`
-(Ghost 6.61.0, nconf 0.13.0):
-
-- The image ships `config.production.json` in Ghost's install directory
-  (`/home/ghost` in the `next` variants, `/var/lib/ghost` in the older layout),
-  with `config.development.json` symlinked to it. It sets `url`, `server`,
-  `mail.transport: "Direct"`, `logging.transports`, `process`, `security` and
-  `paths.contentPath`.
-- nconf is first-added-wins. `loader.js` registers `custom-env`
-  (`config.<env>.json`) *before* `local-env-jsonc` (`config.local.jsonc`), so
-  `config.local.jsonc` cannot override anything the image ships — including
-  `mail.transport`. It is not usable as the operator's config file.
-- Compose `environment` entries still outrank every config file, so
-  container-owned keys stay enforced by construction.
-- `localUtils.jsoncFormat` already exists and wraps `jsonc-parser`.
-
-The Ghost change this depends on is to register a custom-env JSONC file
-*before* `custom-env` in `core/shared/config/loader.js`:
-
-```js
-nconf.file('custom-env-jsonc', {
-    file: path.join(customConfigPath, 'config.' + env + '.jsonc'),
-    format: localUtils.jsoncFormat,
-});
-nconf.file('custom-env', path.join(customConfigPath, 'config.' + env + '.json'));
-```
-
-Ordering is the point. Registered first, the operator's file layers *over* the
-image's shipped defaults instead of replacing them, so ghost-docker never has
-to keep its own copy of those defaults in sync. Comments and trailing commas
-come along for free.
-
-Two constraints follow:
-
-- The file is per-environment, so it mounts as `config.${NODE_ENV}.jsonc`;
-  local mode (`NODE_ENV=development`) needs `config.development.jsonc`.
-- It sets a Ghost version floor. §2.4 imports at the *source* Ghost version, so
-  a site imported from a Ghost that predates this change would not read the
-  file at all. S5 must either detect that and fall back, or require a floor for
-  imported sources; it cannot assume the feature is present.
 - Add site/mode labels and a real Ghost readiness probe. A running container or
   redirect response alone does not establish readiness.
 - Cap container logs and make optional-service resource costs visible.
@@ -665,8 +559,9 @@ this have to work when Docker is broken?
 **Host shell.** Small, portable, and the only thing that runs before an image
 exists.
 
-- The bootstrap shim: check Docker, resolve the release, pull the manager
-  image, exec into it.
+- The bootstrap shim: check prerequisites, resolve the release, clone it and
+  execute that checkout's installer. Stateful commands use the manager dispatcher
+  once it lands in S4.
 - Preflight and `doctor`. These must diagnose a host where Docker is missing,
   stopped, or unreachable, so they cannot depend on the manager image. They may
   use it for deeper checks when it is available, and must degrade to useful
@@ -676,7 +571,7 @@ exists.
 - Anything that must survive the manager image being unpullable.
 
 **Manager image.** Pinned, published from this repo, and where the stateful
-work lives: install orchestration, import, backup and restore, Ghost upgrades,
+work lives: import, backup and restore, Ghost upgrades,
 and stack updates. It is one image with several entrypoints, not several
 images.
 
@@ -715,99 +610,66 @@ interpolation. Anything writing `.env` still encodes a literal `$` as `$$`
 regardless of implementation language, and §2.1 records why the alternative
 config format was rejected.
 
-When install.sh resolves the exact Ghost image (§1), it should write
+When install.sh resolves the exact Ghost image (§1), it writes
 `GHOST_CONTENT_PATH` and `GHOST_TINYBIRD_PATH` into `.env` from that image's own
 `GHOST_CONTENT`, so the layout and the configuration cannot disagree in the
 first place. S1 validates the pair; S2 should set it.
 
-Sequencing: this decision has to be made before S2, because it determines
-whether `install.sh` is the installer or a bootstrap that runs one. Steps
-already shipped in host shell (S1's `config.sh` and `caddy.sh`) stay where they
-are; the boundary does not run through them.
+S2 installation remains host shell. S4 introduces the manager for stateful
+operations without requiring an installer rewrite.
 
-#### When the manager image lands, and what its first tenant is
+#### When the manager image lands, and which helpers move
 
-Revised 2026-09-03, after S2. Two questions kept coming up — *should the image
-ship sooner?* and *should env validation and Caddy generation move into it?* —
-so the boundary above is stated concretely rather than left to inference: when
-the image lands, and exactly which helpers move onto it versus stay host shell.
+The manager image lands in **S4**, with backup/restore as its first entrypoint.
+S5 import, S7 upgrades and S8 supervision reuse that implementation and recovery
+contract. The host dispatcher lands alongside it, following the mount, ownership
+and exit-code rules above. Do not build a manager solely to shorten S2.
 
-**The image's first tenant is the first stateful operation, at S4, not S8.**
-§2.6 already publishes a privileged supervisor image from this repo and requires
-it to "follow §2.5 rather than inventing a second upgrade/recovery algorithm."
-If S4–S7 implement backup, restore, upgrade and recovery in host shell and S8
-then re-implements them in an image, that algorithm exists twice, and the second
-copy is the one under the privileged supervisor. So the manager image is
-introduced in **S4**, with backup/restore as its first entrypoint; S5 (import),
-S7 (upgrade) and S8 (supervisor) are further entrypoints on the same image, not
-parallel codebases. This is a scheduling clarification, not a new component:
-§2.10 already defined the image and the dispatcher. It does **not** move S4's
-deliverable — S4 still ships backup/restore — it fixes the language they are
-written in so they are not rewritten at S8. The host dispatcher (this section's
-mount, identity and exit-code rules) is written in S4 alongside its first
-`docker run` target.
+Keep the existing config, metadata and Caddy helpers on the host for now.
+`site.sh check`, config validation and rendering currently depend on `env_get`,
+`env_lint` and metadata readers. Deleting these Bash libraries in favor of
+container entrypoints would make previously offline diagnostics depend on Docker.
+Pure file processing alone is therefore not a sufficient criterion for moving a
+helper. S4 does not include a mandatory config-helper rewrite.
 
-**Some config helpers move into the manager CLI at S4; a specific subset must
-not.** The dividing line is not "config versus stateful" — it is whether the
-helper can run *before and without* a working daemon, and whether it derives its
-answer by asking Docker. This was worked out concretely after S2, against the
-real files, because "put the helpers in a node container so the scripts get
-smaller" is a reasonable instinct that turns out to be right for two files and
-wrong for two others.
+Before moving a helper, map all callers and establish how the host reads and
+validates configuration without a working daemon or manager image. Preserve one
+encoding contract and its Compose round-trip fixtures. Do not introduce a second
+dotenv parser or quietly weaken doctor to make the move possible. Stateful manager
+operations may initially use the existing tested shell helpers shipped in the
+image (with Bash and jq), rather than reimplementing them. Read-only diagnostics
+remain available on the host; all mutations use the shared operation lock.
 
-The manager image exists from S4 for backup/restore, and the dispatcher (§2.10's
-mount/identity/exit-code rules) is written there. Once both exist, moving the
-*pure* config logic onto them is close to free and is a real simplification, so
-S4 (or S5, whichever first needs them container-side) does it:
+Compose parsing (`docker compose config`) does not need a daemon. Docker-driven
+operations may run in the manager if it includes the Docker/Compose client and
+honors the host context and path contract; this is an explicit packaging decision,
+not a reason to reimplement Compose interpolation. The S4 dispatcher/image design
+must decide that interface before moving orchestration into it.
 
-- **Moves into the manager CLI.** `env.sh` (the `$$` serializer/parser, ~260
-  lines of bash regex state machine → ~60 lines of `JSON.parse`/stringify plus
-  one encoder) and `meta.sh` (`.ghost-docker.json`, ~245 lines of `jq` → native
-  JSON). Caddy *rendering* (`caddy_render` and `_caddy_site_block`, pure template
-  emission) moves with them. These are pure functions of files on disk; nothing
-  in them asks the daemon a question. The bash versions are deleted, not
-  wrapped — a straight substitution, which is the easy-to-review kind of diff.
+#### S1/S2 simplification contract
 
-- **Stays host shell, permanently.** Two reasons, each disqualifying on its own:
-
-  - *Runs before/without the image.* The bootstrap resolves the manager from the
-    release tag and can have it write the first `.env`, but the bootstrap shim
-    itself, preflight, and `site.sh check`/doctor must diagnose a host where
-    Docker is missing, stopped, or wedged. They cannot be `docker run`. (S2
-    verified this the hard way: a wedged daemon mid-session was still diagnosed
-    by host-shell preflight precisely because it does not depend on the image.)
-  - *Derives its answer by asking Docker.* `config.sh validate` establishes the
-    container-owned keys by asking `docker compose config` what the container
-    receives (`config_ghost_environment`, the "derived, not listed" guarantee).
-    `caddy_validate`/`reload`/`verify` drive the running caddy container through
-    `compose_run`. Moving these into the manager would mean either bundling the
-    Docker/Compose CLI inside the manager and running compose-in-a-container over
-    a mounted socket, or reimplementing Compose interpolation in node — which is
-    exactly the drift that "ask Compose" was chosen to avoid. Neither is worth
-    it, so validation and caddy orchestration stay where they can call Compose
-    directly.
-
-Consequences to accept deliberately: config logic ends up split — `config
-get/set/unset` in the manager CLI, `config validate` in host shell — because the
-two halves have different daemon dependencies. That split is the honest cost, and
-it is smaller than the cost of dragging a Docker CLI into the manager image to
-avoid it. Containerizing the movable helpers also does **not** solve Compose's
-`$$` interpolation: a literal `$` is encoded `$$` regardless of implementation
-language, as recorded above. And the net line count of the move, counting the
-Dockerfile, publish pipeline and privileged dispatcher it rides on, is roughly a
-wash — the reason to do it is that env/meta stop being bash, not that the repo
-gets shorter. Which is why it waits for S4: on a PR that builds the image and
-dispatcher anyway, the env/meta deletion is pure upside; as a standalone change
-it would stand up a privileged image and publish pipeline to save ~130 counted
-lines, which does not clear the bar.
-
-So the dispatcher-plus-image model covers the **stateful** commands (backup,
-restore, import, upgrade, supervisor) and, from S4, the **pure** config helpers
-(`env`, `meta`, caddy render). Preflight, doctor, the bootstrap shim, `config
-validate` and caddy orchestration stay host shell — the first three because they
-must run when there is no usable image, the last two because they answer by
-asking Docker. Host requirements stay `bash`, `docker`, `docker compose`, `jq`;
-no host language runtime is added.
+- `curl` is an explicit host prerequisite for HTTP/HTTPS checks, alongside Bash,
+  Docker/Compose and jq; Git is needed for bootstrap. Use deadlines, bypass local
+  proxy/curl configuration, preserve Host/SNI, and distinguish routing checks from
+  public certificate trust. A production install before DNS/certificate readiness
+  continues to report that condition as a warning.
+- Release discovery accepts only `vX.Y.Z` and `vX.Y.Z-beta.N`. Use jq numeric keys
+  to order them independently of user Git configuration; do not maintain a generic
+  SemVer comparator. Git's configurable suffix ordering was considered but is not
+  needed for these two formats.
+- Pull Ghost once, require a repository digest, and persist `GHOST_IMAGE_REF` as
+  `repository@sha256:...`. Ghost and Tinybird sync both execute this reference.
+  `GHOST_IMAGE`/`GHOST_VERSION` retain the requested repository/tag as provenance
+  and as the fallback for manually configured or pre-pin sites. Changing those
+  fields alone never changes an installed site's pin. Upgrades/imports/restore
+  must set the complete reference deliberately and keep metadata in sync.
+- Generate fresh `.env` settings in one atomic write through the existing encoder;
+  Compose supplies optional defaults and `.env.example` documents them. Keep
+  general editing helpers for operator changes, migrations and updates.
+- Use Compose `up --wait --wait-timeout` with existing health checks and one-shot
+  dependency conditions. Verify successful and failed one-shot completion at the
+  minimum/current Compose versions. Keep a separate ingress check; the wait timeout
+  applies to readiness, not the entire pull/start operation.
 
 ## 3. Implementation steps
 
@@ -1023,17 +885,9 @@ recovery algorithm S7 and S8 reuse exists once, in the image, not in host shell
 awaiting a rewrite. Write the host dispatcher here — the `docker run` mount,
 identity and exit-code rules from §2.10 — and route backup/restore through it.
 
-With the image and dispatcher built, migrate the **pure** config helpers onto
-them: `env.sh` and `meta.sh` become manager-CLI entrypoints (`config get/set/
-unset`, `meta ...`), and `caddy_render` moves with them; the bash versions are
-deleted, a straight substitution. This is optional to S4's backup/restore
-deliverable and may slip to S5 if it competes for review attention, but it is
-cheapest here because the image already exists. The helpers that must stay host
-shell do not move: preflight, the bootstrap shim and `site.sh check`/doctor
-(they run without the image), and `config validate` plus caddy
-orchestration (`caddy_validate`/`reload`/`verify`, which answer by asking
-`docker compose`). Expect config logic to end up split — `config get/set` in the
-manager, `config validate` in host shell — as §2.10 records.
+Keep config/metadata/Caddy helpers in place unless their host callers have a
+verified offline replacement, as specified in §2.10. S4's deliverable is the
+shared stateful operation runtime, not a second configuration implementation.
 
 Also add the shared operation lock to installation/reconfigure retroactively:
 §2.2 requires install to take it, and S2 deferred it to this step.

@@ -125,8 +125,13 @@ describe('installing from a candidate release', { skip, concurrency: 1 }, () => 
     // A moving tag would let the site change Ghost version under the operator
     // on the next `docker compose pull`. The pin has to be exact.
     test('the Ghost version is pinned exactly, and the paths come from the image', () => {
-      assert.match(env(site, 'GHOST_VERSION'), /^\d+\.\d+\.\d+(-.+)?$/);
-      assert.equal(env(site, 'GHOST_VERSION').startsWith(meta(site).ghost.version), true);
+      const pin = `ghost@${meta(site).ghost.digest}`;
+      assert.equal(env(site, 'GHOST_IMAGE_REF'), pin);
+      const config = JSON.parse(compose(site, ['config', '--format', 'json']).stdout);
+      assert.equal(config.services.ghost.image, pin);
+      const id = compose(site, ['ps', '-q', 'ghost']).stdout.trim();
+      assert.equal(execFileSync('docker', ['inspect', '-f', '{{.Config.Image}}', id],
+        { encoding: 'utf8' }).trim(), pin);
       const content = env(site, 'GHOST_CONTENT_PATH');
       assert.ok(content.endsWith('/content'), content);
       assert.match(env(site, 'GHOST_TINYBIRD_PATH'), /\/core\/server\/data\/tinybird$/);
@@ -287,7 +292,7 @@ describe('installing from a candidate release', { skip, concurrency: 1 }, () => 
 
     // Node's fetch forbids overriding the Host header, so Caddy would see
     // 127.0.0.1 and redirect there; the request has to carry Host: ghost.test.
-    // The installer's own /dev/tcp helper sets it, which is what it verifies
+    // The installer's own curl helper sets it, which is what it verifies
     // with too, so drive the check through that rather than fetch.
     test('HTTP on the ingress port redirects to HTTPS for the site domain', () => {
       const head = run('bash', ['-c',

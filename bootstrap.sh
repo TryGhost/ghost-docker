@@ -16,9 +16,8 @@
 # that list.
 #
 # This file contains bootstrap logic only. Installation logic belongs to the
-# release, so that a site is always installed by the code it is pinned to. This
-# shim carries its own version comparison rather than sourcing the repository's
-# helpers, because it runs before there is a checkout to source them from.
+# release, so that a site is always installed by the code it is pinned to. Release
+# selection uses jq directly because there is no checkout to source yet.
 set -euo pipefail
 
 GD_BOOTSTRAP_REPO=${GD_BOOTSTRAP_REPO:-https://github.com/TryGhost/ghost-docker.git}
@@ -69,108 +68,20 @@ _timeout() {
 
 # --- Release selection -----------------------------------------------------
 
-# _semver_cmp A B -> -1, 0 or 1
-#
-# Full semver ordering, including prereleases: 1.2.0-beta.2 sorts before
-# 1.2.0, and 1.9.0 after 1.10.0 would be wrong. Lexical sorting gets both
-# backwards, which is why this is spelled out.
-_semver_cmp() {
-    local a=${1#v} b=${2#v} ac bc ap bp i x y
-    ac=${a%%-*}
-    bc=${b%%-*}
-    case $a in *-*) ap=${a#*-} ;; *) ap="" ;; esac
-    case $b in *-*) bp=${b#*-} ;; *) bp="" ;; esac
-
-    local -a av bv
-    IFS=. read -ra av <<<"$ac"
-    IFS=. read -ra bv <<<"$bc"
-    for ((i = 0; i < 3; i++)); do
-        x=${av[i]:-0}
-        y=${bv[i]:-0}
-        [[ $x =~ ^[0-9]+$ ]] || x=0
-        [[ $y =~ ^[0-9]+$ ]] || y=0
-        ((10#$x > 10#$y)) && {
-            printf '1\n'
-            return
-        }
-        ((10#$x < 10#$y)) && {
-            printf -- '-1\n'
-            return
-        }
-    done
-
-    # A release outranks any prerelease of the same version.
-    [[ -z $ap && -z $bp ]] && {
-        printf '0\n'
-        return
-    }
-    [[ -z $ap ]] && {
-        printf '1\n'
-        return
-    }
-    [[ -z $bp ]] && {
-        printf -- '-1\n'
-        return
-    }
-
-    local -a ai bi
-    IFS=. read -ra ai <<<"$ap"
-    IFS=. read -ra bi <<<"$bp"
-    for ((i = 0; i < ${#ai[@]} || i < ${#bi[@]}; i++)); do
-        x=${ai[i]:-}
-        y=${bi[i]:-}
-        [[ -z $x ]] && {
-            printf -- '-1\n'
-            return
-        }
-        [[ -z $y ]] && {
-            printf '1\n'
-            return
-        }
-        if [[ $x =~ ^[0-9]+$ && $y =~ ^[0-9]+$ ]]; then
-            ((10#$x > 10#$y)) && {
-                printf '1\n'
-                return
-            }
-            ((10#$x < 10#$y)) && {
-                printf -- '-1\n'
-                return
-            }
-        else
-            [[ $x > $y ]] && {
-                printf '1\n'
-                return
-            }
-            [[ $x < $y ]] && {
-                printf -- '-1\n'
-                return
-            }
-        fi
-    done
-    printf '0\n'
-}
-
 # _latest_release CHANNEL
-# The newest tag on a channel. Stable is vX.Y.Z; beta also considers
-# vX.Y.Z-beta.N, and still prefers a release over a prerelease of the same
-# version. Selection is by semver order, never by the order the remote listed
-# the tags in.
+# Only the release formats we publish are accepted. Sort numeric components
+# with jq (already a prerequisite), independent of locale and Git user config.
+# A stable release follows every beta of the same version.
 _latest_release() {
-    local want=$1 line tag best=""
-    local stable='^v[0-9]+\.[0-9]+\.[0-9]+$'
-    local prerelease='^v[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$'
-
-    while IFS= read -r line; do
-        tag=${line##*refs/tags/}
-        tag=${tag%'^{}'}
-        [[ $tag =~ $stable ]] || { [[ $want == beta && $tag =~ $prerelease ]] || continue; }
-        if [[ -z $best ]] || [[ $(_semver_cmp "$tag" "$best") == 1 ]]; then
-            best=$tag
-        fi
-    done < <(git ls-remote --tags "$GD_BOOTSTRAP_REPO" 2>/dev/null)
-
-    [[ -n $best ]] || return 1
-    printf '%s\n' "$best"
+    local refs
+    refs=$(git ls-remote --tags --refs "$GD_BOOTSTRAP_REPO") || return 1
+    printf '%s\n' "$refs" | jq -Rser --arg channel "$1" '
+        [split("\n")[]
+         | capture("refs/tags/(?<tag>v(?<major>[0-9]+)\\.(?<minor>[0-9]+)\\.(?<patch>[0-9]+)(?:-beta\\.(?<beta>[0-9]+))?)$")
+         | select($channel == "beta" or .beta == null)
+         | .order = [(.major|tonumber), (.minor|tonumber), (.patch|tonumber),
+                     (if .beta == null then 1 else 0 end), ((.beta // "0")|tonumber)]]
+        | sort_by(.order) | last | .tag // empty'
 }
 
 # Sourcing this file with GD_BOOTSTRAP_SOURCED=1 defines the helpers above and
@@ -236,7 +147,7 @@ if [[ -e $dir ]]; then
 fi
 
 missing=""
-for cmd in git docker jq; do
+for cmd in git docker jq curl; do
     command -v "$cmd" >/dev/null 2>&1 || missing="$missing $cmd"
 done
 [[ -z $missing ]] || die "these are required and not installed:$missing"

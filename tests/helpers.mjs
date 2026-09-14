@@ -218,7 +218,7 @@ const GIT_IDENTITY = {
 };
 
 export function git(repo, args) {
-  return execFileSync('git', ['-C', repo, ...args], {
+  return execFileSync('git', ['-C', repo, '-c', 'commit.gpgsign=false', '-c', 'tag.gpgsign=false', ...args], {
     encoding: 'utf8',
     env: { ...process.env, ...GIT_IDENTITY },
     stdio: ['pipe', 'pipe', 'pipe'],

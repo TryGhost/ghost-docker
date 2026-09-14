@@ -252,12 +252,13 @@ Runtime, on the server:
 - Docker Engine 25.0.0 — for `healthcheck.start_interval`
 - Docker Compose v2.24.0 — for `env_file` `required` and `depends_on` `required`
 - `jq` — used by the helpers for JSON, including `.ghost-docker.json`
+- `curl` — HTTP/HTTPS ingress probes with bounded connection and request times
 
-`install.sh` verifies all three during preflight, and `bootstrap.sh` also needs
+`install.sh` verifies these tools during preflight, and `bootstrap.sh` also needs
 `git`. `scripts/migrate.sh` already required `jq`, so this is not a new
 prerequisite for existing servers.
 
-Every other host utility the scripts invoke is POSIX and is listed in
+Other host utilities use supported Linux/macOS interfaces and are listed in
 `GD_HOST_UTILITIES` in `scripts/lib/preflight.sh`. That list is the tool
 contract: `tests/install-e2e.test.mjs` runs a complete installation with a
 `PATH` built from exactly it, so a GNU-only or otherwise unusual dependency
@@ -294,7 +295,7 @@ migration is owned by the stack updater (S6); the changes it has to handle are:
   keeps the Compose and operator settings and is no longer passed into the
   Ghost container.
 - `COMPOSE_PROFILES` must gain a site mode (`production` for an existing
-  server), and `SITE_MODE`, `URL`, `PROJECT_DIR` and an exact `GHOST_VERSION`
+  server), and `SITE_MODE`, `URL`, `PROJECT_DIR` and an exact `GHOST_IMAGE_REF`
   pin must be added.
 
 `scripts/migrate.sh` still migrates a Ghost-CLI installation and has been
@@ -316,5 +317,13 @@ That was changed during S1, deliberately, and §1 of
   240 lines and bought nothing an operator can see.
 
 Node.js is **not** a runtime requirement. It is used only to run the test
-suite. `install.sh` verifies `docker`, `docker compose` and `jq` during
+suite. `install.sh` verifies `docker`, `docker compose`, `jq` and `curl` during
 preflight, and does not require Node.
+
+## Installed image pins
+
+The installer writes `GHOST_IMAGE_REF=ghost@sha256:...`. This is the authoritative
+reference for Ghost and Tinybird sync, so a later pull cannot move the site to a
+new image. `GHOST_IMAGE` and `GHOST_VERSION` record the requested repository/tag;
+without `GHOST_IMAGE_REF`, they remain the fallback for manually configured sites.
+Image-changing operations must update the pin and recorded metadata together.

@@ -30,7 +30,7 @@ x-site-labels: &site-labels
 services:
   ghost:
     # Do not alter this without updating the Tinybird Sync container as well
-    image: ${GHOST_IMAGE:-ghost}:${GHOST_VERSION:-6-next-alpine}
+    image: ${GHOST_IMAGE_REF:-${GHOST_IMAGE:-ghost}:${GHOST_VERSION:-6-next-alpine}}
     restart: ${RESTART_POLICY:-unless-stopped}
     profiles: [local, production]
     labels:
@@ -269,7 +269,7 @@ services:
 
   tinybird-sync:
     # Do not alter this without updating the Ghost container as well
-    image: ${GHOST_IMAGE:-ghost}:${GHOST_VERSION:-6-next-alpine}
+    image: ${GHOST_IMAGE_REF:-${GHOST_IMAGE:-ghost}:${GHOST_VERSION:-6-next-alpine}}
     restart: "no"
     profiles: [analytics]
     labels:

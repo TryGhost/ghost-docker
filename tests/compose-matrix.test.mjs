@@ -77,6 +77,15 @@ describe('compose mode matrix', { skip: dockerAvailable() ? false : 'docker is n
 
   for (const { label, bin } of composeBinaries()) {
     describe(label, () => {
+      test('the digest pin overrides tags for Ghost and Tinybird together', () => {
+        setup(MATRIX[1]);
+        const pin = `ghost@sha256:${'a'.repeat(64)}`;
+        shOk(`env_set ${q(join(site, '.env'))} GHOST_IMAGE_REF ${q(pin)}`);
+        const config = composeConfig(site, { bin });
+        assert.equal(config.services.ghost.image, pin);
+        assert.equal(config.services['tinybird-sync'].image, pin);
+      });
+
       for (const entry of MATRIX) {
         describe(entry.profiles, () => {
           let config;

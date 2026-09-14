@@ -27,6 +27,7 @@ jobs:
         run: |
           set -eu
           jq --version
+          curl --version
           docker version
           docker compose version
 
@@ -84,6 +85,7 @@ jobs:
           docker --version
           docker compose version
           jq --version
+          curl --version
 
       - name: Run the helper tests under bash 3.2
         env:

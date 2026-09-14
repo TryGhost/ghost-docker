@@ -156,11 +156,12 @@ config_validate_env() {
     # /home/ghost, older tags under /var/lib/ghost. Ask the image what it
     # expects rather than mapping tag names, which would drift. Best effort:
     # skipped when the image has not been pulled.
-    local image version declared expected
+    local image version declared expected image_ref
     image=$(env_get "$file" GHOST_IMAGE 2>/dev/null) || image=
     version=$(env_get "$file" GHOST_VERSION 2>/dev/null) || version=
     declared=$(env_get "$file" GHOST_CONTENT_PATH 2>/dev/null) || declared=/home/ghost/content
-    if [[ -n $version ]] && expected=$(config_image_content_path "${image:-ghost}:$version"); then
+    image_ref=$(env_get "$file" GHOST_IMAGE_REF 2>/dev/null) || image_ref="${image:-ghost}:$version"
+    if [[ -n $version ]] && expected=$(config_image_content_path "$image_ref"); then
         if [[ $declared != "$expected" ]]; then
             printf 'error: GHOST_CONTENT_PATH is %s but %s expects %s; set GHOST_CONTENT_PATH and GHOST_TINYBIRD_PATH to match the image\n' \
                 "$declared" "${image:-ghost}:$version" "$expected"

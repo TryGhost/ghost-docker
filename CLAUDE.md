@@ -144,8 +144,9 @@ The repository includes comprehensive migration tools:
 `install.sh` is checkout-owned and installs into its own directory; `--dir`
 elsewhere is refused. `bootstrap.sh` selects a release by semver order (never
 lexically), clones it, and `exec`s that checkout's installer. Ghost versions are
-resolved to an exact tag by asking the pulled image for its own `GHOST_VERSION`,
-`GHOST_CONTENT` and `GHOST_INSTALL`; the digest goes into `.ghost-docker.json`.
+resolved to a digest pin by asking the pulled image for its own `GHOST_VERSION`,
+`GHOST_CONTENT` and `GHOST_INSTALL`; `GHOST_IMAGE_REF` pins both Ghost and
+Tinybird sync, and the digest also goes into `.ghost-docker.json`.
 
 Rules that must not regress:
 
@@ -157,8 +158,8 @@ Rules that must not regress:
 - Docker access is established by asking the daemon, never from `docker` group
   membership. Read-only probes have deadlines so a wedged daemon is reported
   rather than hung on.
-- Host tools are `docker` + `jq` (+ `git` for the bootstrap) plus the POSIX
-  utilities in `GD_HOST_UTILITIES`; `tests/install-e2e.test.mjs` installs with a
+- Host tools are `docker`, `jq`, `curl` (+ `git` for bootstrap), plus
+  the Linux/macOS utilities in `GD_HOST_UTILITIES`; `tests/install-e2e.test.mjs` installs with a
   `PATH` of exactly that list.
 - Options for steps that have not landed (`--import`, `--with supervisor`,
   `--image-registry`, `--ghost-channel`, `--without`) exit 3 naming the step,
@@ -195,7 +196,7 @@ land as stacked pull requests in the dependency order given in §3.
 ## Important Notes
 
 - Runtime prerequisites: `bash`, Docker Engine 25.0.0, Docker Compose v2.24.0,
-  and `jq` (used by the helpers for JSON). `install.sh` verifies
+  `jq` (JSON) and `curl` (ingress probes). `install.sh` verifies
   them in preflight; `scripts/migrate.sh` already required `jq`
 - Node.js is a development/test requirement only, never needed to run a site.
   The exception is the legacy `scripts/migrate.sh`, retired by `install.sh --import`

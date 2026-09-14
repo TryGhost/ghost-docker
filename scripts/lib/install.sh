@@ -9,15 +9,14 @@
 GD_INSTALL_LIB_LOADED=1
 
 # The image and tag a new site gets when none is requested. The `next` variants
-# install Ghost directly under /home/ghost; the exact tag is resolved from the
-# image itself, so this is a starting point, not the pin that is written.
+# install Ghost directly under /home/ghost; the digest is resolved from the
+# pulled image, so this is a starting point, not the pin that is written.
 GD_DEFAULT_GHOST_IMAGE="ghost"
 GD_DEFAULT_GHOST_TAG="6-next-alpine"
 
-# How long to wait for each service to report ready. Ghost's own health check
-# allows a 180s start period on a cold boot with migrations to run.
-GD_READY_TIMEOUT_DB=${GD_READY_TIMEOUT_DB:-300}
-GD_READY_TIMEOUT_GHOST=${GD_READY_TIMEOUT_GHOST:-600}
+# Compose enforces health checks and completed one-shot dependencies. This
+# deadline covers its readiness wait; image pulls/startup precede that wait.
+GD_READY_TIMEOUT=${GD_READY_TIMEOUT:-600}
 
 # install_slug STRING
 # A lowercase, dash separated token safe for a Compose project name.
@@ -78,18 +77,6 @@ install_ghost_tag() {
     printf '%s\n' "$requested"
 }
 
-# _gd_tag_variant TAG
-# The part of a tag that is not the version: `6-next-alpine` -> `next-alpine`,
-# `6.3.1-alpine` -> `alpine`, `next-alpine` -> `next-alpine`, `6` -> ``.
-_gd_tag_variant() {
-    local tag=$1
-    if [[ $tag =~ ^[0-9]+(\.[0-9]+)*(-(.*))?$ ]]; then
-        printf '%s\n' "${BASH_REMATCH[3]}"
-        return 0
-    fi
-    printf '%s\n' "$tag"
-}
-
 # _gd_image_env IMAGE_REF NAME
 # One environment variable declared by an image, without running it.
 _gd_image_env() {
@@ -144,14 +131,14 @@ _gd_image_tinybird_path() {
 #
 #   TAG  VERSION  DIGEST  CONTENT_PATH  TINYBIRD_PATH
 #
-# TAG is the exact pin written to `.env`; a moving tag is never persisted.
-# DIGEST is the immutable identity, recorded in `.ghost-docker.json` so the
-# image can be identified again during recovery. The paths come from the
+# TAG records the requested tag; VERSION is reported by the image.
+# DIGEST pins the actual Compose image reference and is also recorded in
+# `.ghost-docker.json` for recovery. The paths come from the
 # image's own GHOST_CONTENT and GHOST_INSTALL, so the mounted content directory
 # and the image layout cannot disagree.
 install_resolve_ghost() {
     local image=$1 requested=$2
-    local tag version content install digest variant exact ref exact_ref tinybird
+    local tag version content install digest ref tinybird
 
     tag=$(install_ghost_tag "$requested")
     ref="$image:$tag"
@@ -168,25 +155,13 @@ install_resolve_ghost() {
     content=$(_gd_image_env "$ref" GHOST_CONTENT) || content=/home/ghost/content
     install=$(_gd_image_env "$ref" GHOST_INSTALL) || install=/home/ghost
 
-    # Prefer the immutable tag for that exact version, so the pin does not move
-    # under the site the next time the registry updates a rolling tag. It is
-    # accepted only when it is the same image.
-    variant=$(_gd_tag_variant "$tag")
-    if [[ -n $variant ]]; then
-        exact="$version-$variant"
-    else
-        exact=$version
-    fi
-    exact_ref="$image:$exact"
-    if [[ $exact != "$tag" ]] && docker pull --quiet "$exact_ref" >/dev/null 2>&1; then
-        if [[ $(docker image inspect "$exact_ref" --format '{{.Id}}' 2>/dev/null) == \
-            $(docker image inspect "$ref" --format '{{.Id}}' 2>/dev/null) ]]; then
-            tag=$exact
-            ref=$exact_ref
-        fi
-    fi
-
-    digest=$(_gd_image_digest "$ref" "$image") || digest=""
+    # Use the pulled artifact itself. Inferring and pulling another tag can
+    # race a registry update, and exact-looking tags are still mutable.
+    digest=$(_gd_image_digest "$ref" "$image") || {
+        printf 'error: %s has no repository digest; refusing an unpinned install\n' "$ref" >&2
+        return 1
+    }
+    ref="$image@$digest"
     tinybird=$(_gd_image_tinybird_path "$ref" "$install")
 
     printf '%s\t%s\t%s\t%s\t%s\n' "$tag" "$version" "$digest" "$content" "$tinybird"
@@ -259,93 +234,37 @@ install_service_id() {
     compose_run "$1" ps -q "$2" 2>/dev/null | head -1
 }
 
-# install_wait_healthy DIR SERVICE TIMEOUT
-# Waits for a service's own health check, not for a running container. Fails
-# early when the container has exited: waiting out a timeout on a container
-# that is already gone tells the operator nothing.
-install_wait_healthy() {
-    local dir=$1 service=$2 timeout=$3 waited=0 id state health
-    while ((waited < timeout)); do
-        id=$(install_service_id "$dir" "$service")
-        if [[ -n $id ]]; then
-            state=$(docker inspect -f '{{.State.Status}}' "$id" 2>/dev/null || printf '')
-            health=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$id" 2>/dev/null || printf '')
-            case $state in
-                exited | dead)
-                    printf 'error: the %s container exited before it became ready\n' "$service" >&2
-                    return 1
-                    ;;
-            esac
-            [[ $health == healthy ]] && return 0
-            # A service with no health check is ready when it is running.
-            [[ $health == none && $state == running ]] && return 0
-        fi
-        sleep 3
-        waited=$((waited + 3))
-    done
-    printf 'error: %s did not become ready within %ss\n' "$service" "$timeout" >&2
-    return 1
-}
-
-# install_http_head HOST PORT PATH [HOST_HEADER]
-# The status line and headers of one HTTP response, using bash's own /dev/tcp
-# so that neither curl nor wget has to be installed on the host.
+# HTTP probes use the host's published ports, including for HTTPS. Ignore
+# user curl configuration/proxies so checks cannot accidentally probe a proxy.
+# Do not follow redirects: callers distinguish redirects from an Admin 200.
 install_http_head() {
-    local host=$1 port=$2 path=$3 host_header=${4:-$1} line
-
-    exec 3<>"/dev/tcp/$host/$port" 2>/dev/null || return 1
-    printf 'GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\nUser-Agent: ghost-docker-install\r\nAccept: */*\r\n\r\n' \
-        "$path" "$host_header" >&3 || {
-        exec 3<&-
-        exec 3>&-
-        return 1
-    }
-    while IFS= read -r -t 20 line <&3; do
-        line=${line%$'\r'}
-        [[ -z $line ]] && break
-        printf '%s\n' "$line"
-    done
-    exec 3<&-
-    exec 3>&-
+    local host=$1 port=$2 path=$3 host_header=${4:-$1}
+    curl --disable --silent --show-error --noproxy '*' \
+        --connect-timeout 5 --max-time 20 \
+        --header "Host: $host_header" --dump-header - --output /dev/null \
+        "http://$host:$port$path"
 }
 
-# install_http_status HOST PORT PATH [HOST_HEADER]
 install_http_status() {
-    local head status
-    head=$(install_http_head "$@") || return 1
-    status=$(printf '%s\n' "$head" | head -1)
-    [[ $status =~ ^HTTP/[0-9.]+[[:space:]]+([0-9]{3}) ]] || return 1
-    printf '%s\n' "${BASH_REMATCH[1]}"
+    local host=$1 port=$2 path=$3 host_header=${4:-$1}
+    curl --disable --silent --show-error --noproxy '*' \
+        --connect-timeout 5 --max-time 20 \
+        --header "Host: $host_header" --output /dev/null --write-out '%{http_code}\n' \
+        "http://$host:$port$path"
 }
 
-# install_https_status DIR DOMAIN
-# The status of an Admin API request through Caddy's HTTPS listener, made from
-# inside the site network with the right SNI and Host. It runs in the Ghost
-# container because TLS is beyond what bash's /dev/tcp can do, and neither curl
-# nor openssl is a host requirement — while a Ghost image always has node.
+# This is a routing check, including with Caddy's internal CA; it deliberately
+# does not establish public certificate trust. DNS/certificate readiness is
+# reported separately from successful configuration on a fresh installation.
 install_https_status() {
-    local dir=$1 domain=$2 out path script
-
+    local dir=$1 domain=$2 path port
     path=$(env_get "$dir/.env" GHOST_HEALTHCHECK_PATH 2>/dev/null) || path=/ghost/api/admin/site/
-    [[ -n $path ]] || path=/ghost/api/admin/site/
-
-    script=$(
-        cat <<'NODE'
-const https = require('https');
-const [domain, path] = process.argv.slice(1);
-const req = https.request({
-    host: 'caddy', port: 443, servername: domain, path,
-    headers: { Host: domain }, rejectUnauthorized: false, timeout: 20000,
-}, (res) => { res.resume(); process.stdout.write(String(res.statusCode)); });
-req.on('timeout', () => { req.destroy(); process.exit(1); });
-req.on('error', () => process.exit(1));
-req.end();
-NODE
-    )
-
-    out=$(compose_run "$dir" exec -T ghost node -e "$script" "$domain" "$path" 2>/dev/null) || return 1
-    [[ $out =~ ^[0-9]{3}$ ]] || return 1
-    printf '%s\n' "$out"
+    port=$(env_get "$dir/.env" HTTPS_PORT 2>/dev/null) || port=443
+    curl --disable --silent --show-error --noproxy '*' \
+        --connect-timeout 5 --max-time 20 --insecure \
+        --resolve "$domain:$port:127.0.0.1" \
+        --output /dev/null --write-out '%{http_code}\n' \
+        "https://$domain:$port${path:-/ghost/api/admin/site/}"
 }
 
 # install_verify_ingress DIR MODE GHOST_PORT HTTP_PORT DOMAIN [ADMIN_DOMAIN]
