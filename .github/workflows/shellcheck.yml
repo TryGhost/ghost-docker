@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - main
+      - next
       - renovate/*
 
 # The shellcheck version is pinned so CI and a developer's machine agree.
