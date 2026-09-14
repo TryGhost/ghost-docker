@@ -7,11 +7,28 @@ on:
       - main
       - renovate/*
 
+# The shellcheck version is pinned so CI and a developer's machine agree.
+# The runner's own apt shellcheck drifts (it was 0.9.0 while a current Homebrew
+# is 0.11.0), and the two disagree on findings — 0.9 flags SC2015/SC2002 that
+# 0.11 does not — so an unpinned job passes or fails by accident. Match it
+# locally with the same release, or `brew install shellcheck@0.10` where pinned.
+env:
+  SHELLCHECK_VERSION: "0.10.0"
+
 jobs:
   shellcheck:
     name: ShellCheck
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install the pinned ShellCheck
+        run: |
+          set -euo pipefail
+          url="https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          curl -fsSL "$url" | tar -xJ
+          sudo install "shellcheck-v${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck
+          shellcheck --version
+
       - name: Run ShellCheck
         run: find . -type f -name "*.sh" -not -path "./.git/*" -exec shellcheck {} +
