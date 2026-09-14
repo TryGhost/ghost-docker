@@ -328,52 +328,47 @@ printf '\nWriting configuration\n'
 env_file="$dir/$GD_ENV_FILE_NAME"
 ghost_env_file="$dir/$GD_GHOST_ENV_FILE_NAME"
 
-# Start from the tracked example so its comments — the ones that explain value
-# encoding and the optional settings — survive into the installed file.
-cp "$dir/$GD_ENV_FILE_NAME.example" "$env_file"
-chmod 0600 "$env_file"
+# Fresh installs need no parsing or repeated edits of the example. Compose
+# supplies defaults; the example remains the reference for optional settings.
+{
+    printf '# Generated site settings. See .env.example for optional settings.\n'
+    _gd_env_serialize COMPOSE_PROFILES "$profiles"
+    _gd_env_serialize SITE_MODE "$mode"
+    _gd_env_serialize COMPOSE_PROJECT_NAME "$project"
+    _gd_env_serialize PROJECT_DIR "$dir"
+    _gd_env_serialize NODE_ENV "$node_env"
+    _gd_env_serialize URL "$url"
+    _gd_env_serialize GHOST_IMAGE "$GD_DEFAULT_GHOST_IMAGE"
+    _gd_env_serialize GHOST_VERSION "$ghost_tag"
+    _gd_env_serialize GHOST_IMAGE_REF "$GD_DEFAULT_GHOST_IMAGE@$ghost_digest"
+    _gd_env_serialize GHOST_CONTENT_PATH "$ghost_content_path"
+    _gd_env_serialize GHOST_TINYBIRD_PATH "$ghost_tinybird_path"
+    _gd_env_serialize GHOST_PORT "$port"
+    _gd_env_serialize RESTART_POLICY "$restart_policy"
+    _gd_env_serialize DATABASE_HOST db
+    _gd_env_serialize DATABASE_PORT 3306
+    _gd_env_serialize DATABASE_NAME ghost
+    _gd_env_serialize DATABASE_USER ghost
+    _gd_env_serialize DATABASE_PASSWORD "$db_password"
+    _gd_env_serialize DATABASE_ROOT_PASSWORD "$db_root_password"
 
-set_env() { env_set "$env_file" "$1" "$2" 0600; }
-
-set_env COMPOSE_PROFILES "$profiles"
-set_env SITE_MODE "$mode"
-set_env COMPOSE_PROJECT_NAME "$project"
-set_env PROJECT_DIR "$dir"
-set_env NODE_ENV "$node_env"
-set_env URL "$url"
-set_env GHOST_IMAGE "$GD_DEFAULT_GHOST_IMAGE"
-set_env GHOST_VERSION "$ghost_tag"
-set_env GHOST_CONTENT_PATH "$ghost_content_path"
-set_env GHOST_TINYBIRD_PATH "$ghost_tinybird_path"
-set_env GHOST_PORT "$port"
-set_env RESTART_POLICY "$restart_policy"
-set_env DATABASE_HOST db
-set_env DATABASE_PORT 3306
-set_env DATABASE_NAME ghost
-set_env DATABASE_USER ghost
-set_env DATABASE_PASSWORD "$db_password"
-set_env DATABASE_ROOT_PASSWORD "$db_root_password"
-
-if [[ $mode == production ]]; then
-    set_env DOMAIN "$domain"
-    set_env HTTP_PORT "$http_port"
-    set_env HTTPS_PORT "$https_port"
-    if [[ -n $admin_domain ]]; then
-        set_env ADMIN_DOMAIN "$admin_domain"
-        set_env ADMIN_URL "$admin_url"
+    if [[ $mode == production ]]; then
+        _gd_env_serialize DOMAIN "$domain"
+        _gd_env_serialize HTTP_PORT "$http_port"
+        _gd_env_serialize HTTPS_PORT "$https_port"
+        if [[ -n $admin_domain ]]; then
+            _gd_env_serialize ADMIN_DOMAIN "$admin_domain"
+            _gd_env_serialize ADMIN_URL "$admin_url"
+        fi
     fi
-else
-    # A local site has no Caddy ingress, so leaving the example's DOMAIN in
-    # place would describe a domain nothing serves.
-    env_unset "$env_file" DOMAIN
-fi
 
-if ((want_analytics)); then
-    set_env TINYBIRD_API_URL "$tinybird_api_url"
-    set_env TINYBIRD_TRACKER_TOKEN "$tinybird_tracker_token"
-    set_env TINYBIRD_ADMIN_TOKEN "$tinybird_admin_token"
-    set_env TINYBIRD_WORKSPACE_ID "$tinybird_workspace_id"
-fi
+    if ((want_analytics)); then
+        _gd_env_serialize TINYBIRD_API_URL "$tinybird_api_url"
+        _gd_env_serialize TINYBIRD_TRACKER_TOKEN "$tinybird_tracker_token"
+        _gd_env_serialize TINYBIRD_ADMIN_TOKEN "$tinybird_admin_token"
+        _gd_env_serialize TINYBIRD_WORKSPACE_ID "$tinybird_workspace_id"
+    fi
+} | fs_atomic_write "$env_file" 0600
 
 printf '  ok       %s\n' "$GD_ENV_FILE_NAME"
 
@@ -460,16 +455,10 @@ if ((no_start)); then
     printf '\nNot starting: --no-start was given.\n'
 else
     printf '\nStarting services\n'
-    compose_run "$dir" up -d
+    compose_run "$dir" up --wait --wait-timeout "$GD_READY_TIMEOUT" ||
+        die "services did not become ready. See: docker compose ps -a; docker compose logs"
     started=1
-
-    install_wait_healthy "$dir" db "$GD_READY_TIMEOUT_DB" ||
-        die "the database did not become ready. See: docker compose logs db"
-    printf '  ok       database is ready\n'
-
-    install_wait_healthy "$dir" ghost "$GD_READY_TIMEOUT_GHOST" ||
-        die "Ghost did not become ready. See: docker compose logs ghost"
-    printf '  ok       Ghost is ready\n'
+    printf '  ok       services are ready\n'
 
     printf '\nVerifying ingress\n'
     if ! install_verify_ingress "$dir" "$mode" "$port" "$http_port" "$domain" "$admin_domain"; then
@@ -489,7 +478,8 @@ Ghost is installed.
   Mode           $mode
   Project        $project
   Directory      $dir
-  Ghost          $GD_DEFAULT_GHOST_IMAGE:$ghost_tag ($ghost_exact_version)
+  Ghost          $ghost_exact_version (requested $GD_DEFAULT_GHOST_IMAGE:$ghost_tag)
+  Image          $GD_DEFAULT_GHOST_IMAGE@$ghost_digest
   Loopback       127.0.0.1:$port
   Profiles       $profiles
   Content        $dir/data/ghost

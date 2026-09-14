@@ -2,7 +2,7 @@
 
 Configuration to run Ghost and its services with Docker Compose.
 
-Requires **bash**, **Docker Engine 25.0+**, **Docker Compose v2.24+** and **jq**.
+Requires **bash**, **Docker Engine 25.0+**, **Docker Compose v2.24+**, **jq** and **curl**.
 
 ## Install
 

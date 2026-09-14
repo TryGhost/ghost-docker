@@ -96,13 +96,14 @@ the step they belong to, rather than being reported as unknown options:
    Nothing ships with a default credential.
 4. **Exact Ghost image.** The requested version is pulled, and the image is
    asked for its own `GHOST_VERSION`, `GHOST_CONTENT` and `GHOST_INSTALL`. The
-   *exact* version tag is written to `.env` — never a moving one — and the
-   digest is recorded in `.ghost-docker.json` for recovery. `GHOST_CONTENT_PATH`
-   and `GHOST_TINYBIRD_PATH` come from the image, so the mounted content
+   repository digest is required and written as `GHOST_IMAGE_REF=ghost@sha256:...`
+   in `.env`, and recorded in `.ghost-docker.json` for recovery. Both Ghost and
+   Tinybird sync use that pin; the requested tag is provenance only.
+   `GHOST_CONTENT_PATH` and `GHOST_TINYBIRD_PATH` come from the image, so the mounted content
    directory and the image layout cannot disagree.
-5. **Configuration.** `.env` and `ghost.env`, both mode `0600`. `.env` starts
-   from the tracked example so its comments survive; `ghost.env` is written
-   fresh, because the example's SMTP block is a placeholder and a site shipping
+5. **Configuration.** `.env` and `ghost.env`, both mode `0600`. `.env` is generated
+   in one atomic write, with optional defaults documented in `.env.example`.
+   `ghost.env` is written fresh, because the example's SMTP block is a placeholder and a site shipping
    with `smtp.example.com` configured fails to send mail in a way that looks
    like a Ghost bug.
 6. **Routing**, in production: routes are rendered, validated, installed and
@@ -110,7 +111,8 @@ the step they belong to, rather than being reported as unknown options:
    `caddy/global/` are yours and are never touched.
 7. **Metadata.** `.ghost-docker.json`, described in
    [configuration.md](configuration.md#installation-metadata).
-8. **Start and verify**, unless `--no-start`: the database and Ghost must report
+8. **Start and verify**, unless `--no-start`: Compose `up --wait --wait-timeout`
+   waits for the selected services; the database and Ghost must report
    *healthy* through their own health checks, and the Admin API must answer
    through the ingress the site actually uses. A running container is not
    readiness, and `up -d` returning zero is not a working site.
@@ -158,12 +160,19 @@ run by the installer; the summary prints the two commands that finish it. See
 
 ## Host tools
 
-Beyond `bash`, the installer requires **`docker`** (with Compose v2) and
-**`jq`**; `bootstrap.sh` also needs **`git`**. Everything else it invokes is
-POSIX and listed in `GD_HOST_UTILITIES` in `scripts/lib/preflight.sh`. That list
+Beyond `bash`, the installer requires **`docker`** (with Compose v2),
+**`jq`** and **`curl`**; `bootstrap.sh` also needs **`git`**. Other utilities
+use the supported Linux/macOS interfaces and are listed in `GD_HOST_UTILITIES`
+in `scripts/lib/preflight.sh`. That list
 is the tool contract, and `tests/install-e2e.test.mjs` runs an install with a
 `PATH` containing exactly it — so a GNU-only or unusual dependency added to a
 code path fails a test rather than someone's server.
+
+Changing `GHOST_VERSION` alone does not change an installed site: `GHOST_IMAGE_REF`
+is authoritative. A deliberate image change must update that pin and its metadata.
+
+The HTTPS probe checks routing through the published host port with the correct
+Host/SNI. It accepts internal certificates and does not certify public TLS trust.
 
 Node.js is **not** required to install or run a site. It runs the test suite.
 

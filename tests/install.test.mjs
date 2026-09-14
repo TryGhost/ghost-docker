@@ -250,11 +250,39 @@ describe('Ghost version resolution', () => {
     assert.equal(shOk('install_ghost_tag 6.3.1-alpine').trim(), '6.3.1-alpine');
   });
 
-  test('the variant is separated from the version so an exact pin can be built', () => {
-    assert.equal(shOk('_gd_tag_variant 6-next-alpine').trim(), 'next-alpine');
-    assert.equal(shOk('_gd_tag_variant 6.3.1-alpine').trim(), 'alpine');
-    assert.equal(shOk('_gd_tag_variant next-alpine').trim(), 'next-alpine');
-    assert.equal(shOk('_gd_tag_variant 6').trim(), '');
+  test('resolution pulls once and requires a digest instead of guessing a version tag', () => {
+    const dir = tempDir('gd-resolve');
+    const pulls = join(dir, 'pulls');
+    const digest = `sha256:${'a'.repeat(64)}`;
+    const fakeDocker = `
+      docker() {
+        case "$1" in
+          pull) printf '%s\\n' "$*" >> ${q(pulls)} ;;
+          image)
+            case "$*" in
+              *RepoDigests*) [[ -z $MOCK_DIGEST ]] || printf 'ghost@%s\\n' "$MOCK_DIGEST" ;;
+              *) printf '%s\\n' GHOST_VERSION=6.3.1 GHOST_CONTENT=/var/lib/ghost/content GHOST_INSTALL=/var/lib/ghost ;;
+            esac ;;
+          run) printf '%s\\n' /var/lib/ghost/current/core/server/data/tinybird ;;
+          *) return 1 ;;
+        esac
+      }
+      install_resolve_ghost ghost 6-alpine`;
+    try {
+      const result = sh(fakeDocker, { env: { MOCK_DIGEST: digest } });
+      assert.equal(result.status, 0, result.stderr.toString());
+      assert.deepEqual(result.stdout.toString().trim().split('\t'), [
+        '6-alpine', '6.3.1', digest, '/var/lib/ghost/content',
+        '/var/lib/ghost/current/core/server/data/tinybird',
+      ]);
+      assert.equal(readFileSync(pulls, 'utf8').trim().split('\n').length, 1);
+      const missing = sh(fakeDocker, { env: { MOCK_DIGEST: '' } });
+      assert.notEqual(missing.status, 0);
+      assert.match(missing.stderr.toString(), /refusing an unpinned install/);
+      assert.equal(missing.stdout.toString(), '');
+    } finally {
+      cleanup(dir);
+    }
   });
 });
 
@@ -276,14 +304,6 @@ describe('release selection', () => {
   });
   after(() => cleanup(dir));
 
-  test('semver ordering, including prereleases', () => {
-    const cmp = (a, b) => bootstrap(`_semver_cmp ${a} ${b}`).stdout.trim();
-    assert.equal(cmp('v1.10.0', 'v1.9.0'), '1', '1.10.0 must be newer than 1.9.0');
-    assert.equal(cmp('v1.2.0-beta.1', 'v1.2.0'), '-1', 'a prerelease precedes its release');
-    assert.equal(cmp('v1.2.0-beta.10', 'v1.2.0-beta.2'), '1', 'beta.10 must be newer than beta.2');
-    assert.equal(cmp('v1.2.3', 'v1.2.3'), '0');
-  });
-
   test('stable selects the newest release and ignores prereleases', () => {
     const result = bootstrap('_latest_release stable', { GD_BOOTSTRAP_REPO: repo });
     assert.equal(result.stdout.trim(), 'v1.10.0');
@@ -292,6 +312,27 @@ describe('release selection', () => {
   test('beta also considers prereleases, in semver order', () => {
     const result = bootstrap('_latest_release beta', { GD_BOOTSTRAP_REPO: repo });
     assert.equal(result.stdout.trim(), 'v1.11.0-beta.10');
+  });
+
+  test('a stable release outranks its betas, independent of Git sorting settings', () => {
+    git(repo, ['tag', 'v1.11.0']);
+    try {
+      const config = join(dir, 'gitconfig');
+      writeFileSync(config, '[versionsort]\n  suffix = -other\n  suffix = \n  suffix = -beta.\n');
+      const result = bootstrap('_latest_release beta', {
+        GD_BOOTSTRAP_REPO: repo, GIT_CONFIG_GLOBAL: config,
+      });
+      assert.equal(result.status, 0, result.output);
+      assert.equal(result.stdout.trim(), 'v1.11.0');
+    } finally {
+      git(repo, ['tag', '-d', 'v1.11.0']);
+    }
+  });
+
+  test('an inaccessible remote fails instead of selecting a release', () => {
+    const result = bootstrap('_latest_release stable', { GD_BOOTSTRAP_REPO: join(dir, 'missing') });
+    assert.notEqual(result.status, 0);
+    assert.equal(result.stdout, '');
   });
 
   test('a repository with no releases fails rather than guessing', () => {

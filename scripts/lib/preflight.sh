@@ -12,7 +12,7 @@
 # decides the exit status. That keeps the checks free of presentation and makes
 # them straightforward to assert on.
 #
-# Portability: no GNU-only utilities, no `sort -V`, no `ss`/`lsof`/`curl`
+# Portability: no GNU-only utilities, no `sort -V`, no `ss`/`lsof`
 # requirement, and daemon access is established by using the daemon rather than
 # by inspecting group membership.
 
@@ -22,10 +22,10 @@ GD_PREFLIGHT_LIB_LOADED=1
 # Host commands the installer and helpers actually invoke. Anything not on this
 # list must not appear in a code path an operator can reach; the minimum-tools
 # test runs an install with a PATH containing only these.
-readonly GD_REQUIRED_COMMANDS=(docker jq)
+readonly GD_REQUIRED_COMMANDS=(docker jq curl)
 
-# Every other host utility the installer and helpers invoke. These are POSIX
-# and present on any supported host, so they are not preflight checks; they are
+# Other host utilities use the supported Linux/macOS interfaces. They are not
+# individual preflight checks, but are
 # recorded here as the tool contract, and tests/install-e2e.test.mjs runs an
 # install with a PATH built from exactly this list plus GD_REQUIRED_COMMANDS.
 # Adding a utility to a code path without adding it here fails that test, which
