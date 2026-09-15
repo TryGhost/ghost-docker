@@ -17,6 +17,13 @@ if (($#)); then shift; fi
 dir="${1:-$GD_ROOT_DIR}"
 
 case "$cmd" in
+    render | apply | reload)
+        operation_acquire "$dir"
+        trap operation_release EXIT
+        ;;
+esac
+
+case "$cmd" in
     render)
         staged=$(caddy_render "$dir")
         printf 'staged routes in %s\n' "$staged"

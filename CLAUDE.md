@@ -42,6 +42,8 @@ curl -fsSL .../bootstrap.sh | bash -s -- --domain example.com   # release-select
 ./install.sh --local --no-prompt --no-start                     # checkout-owned installer
 scripts/site.sh check                   # doctor: config, health, DB, ingress
 scripts/site.sh list                    # every managed container on this host
+scripts/recovery.sh backup --keep 5      # private recovery checkpoint
+scripts/recovery.sh status              # inspect an unfinished operation
 
 # Core operations
 docker compose up -d                    # Start the services for the selected mode
@@ -165,7 +167,9 @@ Rules that must not regress:
   `--image-registry`, `--ghost-channel`, `--without`) exit 3 naming the step,
   not as unknown options.
 
-See `docs/install.md`.
+See `docs/install.md`. Recovery checkpoints, isolated restore and the manager
+image are documented in `docs/recovery.md`. Supported mutating scripts share the
+operation lock; new mutating commands must acquire it and refuse unresolved journals.
 
 ## Development Workflow
 

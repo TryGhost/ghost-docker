@@ -178,6 +178,13 @@ describe('config_validate_ghost_env', () => {
     assert.equal(validate().status, 0, validate().stdout.toString());
   });
 
+  test('literal dollars, tabs, newlines and backslashes compare without TSV escaping', () => {
+    const literal = 'literal $ # \\ tab\tline\nnext';
+    shOk(`env_set ${q(ghostEnv)} custom__literal ${q(literal)}`);
+    const result = validate();
+    assert.equal(result.status, 0, result.stdout.toString());
+  });
+
   for (const key of ['url', 'admin__url', 'database__connection__host', 'server__port', 'NODE_ENV']) {
     test(`the container-owned key ${key} is rejected`, () => {
       shOk(`env_set ${q(ghostEnv)} ${q(key)} anything`);

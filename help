@@ -48,6 +48,12 @@ ROUTING (production):
   Your own routes:   caddy/custom/*.caddy
   Global options:    caddy/global/*.caddy
 
+RECOVERY CHECKPOINTS:
+  scripts/recovery.sh backup --keep 5
+  scripts/recovery.sh status
+  scripts/recovery.sh recover
+  See docs/recovery.md for isolated restore and activation.
+
 TROUBLESHOOTING:
   docker compose exec ghost sh      # Access Ghost container shell
   docker compose logs --tail=100    # View last 100 log lines

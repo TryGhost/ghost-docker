@@ -42,3 +42,6 @@ usage() {
         done
     } <"$0"
 }
+
+# shellcheck source=scripts/lib/operation.sh
+. "$GD_LIB_DIR/operation.sh"

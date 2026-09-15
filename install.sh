@@ -153,6 +153,9 @@ if [[ -n $dir ]]; then
 fi
 dir=$checkout
 
+operation_acquire "$dir"
+trap operation_release EXIT
+
 # --- Refuse to install over an existing site -------------------------------
 
 for existing in "$GD_ENV_FILE_NAME" "$GD_META_FILE_NAME"; do

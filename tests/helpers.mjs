@@ -10,7 +10,7 @@ const execFileAsync = promisify(execFile);
 export const TESTS_DIR = dirname(fileURLToPath(import.meta.url));
 export const REPO_DIR = join(TESTS_DIR, '..');
 
-const LIBS = ['fs', 'env', 'compose', 'config', 'caddy', 'meta', 'preflight', 'install'];
+const LIBS = ['fs', 'env', 'compose', 'config', 'caddy', 'meta', 'preflight', 'install', 'operation'];
 
 /**
  * Run a bash snippet with every ghost-docker library sourced.
@@ -196,7 +196,8 @@ const RELEASE_EXCLUDE = new Set([
 export function copyWorktree(dest) {
   mkdirSync(dest, { recursive: true });
   for (const entry of readdirSync(REPO_DIR)) {
-    if (RELEASE_EXCLUDE.has(entry)) continue;
+    if (RELEASE_EXCLUDE.has(entry) || entry.startsWith('.ghost-') ||
+        entry.startsWith('.env.tmp.') || entry.startsWith('ghost.env.tmp.')) continue;
     cpSync(join(REPO_DIR, entry), join(dest, entry), { recursive: true });
   }
   // Generated and operator-owned routes are per-site, not part of a release.

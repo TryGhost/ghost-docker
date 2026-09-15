@@ -93,3 +93,13 @@ caddy/.staging/
 caddy/Caddyfile.local
 # Backups written by the helpers
 *.bak.*
+
+# Recovery checkpoints contain credentials and full site data.
+.ghost-backups/
+.ghost-operation.json
+.ghost-operation-lock/
+.ghost-manager-image
+.ghost-operation.json.tmp
+.ghost-docker.json.tmp*
+.env.tmp.*
+ghost.env.tmp.*
