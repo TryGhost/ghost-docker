@@ -1,0 +1,20 @@
+{
+  "name": "ghost-docker",
+  "private": true,
+  "scripts": {
+    "format": "oxfmt --write manager tests scripts package.json .oxfmtrc.json .oxlintrc.json",
+    "format:check": "oxfmt --check manager tests scripts package.json .oxfmtrc.json .oxlintrc.json",
+    "lint": "oxlint manager tests scripts",
+    "typecheck": "tsc --project manager/tsconfig.json",
+    "test": "node --test --test-timeout=120000 tests/*.test.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.2",
+    "oxfmt": "0.63.0",
+    "oxlint": "1.83.0",
+    "typescript": "7.0.2"
+  },
+  "engines": {
+    "node": "^22.18.0 || >=24.0.0"
+  }
+}

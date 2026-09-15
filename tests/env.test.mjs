@@ -55,15 +55,27 @@ describe('env.sh', () => {
   });
 
   test('lists every key once, in order', () => {
-    const keys = shOk(`env_keys ${q(file)}`).trim().split('\n');
+    const keys = shOk(`env_keys ${q(file)}`)
+      .trim()
+      .split('\n');
     assert.deepEqual(keys, Object.keys(VALUES));
   });
 
   test('overwrites in place without duplicating', () => {
     shOk(`env_set ${q(file)} plain replaced`);
     assert.equal(shValue(`env_get ${q(file)} plain`).trim(), 'replaced');
-    assert.equal(shOk(`env_keys ${q(file)}`).trim().split('\n').length, Object.keys(VALUES).length);
-    assert.equal(shOk(`env_keys ${q(file)}`).trim().split('\n')[0], 'plain');
+    assert.equal(
+      shOk(`env_keys ${q(file)}`)
+        .trim()
+        .split('\n').length,
+      Object.keys(VALUES).length,
+    );
+    assert.equal(
+      shOk(`env_keys ${q(file)}`)
+        .trim()
+        .split('\n')[0],
+      'plain',
+    );
   });
 
   test('preserves comments and blank lines around an edit', () => {
@@ -140,11 +152,12 @@ describe('env.sh', () => {
     });
 
     test('keys around it are still listed, and its body is not mistaken for one', () => {
-      assert.deepEqual(shOk(`env_keys ${q(pemFile)}`).trim().split('\n'), [
-        'mail__transport',
-        'TLS_KEY',
-        'labs__publicAPI',
-      ]);
+      assert.deepEqual(
+        shOk(`env_keys ${q(pemFile)}`)
+          .trim()
+          .split('\n'),
+        ['mail__transport', 'TLS_KEY', 'labs__publicAPI'],
+      );
     });
 
     test('reading it fails with an actionable message', () => {
@@ -200,7 +213,12 @@ describe('env.sh', () => {
       lintFile = join(dir, 'lint.env');
       writeFileSync(
         lintFile,
-        ['GOOD="$$literal"', "ALSO_GOOD='$literal'", 'BAD="costs $5"', 'BAD_UNQUOTED=costs $5'].join('\n') + '\n',
+        [
+          'GOOD="$$literal"',
+          "ALSO_GOOD='$literal'",
+          'BAD="costs $5"',
+          'BAD_UNQUOTED=costs $5',
+        ].join('\n') + '\n',
       );
     });
 

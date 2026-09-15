@@ -27,6 +27,8 @@ case "$cmd" in
             usage
             exit 2
         }
+        operation_acquire "$(dirname -- "$1")"
+        trap operation_release EXIT
         env_set "$1" "$2" "$3"
         # Key names only. Values are never printed: any of them may be a
         # credential, and a list of "sensitive" names would silently miss one.
@@ -37,6 +39,8 @@ case "$cmd" in
             usage
             exit 2
         }
+        operation_acquire "$(dirname -- "$1")"
+        trap operation_release EXIT
         env_unset "$1" "$2"
         ;;
     mode)

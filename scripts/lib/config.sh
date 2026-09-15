@@ -35,16 +35,14 @@ readonly GD_REQUIRED_KEYS_COMMON=(
 readonly GD_REQUIRED_KEYS_PRODUCTION=(DOMAIN)
 
 # config_ghost_environment DIR
-# The environment Compose actually gives the ghost container, as KEY<TAB>VALUE.
+# The environment Compose actually gives the ghost container, as a JSON object.
 # `docker compose config` is pure parsing and needs no daemon, so this works
 # before anything is started. Its output re-escapes `$` as `$$`, which is undone
 # here so values compare against decoded ones.
 config_ghost_environment() {
     compose_run "$1" config --format json 2>/dev/null |
-        jq -r '.services.ghost.environment // {}
-               | to_entries[]
-               | [.key, (.value // "" | tostring | gsub("[$][$]"; "$"))]
-               | @tsv'
+        jq '.services.ghost.environment // {}
+            | with_entries(.value |= (. // "" | tostring | gsub("[$][$]"; "$")))'
 }
 
 # config_operator_variables DIR
@@ -200,7 +198,7 @@ config_validate_ghost_env() {
     # ghost.env is optional: a site can run entirely on container-owned config.
     [[ -f $file ]] || return 0
 
-    # KEY<TAB>VALUE of what the container really gets. Empty when compose.yml
+    # JSON of what the container really gets. Empty when compose.yml
     # cannot be resolved, in which case the override check is skipped rather
     # than reporting nonsense.
     local container
@@ -248,17 +246,10 @@ config_validate_ghost_env() {
     return $rc
 }
 
-# _gd_container_value TSV KEY
-# Prints the container's value for KEY, or returns 1 when it has none.
+# _gd_container_value JSON KEY
+# Decode JSON directly: TSV escaping changes tabs, backslashes and newlines.
 _gd_container_value() {
-    local k v
-    while IFS=$'\t' read -r k v; do
-        if [[ $k == "$2" ]]; then
-            printf '%s' "$v"
-            return 0
-        fi
-    done <<<"$1"
-    return 1
+    jq -er --arg key "$2" 'if has($key) then .[$key] else error("missing key") end' <<<"$1"
 }
 
 # _gd_is_operator_key KEY DIR OPERATOR_VAR...

@@ -24,6 +24,15 @@ jobs:
         with:
           node-version: "22"
 
+      - name: Install development tools
+        run: npm ci --ignore-scripts
+
+      - name: Check JavaScript and TypeScript
+        run: |
+          npm run format:check
+          npm run lint
+          npm run typecheck
+
       - name: Check the runtime prerequisites
         run: |
           set -eu
@@ -157,3 +166,17 @@ jobs:
         run: |
           docker ps -a
           docker compose ls || true
+
+  recovery:
+    name: Recovery checkpoint and restore drill
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: "22"
+      - name: Restore a real site into an isolated destination
+        env:
+          GD_TEST_RECOVERY: "1"
+        run: node --test --test-timeout=1800000 tests/recovery-e2e.test.mjs

@@ -61,6 +61,11 @@ _db_reachable() {
 site_check() {
     local dir=$1 rc=0 records mode profiles port http_port domain admin id health
 
+    if [[ -e $dir/.ghost-operation.json || -d $dir/.ghost-operation-lock ]]; then
+        printf 'An operation is active or needs recovery; inspect scripts/recovery.sh status.\n' >&2
+        rc=1
+    fi
+
     printf 'Site directory\n  %s\n\n' "$dir"
 
     if [[ ! -f $dir/$GD_ENV_FILE_NAME ]]; then

@@ -876,6 +876,15 @@ blockers for dependent steps.
 
 ### S4 — Backup, restore, locks, and recovery journal
 
+Implementation: see `docs/recovery.md`. The initial manager supports stack-managed
+MySQL and Ghost/ActivityPub, private directory checkpoints, a shared host lock and
+durable recovery journals. Analytics and external database/override configurations
+fail preflight pending explicit state contracts. Maintenance stops all application
+and ingress containers. Restore targets a fresh checkout and remains isolated until
+explicit activation; S7 must add in-place transactional upgrade orchestration around
+these primitives. Source checkouts build and execute an immutable manager image ID;
+release tags publish multi-platform manager images selectable by digest.
+
 Repo: ghost-docker. Deps: S1. Implement the reusable §2.5 checkpoint/restore contract,
 explicit DB connection abstraction, operation lock, maintenance handling, retention,
 and journals. Backups include required local application/configuration state and

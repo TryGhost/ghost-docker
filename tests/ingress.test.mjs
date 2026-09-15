@@ -9,8 +9,18 @@ import assert from 'node:assert/strict';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  tempDir, cleanup, makeSite, writeEnv, sh, shOk, compose, composeAsync,
-  dockerAvailable, dockerInspect, waitFor, sleep, q,
+  tempDir,
+  cleanup,
+  makeSite,
+  writeEnv,
+  sh,
+  compose,
+  composeAsync,
+  dockerAvailable,
+  dockerInspect,
+  waitFor,
+  sleep,
+  q,
 } from './helpers.mjs';
 
 const enabled = process.env.GD_TEST_INGRESS === '1' && dockerAvailable();
@@ -48,14 +58,19 @@ const serviceId = (name) => compose(site, ['ps', '-q', name]).stdout.trim();
 
 /** Wait for a service's health check to report healthy. Fails fast if it exits. */
 const waitHealthy = (name, timeoutMs) =>
-  waitFor(() => {
-    const id = serviceId(name);
-    if (!id) return false;
-    if (dockerInspect(id, '{{.State.Running}}') !== 'true') {
-      throw new Error(`${name} stopped while waiting for it to become healthy`);
-    }
-    return dockerInspect(id, '{{.State.Health.Status}}') === 'healthy';
-  }, { timeoutMs });
+  waitFor(
+    () => {
+      const id = serviceId(name);
+      if (!id) {
+        return false;
+      }
+      if (dockerInspect(id, '{{.State.Running}}') !== 'true') {
+        throw new Error(`${name} stopped while waiting for it to become healthy`);
+      }
+      return dockerInspect(id, '{{.State.Health.Status}}') === 'healthy';
+    },
+    { timeoutMs },
+  );
 
 /** Run a snippet of Node inside the Ghost container and return its stdout. */
 const inGhost = async (script) => {
@@ -69,8 +84,12 @@ describe('ingress smoke tests', { skip, concurrency: 1 }, () => {
     site = makeSite(dir);
   });
   after(() => {
-    if (site) compose(site, ['down', '-v', '--remove-orphans']);
-    if (dir) cleanup(dir);
+    if (site) {
+      compose(site, ['down', '-v', '--remove-orphans']);
+    }
+    if (dir) {
+      cleanup(dir);
+    }
   });
 
   describe('local mode', () => {
@@ -108,8 +127,12 @@ describe('ingress smoke tests', { skip, concurrency: 1 }, () => {
     });
 
     test('Ghost is published on the loopback interface only', () => {
-      const bindings = JSON.parse(dockerInspect(serviceId('ghost'), '{{json .HostConfig.PortBindings}}'));
-      const hosts = Object.values(bindings).flat().map((b) => b.HostIp);
+      const bindings = JSON.parse(
+        dockerInspect(serviceId('ghost'), '{{json .HostConfig.PortBindings}}'),
+      );
+      const hosts = Object.values(bindings)
+        .flat()
+        .map((b) => b.HostIp);
       assert.deepEqual(hosts, ['127.0.0.1']);
     });
 
@@ -213,7 +236,10 @@ describe('ingress smoke tests', { skip, concurrency: 1 }, () => {
       const id = compose(site, ['ps', '-a', '-q', 'activitypub-migrate']).stdout.trim();
       assert.ok(id, 'the one-shot migration container was not created');
       assert.equal(
-        dockerInspect(id, '{{.State.Status}} {{.State.ExitCode}} {{.HostConfig.RestartPolicy.Name}}'),
+        dockerInspect(
+          id,
+          '{{.State.Status}} {{.State.ExitCode}} {{.HostConfig.RestartPolicy.Name}}',
+        ),
         'exited 0 no',
       );
       await sleep(10_000);
@@ -221,12 +247,20 @@ describe('ingress smoke tests', { skip, concurrency: 1 }, () => {
     });
 
     test('long-running services keep the site restart policy', () => {
-      assert.equal(dockerInspect(serviceId('ghost'), '{{.HostConfig.RestartPolicy.Name}}'), 'unless-stopped');
-      assert.equal(dockerInspect(serviceId('db'), '{{.HostConfig.RestartPolicy.Name}}'), 'unless-stopped');
+      assert.equal(
+        dockerInspect(serviceId('ghost'), '{{.HostConfig.RestartPolicy.Name}}'),
+        'unless-stopped',
+      );
+      assert.equal(
+        dockerInspect(serviceId('db'), '{{.HostConfig.RestartPolicy.Name}}'),
+        'unless-stopped',
+      );
     });
 
     test('container logs are capped', () => {
-      const config = JSON.parse(dockerInspect(serviceId('ghost'), '{{json .HostConfig.LogConfig}}'));
+      const config = JSON.parse(
+        dockerInspect(serviceId('ghost'), '{{json .HostConfig.LogConfig}}'),
+      );
       assert.ok(config.Config['max-size']);
       assert.ok(config.Config['max-file']);
     });

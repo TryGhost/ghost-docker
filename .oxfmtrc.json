@@ -1,0 +1,6 @@
+{
+  "$schema": "./node_modules/oxfmt/configuration_schema.json",
+  "singleQuote": true,
+  "embeddedLanguageFormatting": "off",
+  "ignorePatterns": ["tests/fixtures/**", "**/node_modules/**"]
+}

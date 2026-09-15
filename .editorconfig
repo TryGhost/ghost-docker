@@ -27,3 +27,7 @@ indent_style = tab
 
 [Caddyfile]
 indent_style = tab
+
+# Match Ghost's JavaScript/TypeScript formatting without changing shell style.
+[*.{js,mjs,ts,mts}]
+indent_size = 2

@@ -1,0 +1,10 @@
+.git
+.env
+ghost.env
+.ghost-*
+data
+node_modules
+caddy/sites
+caddy/custom
+caddy/global
+caddy/.staging
