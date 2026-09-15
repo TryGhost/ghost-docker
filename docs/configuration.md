@@ -30,6 +30,11 @@ atomically with a restrictive umask and preserve the mode of an existing file.
 
 ## Value encoding
 
+Migration bundle v1 config values are raw strings, with no dotenv encoding. The
+importer applies the rules below exactly once when writing `ghost.env`; public
+and admin URLs are separate manifest fields mapped to `.env`. See
+[bundle-v1.md](bundle-v1.md) for the agreed S3 schema and source guarantees.
+
 Compose interpolates dotenv values, **including inside double quotes**, and
 `env_file` values are no exception. A literal dollar sign must be written `$$`.
 There is no quoting a person naturally reaches for that avoids this, and the

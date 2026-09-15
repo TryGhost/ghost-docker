@@ -36,10 +36,13 @@ stand as written.
   "sourceInstallType": "production",
   "kind": "mysql-dump",
   "ghost": {
-    "version": "5.130.3"
+    "version": "6.2.0"
   },
+  "url": "https://example.com",
+  "adminUrl": "https://admin.example.com",
+  "database": {"path": "database.sql"},
+  "content": "content/",
   "config": {
-    "url": "https://example.com",
     "mail__options__auth__pass": "p$ssword",
     "mail__from": "'Acme Support' <support@example.com>"
   }
@@ -52,9 +55,30 @@ stand as written.
 | --- | --- |
 | `bundleVersion` | Must be `1`. |
 | `bundleCreatedAt` | **Required.** RFC 3339 timestamp in UTC. |
-| `sourceInstallType` | **Required.** Exactly `local` or `production`. The importer infers the installation mode from this field. |
-| `kind` | Bundle kind. Validated against the kinds the importer supports. |
-| `ghost.version` | Exact source Ghost version. Validated as supported; the import happens *at* this version, and upgrading is a separate operation. |
+| `sourceInstallType` | **Required.** Exactly `local` or `production`. Derived from the source instance’s actual local/production process classification; the importer selects its mode from this field. |
+| `kind` | Required `mysql-dump` or `portable`. MySQL/mysql2 or local SQLite development respectively. |
+| `ghost.version` | Exact source Ghost 6.x version. Validated as supported; the import happens *at* this version, and upgrading is a separate operation. |
+
+| `url` | Required public URL, unchanged from source config. |
+| `adminUrl` | Optional separate admin URL, unchanged. |
+| `database.path` | Required relative path: `database.sql` for MySQL, content JSON for portable. |
+| `database.members` | Required for portable only; relative members CSV path. |
+| `content` | Required `content/` asset root. |
+| `config` | Required raw string map, described below. |
+
+Portable `database` example (filenames can vary; always read the manifest):
+
+```json
+{
+  "path": "content/data/content-from-v6.2.0-on-2026-09-14-12-00-00.json",
+  "members": "content/data/members-from-v6.2.0-on-2026-09-14-12-00-00.csv"
+}
+```
+
+`kind` appears only at the top level and the version only at `ghost.version`.
+There are no `database.kind`, `ghostVersion`, or `sourceEnvironment` aliases.
+Matching exporter fixtures are in `tests/fixtures/migration-bundle-v1/` and
+Ghost-CLI's `test/fixtures/migration-bundle-v1/`.
 
 A bundle missing `bundleCreatedAt` or `sourceInstallType`, or carrying a
 `sourceInstallType` outside that set, is rejected. There is no inference
@@ -78,7 +102,7 @@ including in directory bundles.
   in [configuration.md](configuration.md) and at the top of
   [scripts/lib/env.sh](../scripts/lib/env.sh).
 
-So a mail password of `p$ssword` appears in the manifest as the four-character
+So a mail password of `p$ssword` appears in the manifest as the
 JSON string `"p$ssword"`, and reaches `ghost.env` as `mail__options__auth__pass="p$$ssword"`.
 An exporter that pre-quotes or pre-escapes a value produces a corrupted
 import, and the round trip is tested through real Docker Compose containers
@@ -119,13 +143,46 @@ journals. It is about isolating untrusted bundle content: path traversal,
 absolute member paths, escaping links, and unbounded expansion are all
 properties of a file someone else produced.
 
-## Not settled in this step
+## Source consistency and cutover (S3)
 
-The following are defined by their own steps and are **not** promised here:
+Ghost-CLI's `ghost migrate-export --leave-stopped` deliberately leaves the source
+stopped after successful export and attempts to stop it after export failure.
+Preflight rejection leaves the source unchanged. Ordinary exports restore its
+original running state, including a stopped portable source temporarily started
+for the API. Failed exports remove partial outputs. Recovery is `ghost start`
+in the original installation; verify `ghost ls` if a lifecycle operation failed.
 
-- Exporter behaviour, including the documented final-export mode that leaves
-  the source stopped for cutover, and the preserved restart behaviour for
-  ordinary exports (S3).
-- The portable-import fidelity matrix and the explicit list of losses, which
-  is established from fixtures and real exporter/importer behaviour (S3/S5).
-- The import sequence, isolated destination, verification and cutover (S5).
+Portable sources are local SQLite development sites only. Capture order is content
+JSON → members CSV → stop Ghost → copy assets. Users must avoid editing throughout
+export. This is sequential capture, **not an atomic snapshot or write freeze**;
+`bundleCreatedAt` is manifest creation time. Production SQLite and unsupported
+clients are rejected. MySQL is stopped before copying assets and dumping its DB;
+external database writers must also be quiescent.
+
+Directories/files/archives are private from creation (`0700`/`0600`). Existing
+outputs, source overlap (including symlink aliases), and archive collisions are
+refused before source lifecycle changes. Supported content includes hidden files,
+full themes, settings, files/images/media, and data redirects. Runtime logs/apps,
+SQLite files, external storage and custom adapters are omitted. Links/special
+files inside copied content are rejected explicitly by the exporter.
+
+Portable content/member files preserve Ghost API response bytes, not a complete
+database. Author data travels but reusable staff authentication does not; IDs may
+be remapped by import. Default content export omits integrations/API keys/webhooks,
+member and subscription relationship tables, comments and event/email history.
+CSV carries member fields and customer/tier references, not complete paid
+subscription or per-newsletter relationships. Re-establish staff access and
+integrations; reconnect/reconcile Stripe using a supported importer.
+
+See the exporter's [fidelity and recovery documentation](https://github.com/TryGhost/Ghost-CLI/blob/claude/ghost-cli-migration-export-c00253/docs/migration-bundle.md).
+S3 verifies schema, source lifecycle, private output, system-tar extraction and
+real Compose value transport. S5 must qualify destination owner setup, ID mapping,
+member imports and subscription reconciliation end to end before promising their
+fidelity. S3 does not implement the Docker importer.
+
+## Remaining S5 work
+
+The importer, isolated destination, verification, and ingress cutover are S5.
+Keep the final source stopped and intact until the destination is accepted;
+restarting it permits writes that invalidate the final snapshot. Real production
+cutover must prevent writes before the final MySQL export.
