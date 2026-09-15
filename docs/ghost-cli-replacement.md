@@ -253,8 +253,10 @@ Before freezing the contract:
 - Record the consistency/cutover behavior: the exporter currently restarts Ghost.
   Add a documented final-export mode that leaves the source stopped, with explicit
   operator selection, and preserve the current restart behavior for ordinary exports.
-  Portable exports require a running source; final export must arrange a write freeze
-  before taking API/content snapshots, then leave it stopped for cutover.
+  Portable exports support local SQLite development sites only: content API export,
+  then members CSV, then stop Ghost and copy assets. Captures are sequential; users
+  must avoid editing during export. Do not implement write-freeze machinery or
+  require Ghost changes. Final export leaves the source stopped for cutover.
 
 Import sequence:
 
@@ -855,8 +857,9 @@ quoted-config decoding, or a sourceEnvironment fallback for mode selection:
 this format has not shipped.
 
 Implement deliberate final-export/cutover behavior while preserving ordinary
-export restart semantics. Address write-freeze and snapshot consistency for
-portable exports; document precisely which data/relationships the portable
+export restart semantics, including originally stopped portable sources. Keep
+portable capture sequential for local SQLite development sites without write-freeze
+machinery or Ghost changes; document precisely which data/relationships the portable
 format cannot preserve. Use lib/tasks/import/ as the API reference. Keep the
 beta warning until qualification.
 
