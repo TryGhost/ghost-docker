@@ -75,8 +75,12 @@ scripts/config.sh unset ghost.env KEY
 # Caddy routes
 scripts/caddy.sh apply                  # Render, validate, install, reload, verify
 
-# Tests (Node 20+ built-in runner, no dependencies and no package.json;
+# Development (Node 22.18+ on the 22.x line, or Node 24+;
 # docker tests skip without a daemon)
+npm ci --ignore-scripts
+npm run format:check
+npm run lint
+npm run typecheck
 node --test --test-timeout=120000 tests/*.test.mjs
 GD_TEST_INGRESS=1 node --test --test-timeout=900000 tests/ingress.test.mjs
 GD_TEST_INSTALL=1 node --test --test-timeout=1800000 tests/install-e2e.test.mjs
@@ -137,8 +141,7 @@ The repository includes comprehensive migration tools:
   - Sets up Docker Compose environment
 
 - `scripts/config-to-env.js` - Converts Ghost JSON config to ghost.env format.
-  CommonJS; there is no package.json in this repository, so `.js` is CommonJS
-  by default. This is the only host Node dependency, and `install.sh --import`
+  CommonJS; the root package keeps the default CommonJS module mode. This is the only host Node dependency, and `install.sh --import`
   removes it
 
 ## Installer
@@ -186,6 +189,12 @@ system bash: no `declare -A`, `mapfile`, `${v,,}` or namerefs. It must pass
 in `tests/` run by Node's built-in runner: the shell libraries are exercised
 through a real shell via `tests/helpers.mjs`, while fixtures, structured-output
 parsing and assertions are JavaScript.
+
+JavaScript and TypeScript use oxfmt with Ghost's two-space, single-quote style.
+Oxlint requires braces around control flow. The manager is strict TypeScript using
+Node's native type stripping; `npm run typecheck` uses `tsc --noEmit` with
+`erasableSyntaxOnly`. No compiler or npm dependencies are needed in the manager
+image. See `docs/development.md`.
 
 For analytics setup, see `TINYBIRD.md` for detailed instructions.
 

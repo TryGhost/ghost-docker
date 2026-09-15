@@ -24,12 +24,25 @@ test('HTTP probes preserve Host and status, ignoring curl config and proxies', a
   const port = server.address().port;
   // These settings would change the probe's result if curl loaded them.
   writeFileSync(join(dir, '.curlrc'), 'location\nfail\n');
-  const probe = async (fn, path) => (await exec(process.env.GD_TEST_BASH || 'bash', ['-c',
-    `. ${q(join(REPO_DIR, 'scripts/lib/common.sh'))}\n${fn} 127.0.0.1 ${port} ${q(path)} ghost.test`,
-  ], {
-    env: { ...process.env, CURL_HOME: dir, http_proxy: 'http://127.0.0.1:1', ALL_PROXY: 'http://127.0.0.1:1' },
-    timeout: 25_000,
-  })).stdout;
+  const probe = async (fn, path) =>
+    (
+      await exec(
+        process.env.GD_TEST_BASH || 'bash',
+        [
+          '-c',
+          `. ${q(join(REPO_DIR, 'scripts/lib/common.sh'))}\n${fn} 127.0.0.1 ${port} ${q(path)} ghost.test`,
+        ],
+        {
+          env: {
+            ...process.env,
+            CURL_HOME: dir,
+            http_proxy: 'http://127.0.0.1:1',
+            ALL_PROXY: 'http://127.0.0.1:1',
+          },
+          timeout: 25_000,
+        },
+      )
+    ).stdout;
   try {
     assert.equal((await probe('install_http_status', '/ok')).trim(), '200');
     assert.equal((await probe('install_http_status', '/redirect')).trim(), '302');

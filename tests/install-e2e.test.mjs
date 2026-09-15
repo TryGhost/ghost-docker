@@ -10,13 +10,29 @@
 // real host ports, including 80 and 443.
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, statSync, readFileSync, writeFileSync, mkdirSync, symlinkSync, realpathSync } from 'node:fs';
+import {
+  existsSync,
+  statSync,
+  readFileSync,
+  writeFileSync,
+  mkdirSync,
+  symlinkSync,
+  realpathSync,
+} from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { delimiter } from 'node:path';
 import {
-  tempDir, cleanup, makeCandidateRelease, git, run, occupyPort, compose,
-  dockerAvailable, shOk, q, REPO_DIR,
+  tempDir,
+  cleanup,
+  makeCandidateRelease,
+  run,
+  occupyPort,
+  compose,
+  dockerAvailable,
+  shOk,
+  q,
+  REPO_DIR,
 } from './helpers.mjs';
 
 const enabled = process.env.GD_TEST_INSTALL === '1' && dockerAvailable();
@@ -28,14 +44,22 @@ const CANDIDATE_TAG = 'v9.9.9-beta.1';
 const PROXY_CONTAINER = 'ghost-docker-test-proxy';
 
 let dir;
-let repo;
 let repoUrl;
 const installed = new Set();
 
 /** Clone the candidate release into a directory, as bootstrap.sh would. */
 const clone = (name) => {
   const target = join(dir, name);
-  execFileSync('git', ['clone', '--quiet', '--depth', '1', '--branch', CANDIDATE_TAG, repoUrl, target]);
+  execFileSync('git', [
+    'clone',
+    '--quiet',
+    '--depth',
+    '1',
+    '--branch',
+    CANDIDATE_TAG,
+    repoUrl,
+    target,
+  ]);
   return target;
 };
 
@@ -55,13 +79,18 @@ const adminSite = async (port, host = 'localhost') => {
 };
 
 const down = (site) => {
-  if (existsSync(join(site, '.env'))) compose(site, ['down', '-v', '--remove-orphans']);
+  if (existsSync(join(site, '.env'))) {
+    compose(site, ['down', '-v', '--remove-orphans']);
+  }
 };
 
 // Sites are torn down together at the very end, not in each suite's own after:
 // two of the checks need an earlier suite's site still running alongside a
 // later one, so no site may be downed while a sibling suite is still asserting.
-const track = (site) => { installed.add(site); return site; };
+const track = (site) => {
+  installed.add(site);
+  return site;
+};
 
 /**
  * Caddy issues from its own internal CA rather than attempting a real ACME
@@ -76,10 +105,12 @@ const useInternalCerts = (site) => {
 describe('installing from a candidate release', { skip, concurrency: 1 }, () => {
   before(() => {
     dir = tempDir('install-e2e');
-    ({ repo, url: repoUrl } = makeCandidateRelease(dir, ['v1.0.0', CANDIDATE_TAG]));
+    ({ url: repoUrl } = makeCandidateRelease(dir, ['v1.0.0', CANDIDATE_TAG]));
   });
   after(() => {
-    for (const site of installed) down(site);
+    for (const site of installed) {
+      down(site);
+    }
     cleanup(dir);
   });
 
@@ -90,9 +121,11 @@ describe('installing from a candidate release', { skip, concurrency: 1 }, () => 
     });
 
     test('bootstrap resolves the release, clones it and runs its installer', () => {
-      const result = run(join(REPO_DIR, 'bootstrap.sh'),
+      const result = run(
+        join(REPO_DIR, 'bootstrap.sh'),
         ['--channel', 'beta', '--dir', site, '--local', '--no-prompt'],
-        { env: { GD_BOOTSTRAP_REPO: repoUrl }, timeout: 900_000 });
+        { env: { GD_BOOTSTRAP_REPO: repoUrl }, timeout: 900_000 },
+      );
       assert.equal(result.status, 0, result.output);
       assert.match(result.stdout, new RegExp(CANDIDATE_TAG.replace(/\./g, '\\.')));
       assert.match(result.stdout, /Ghost is installed/);
@@ -118,7 +151,11 @@ describe('installing from a candidate release', { skip, concurrency: 1 }, () => 
       // compare against the realpath, not the possibly-symlinked test path.
       assert.equal(recorded.site.dir, realpathSync(site));
       assert.match(recorded.ghost.version, /^\d+\.\d+\.\d+$/);
-      assert.match(recorded.ghost.digest, /^sha256:[0-9a-f]{64}$/, 'no digest recorded for recovery');
+      assert.match(
+        recorded.ghost.digest,
+        /^sha256:[0-9a-f]{64}$/,
+        'no digest recorded for recovery',
+      );
       assert.deepEqual(recorded.profiles, ['local']);
     });
 
@@ -130,8 +167,12 @@ describe('installing from a candidate release', { skip, concurrency: 1 }, () => 
       const config = JSON.parse(compose(site, ['config', '--format', 'json']).stdout);
       assert.equal(config.services.ghost.image, pin);
       const id = compose(site, ['ps', '-q', 'ghost']).stdout.trim();
-      assert.equal(execFileSync('docker', ['inspect', '-f', '{{.Config.Image}}', id],
-        { encoding: 'utf8' }).trim(), pin);
+      assert.equal(
+        execFileSync('docker', ['inspect', '-f', '{{.Config.Image}}', id], {
+          encoding: 'utf8',
+        }).trim(),
+        pin,
+      );
       const content = env(site, 'GHOST_CONTENT_PATH');
       assert.ok(content.endsWith('/content'), content);
       assert.match(env(site, 'GHOST_TINYBIRD_PATH'), /\/core\/server\/data\/tinybird$/);
@@ -153,11 +194,23 @@ describe('installing from a candidate release', { skip, concurrency: 1 }, () => 
     });
 
     test('the site is published on the loopback interface only', () => {
-      const config = JSON.parse(compose(site, ['ps', '--format', 'json']).stdout.trim().split('\n')[0] ?? '{}');
+      const config = JSON.parse(
+        compose(site, ['ps', '--format', 'json']).stdout.trim().split('\n')[0] ?? '{}',
+      );
       assert.ok(config, 'no containers');
-      const bindings = execFileSync('docker', ['inspect', '-f', '{{json .HostConfig.PortBindings}}',
-        compose(site, ['ps', '-q', 'ghost']).stdout.trim()], { encoding: 'utf8' });
-      const hosts = Object.values(JSON.parse(bindings)).flat().map((b) => b.HostIp);
+      const bindings = execFileSync(
+        'docker',
+        [
+          'inspect',
+          '-f',
+          '{{json .HostConfig.PortBindings}}',
+          compose(site, ['ps', '-q', 'ghost']).stdout.trim(),
+        ],
+        { encoding: 'utf8' },
+      );
+      const hosts = Object.values(JSON.parse(bindings))
+        .flat()
+        .map((b) => b.HostIp);
       assert.deepEqual(hosts, ['127.0.0.1']);
     });
 
@@ -210,7 +263,9 @@ describe('installing from a candidate release', { skip, concurrency: 1 }, () => 
       release = await occupyPort(24771);
     });
     after(async () => {
-      if (release) await release();
+      if (release) {
+        await release();
+      }
     });
 
     // A port chosen by the installer moves out of the way; a port the operator
@@ -231,13 +286,30 @@ describe('installing from a candidate release', { skip, concurrency: 1 }, () => 
     let site;
     before(() => {
       site = clone('existing-proxy');
-      const image = readFileSync(join(REPO_DIR, 'compose.yml'), 'utf8')
-        .match(/image: (caddy:[^\s@]+@sha256:[0-9a-f]+)/)[1];
+      const image = readFileSync(join(REPO_DIR, 'compose.yml'), 'utf8').match(
+        /image: (caddy:[^\s@]+@sha256:[0-9a-f]+)/,
+      )[1];
       execFileSync('docker', ['rm', '-f', PROXY_CONTAINER], { stdio: 'ignore' });
-      execFileSync('docker', [
-        'run', '-d', '--name', PROXY_CONTAINER, '-p', '80:80', '-p', '443:443',
-        image, 'caddy', 'respond', '--listen', ':80', 'the operator\'s own proxy',
-      ], { stdio: 'ignore' });
+      execFileSync(
+        'docker',
+        [
+          'run',
+          '-d',
+          '--name',
+          PROXY_CONTAINER,
+          '-p',
+          '80:80',
+          '-p',
+          '443:443',
+          image,
+          'caddy',
+          'respond',
+          '--listen',
+          ':80',
+          "the operator's own proxy",
+        ],
+        { stdio: 'ignore' },
+      );
     });
     after(() => {
       execFileSync('docker', ['rm', '-f', PROXY_CONTAINER], { stdio: 'ignore' });
@@ -252,9 +324,12 @@ describe('installing from a candidate release', { skip, concurrency: 1 }, () => 
       assert.match(result.stderr, new RegExp(PROXY_CONTAINER));
       assert.match(result.stderr, /Nothing was stopped/);
 
-      const running = execFileSync('docker', ['inspect', '-f', '{{.State.Running}}', PROXY_CONTAINER],
-        { encoding: 'utf8' }).trim();
-      assert.equal(running, 'true', 'the operator\'s proxy was stopped');
+      const running = execFileSync(
+        'docker',
+        ['inspect', '-f', '{{.State.Running}}', PROXY_CONTAINER],
+        { encoding: 'utf8' },
+      ).trim();
+      assert.equal(running, 'true', "the operator's proxy was stopped");
       assert.ok(!existsSync(join(site, '.env')), 'configuration was written anyway');
     });
   });
@@ -286,8 +361,14 @@ describe('installing from a candidate release', { skip, concurrency: 1 }, () => 
     test('the generated routes are installed, and the operator files are untouched', () => {
       const generated = readFileSync(join(site, 'caddy', 'sites', 'site.caddy'), 'utf8');
       assert.match(generated, /^ghost\.test \{/m);
-      assert.match(generated, new RegExp(`reverse_proxy ghost-${env(site, 'COMPOSE_PROJECT_NAME')}:2368`));
-      assert.equal(readFileSync(join(site, 'caddy', 'global', 'tls.caddy'), 'utf8'), 'local_certs\n');
+      assert.match(
+        generated,
+        new RegExp(`reverse_proxy ghost-${env(site, 'COMPOSE_PROJECT_NAME')}:2368`),
+      );
+      assert.equal(
+        readFileSync(join(site, 'caddy', 'global', 'tls.caddy'), 'utf8'),
+        'local_certs\n',
+      );
     });
 
     // Node's fetch forbids overriding the Host header, so Caddy would see
@@ -295,9 +376,15 @@ describe('installing from a candidate release', { skip, concurrency: 1 }, () => 
     // The installer's own curl helper sets it, which is what it verifies
     // with too, so drive the check through that rather than fetch.
     test('HTTP on the ingress port redirects to HTTPS for the site domain', () => {
-      const head = run('bash', ['-c',
-        `. ${JSON.stringify(join(site, 'scripts', 'lib', 'common.sh'))}\n` +
-        `install_http_head 127.0.0.1 ${env(site, 'HTTP_PORT')} / ghost.test`], { timeout: 60_000 });
+      const head = run(
+        'bash',
+        [
+          '-c',
+          `. ${JSON.stringify(join(site, 'scripts', 'lib', 'common.sh'))}\n` +
+            `install_http_head 127.0.0.1 ${env(site, 'HTTP_PORT')} / ghost.test`,
+        ],
+        { timeout: 60_000 },
+      );
       assert.match(head.stdout, /^HTTP\/[0-9.]+ 3\d\d/m, head.output);
       assert.match(head.stdout, /^location: https:\/\/ghost\.test/im, head.output);
     });
@@ -308,9 +395,15 @@ describe('installing from a candidate release', { skip, concurrency: 1 }, () => 
     // legitimately run before DNS is pointed and no certificate can exist yet;
     // here the internal CA removes that variable, so it must actually work.
     test('Ghost Admin answers over HTTPS through Caddy', () => {
-      const status = run('bash', ['-c',
-        `. ${JSON.stringify(join(site, 'scripts', 'lib', 'common.sh'))}\n` +
-        `install_https_status ${JSON.stringify(site)} ghost.test`], { timeout: 180_000 });
+      const status = run(
+        'bash',
+        [
+          '-c',
+          `. ${JSON.stringify(join(site, 'scripts', 'lib', 'common.sh'))}\n` +
+            `install_https_status ${JSON.stringify(site)} ghost.test`,
+        ],
+        { timeout: 180_000 },
+      );
       assert.equal(status.stdout.trim(), '200', status.output);
     });
   });
@@ -363,8 +456,11 @@ describe('installing from a candidate release', { skip, concurrency: 1 }, () => 
       const missing = [];
       for (const tool of utilities) {
         const found = run('sh', ['-c', `command -v ${tool}`]).stdout.trim();
-        if (!found) missing.push(tool);
-        else symlinkSync(found, join(bin, tool));
+        if (!found) {
+          missing.push(tool);
+        } else {
+          symlinkSync(found, join(bin, tool));
+        }
       }
       assert.deepEqual(missing, [], 'a declared utility is not installed on this host');
 
@@ -372,9 +468,11 @@ describe('installing from a candidate release', { skip, concurrency: 1 }, () => 
         const found = run('sh', ['-c', `command -v ${command}`]).stdout.trim();
         assert.ok(found, `${command} is not installed on this host`);
         const wrapper = join(bin, command);
-        writeFileSync(wrapper,
+        writeFileSync(
+          wrapper,
           `#!/bin/sh\nexec env PATH=${JSON.stringify(realPath)} ${JSON.stringify(found)} "$@"\n`,
-          { mode: 0o755 });
+          { mode: 0o755 },
+        );
       }
 
       const result = install(site, ['--local', '--no-prompt', '--no-start'], {

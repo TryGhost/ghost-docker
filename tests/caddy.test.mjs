@@ -6,7 +6,17 @@ import { test, describe, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, rmSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { tempDir, cleanup, makeSite, writeEnv, sh, shOk, shSucceeds, dockerAvailable, q } from './helpers.mjs';
+import {
+  tempDir,
+  cleanup,
+  makeSite,
+  writeEnv,
+  sh,
+  shOk,
+  shSucceeds,
+  dockerAvailable,
+  q,
+} from './helpers.mjs';
 
 const CADDY_ROOT = '/etc/caddy';
 const STAGED_SITES = `${CADDY_ROOT}/.staging/sites`;
@@ -61,11 +71,17 @@ describe('caddy.sh', () => {
       assert.doesNotMatch(routes, /\{\{|\$\{/, 'an unsubstituted placeholder reached the output');
     });
 
-    test('optional profiles point at this site\'s own services', () => {
+    test("optional profiles point at this site's own services", () => {
       setup({ COMPOSE_PROFILES: 'production,analytics,activitypub' });
       const routes = render();
-      assert.match(routes, /import \/etc\/caddy\/snippets\/TrafficAnalytics traffic-analytics-ghost-example-com:3000/);
-      assert.match(routes, /import \/etc\/caddy\/snippets\/ActivityPub activitypub-ghost-example-com:8080/);
+      assert.match(
+        routes,
+        /import \/etc\/caddy\/snippets\/TrafficAnalytics traffic-analytics-ghost-example-com:3000/,
+      );
+      assert.match(
+        routes,
+        /import \/etc\/caddy\/snippets\/ActivityPub activitypub-ghost-example-com:8080/,
+      );
       assert.doesNotMatch(routes, /ap\.ghost\.org/);
     });
 
@@ -78,7 +94,12 @@ describe('caddy.sh', () => {
     });
 
     test('local mode renders no routes at all', () => {
-      setup({ COMPOSE_PROFILES: 'local', SITE_MODE: 'local', URL: 'http://localhost:2368', DOMAIN: undefined });
+      setup({
+        COMPOSE_PROFILES: 'local',
+        SITE_MODE: 'local',
+        URL: 'http://localhost:2368',
+        DOMAIN: undefined,
+      });
       assert.ok(!shSucceeds(`caddy_render ${q(site)}`));
     });
   });
@@ -88,7 +109,9 @@ describe('caddy.sh', () => {
       setup({ COMPOSE_PROFILES: 'production,analytics,activitypub' });
       render();
       for (const f of readdirSync(join(site, 'caddy', 'custom'))) {
-        if (f.endsWith('.caddy')) rmSync(join(site, 'caddy', 'custom', f));
+        if (f.endsWith('.caddy')) {
+          rmSync(join(site, 'caddy', 'custom', f));
+        }
       }
     });
 
@@ -129,29 +152,35 @@ describe('caddy.sh', () => {
 
     test('no generated routes at all is an error', () => {
       const stagedDir = join(site, 'caddy', '.staging', 'sites');
-      for (const f of readdirSync(stagedDir)) rmSync(join(stagedDir, f));
+      for (const f of readdirSync(stagedDir)) {
+        rmSync(join(stagedDir, f));
+      }
       assert.notEqual(validate().status, 0);
     });
   });
 
-  describe('install and restore', { skip: dockerAvailable() ? false : 'docker is not available' }, () => {
-    test('installs, validates in place, and can be rolled back', () => {
-      setup();
-      render();
-      shOk(`caddy_install ${q(site)}`);
+  describe(
+    'install and restore',
+    { skip: dockerAvailable() ? false : 'docker is not available' },
+    () => {
+      test('installs, validates in place, and can be rolled back', () => {
+        setup();
+        render();
+        shOk(`caddy_install ${q(site)}`);
 
-      const live = join(site, 'caddy', 'sites', 'site.caddy');
-      const installed = readFileSync(live, 'utf8');
-      assert.match(installed, /reverse_proxy ghost-ghost-example-com:2368/);
-      assert.equal(sh(`caddy_validate ${q(site)}`).status, 0);
+        const live = join(site, 'caddy', 'sites', 'site.caddy');
+        const installed = readFileSync(live, 'utf8');
+        assert.match(installed, /reverse_proxy ghost-ghost-example-com:2368/);
+        assert.equal(sh(`caddy_validate ${q(site)}`).status, 0);
 
-      setup({ DOMAIN: 'changed.example.com', URL: 'https://changed.example.com' });
-      render();
-      const backup = shOk(`caddy_install ${q(site)}`).trim();
-      assert.match(readFileSync(live, 'utf8'), /^changed\.example\.com \{$/m);
+        setup({ DOMAIN: 'changed.example.com', URL: 'https://changed.example.com' });
+        render();
+        const backup = shOk(`caddy_install ${q(site)}`).trim();
+        assert.match(readFileSync(live, 'utf8'), /^changed\.example\.com \{$/m);
 
-      shOk(`caddy_restore ${q(site)} ${q(backup)}`);
-      assert.equal(readFileSync(live, 'utf8'), installed);
-    });
-  });
+        shOk(`caddy_restore ${q(site)} ${q(backup)}`);
+        assert.equal(readFileSync(live, 'utf8'), installed);
+      });
+    },
+  );
 });

@@ -3,7 +3,17 @@ import { test, describe, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, appendFileSync, writeFileSync, readFileSync, rmSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
-import { tempDir, cleanup, makeSite, sh, shOk, shSucceeds, writeEnv, q, REPO_DIR } from './helpers.mjs';
+import {
+  tempDir,
+  cleanup,
+  makeSite,
+  sh,
+  shOk,
+  shSucceeds,
+  writeEnv,
+  q,
+  REPO_DIR,
+} from './helpers.mjs';
 
 const productionEnv = (site) => ({
   PROJECT_DIR: site,
@@ -89,9 +99,6 @@ describe('config_validate_env', () => {
     assert.match(expectRejected('missing DOMAIN'), /DOMAIN is required/);
   });
 
-
-
-
   // URL scheme, port format and restart policy are left to Compose and Docker,
   // which reject them with clear errors of their own. What follows is only
   // what nothing else catches.
@@ -99,9 +106,6 @@ describe('config_validate_env', () => {
     shOk(`env_set ${q(envFile)} DOMAIN other.example.com`);
     assert.match(expectRejected('mismatched domain'), /disagree/);
   });
-
-
-
 
   test('an ActivityPub database that is never provisioned is rejected', () => {
     shOk(`env_set ${q(envFile)} ACTIVITYPUB_DATABASE_NAME ap_custom`);
@@ -115,7 +119,9 @@ describe('config_validate_env', () => {
     // future layout change is caught without updating a mapping. Skipped when
     // the images are not present locally.
     const probe = sh(`config_image_content_path ghost:6-next-alpine`);
-    if (probe.status !== 0) return; // image not pulled
+    if (probe.status !== 0) {
+      return;
+    } // image not pulled
 
     shOk(`env_set ${q(envFile)} GHOST_VERSION 6-next-alpine`);
     shOk(`env_set ${q(envFile)} GHOST_CONTENT_PATH /var/lib/ghost/content`);
@@ -185,7 +191,13 @@ describe('config_validate_ghost_env', () => {
     assert.equal(result.status, 0, result.stdout.toString());
   });
 
-  for (const key of ['url', 'admin__url', 'database__connection__host', 'server__port', 'NODE_ENV']) {
+  for (const key of [
+    'url',
+    'admin__url',
+    'database__connection__host',
+    'server__port',
+    'NODE_ENV',
+  ]) {
     test(`the container-owned key ${key} is rejected`, () => {
       shOk(`env_set ${q(ghostEnv)} ${q(key)} anything`);
       const result = validate();
@@ -211,12 +223,18 @@ describe('config_validate_ghost_env', () => {
     try {
       writeFileSync(
         composeFile,
-        original.replace('      database__client: mysql', '      database__client: mysql\n      brand__new__key: owned-by-container'),
+        original.replace(
+          '      database__client: mysql',
+          '      database__client: mysql\n      brand__new__key: owned-by-container',
+        ),
       );
       shOk(`env_set ${q(ghostEnv)} brand__new__key mine`);
       const result = validate();
       assert.notEqual(result.status, 0);
-      assert.match(result.stdout.toString(), /brand__new__key is set by the container \(owned-by-container\)/);
+      assert.match(
+        result.stdout.toString(),
+        /brand__new__key is set by the container \(owned-by-container\)/,
+      );
     } finally {
       writeFileSync(composeFile, original);
     }

@@ -1,6 +1,14 @@
 import { execFileSync, execFile, spawnSync } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtempSync, mkdirSync, rmSync, cpSync, writeFileSync, chmodSync, readdirSync } from 'node:fs';
+import {
+  mkdtempSync,
+  mkdirSync,
+  rmSync,
+  cpSync,
+  writeFileSync,
+  chmodSync,
+  readdirSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,7 +18,17 @@ const execFileAsync = promisify(execFile);
 export const TESTS_DIR = dirname(fileURLToPath(import.meta.url));
 export const REPO_DIR = join(TESTS_DIR, '..');
 
-const LIBS = ['fs', 'env', 'compose', 'config', 'caddy', 'meta', 'preflight', 'install', 'operation'];
+const LIBS = [
+  'fs',
+  'env',
+  'compose',
+  'config',
+  'caddy',
+  'meta',
+  'preflight',
+  'install',
+  'operation',
+];
 
 /**
  * Run a bash snippet with every ghost-docker library sourced.
@@ -34,7 +52,9 @@ export function sh(script, { cwd = REPO_DIR, env = {}, input } = {}) {
     input,
     env: { ...process.env, ...env },
   });
-  if (result.error) throw result.error;
+  if (result.error) {
+    throw result.error;
+  }
   return {
     stdout: result.stdout ?? Buffer.alloc(0),
     stderr: result.stderr ?? Buffer.alloc(0),
@@ -46,7 +66,9 @@ export function sh(script, { cwd = REPO_DIR, env = {}, input } = {}) {
 export function shOk(script, options) {
   const result = sh(script, options);
   if (result.status !== 0) {
-    throw new Error(`shell exited ${result.status}: ${result.stderr.toString()}${result.stdout.toString()}`);
+    throw new Error(
+      `shell exited ${result.status}: ${result.stderr.toString()}${result.stdout.toString()}`,
+    );
   }
   return result.stdout.toString();
 }
@@ -101,7 +123,9 @@ export function writeEnv(file, values) {
   writeFileSync(file, '', { mode: 0o600 });
   chmodSync(file, 0o600);
   for (const [key, value] of Object.entries(values)) {
-    if (value === undefined) continue;
+    if (value === undefined) {
+      continue;
+    }
     shOk(`env_set ${q(file)} ${q(key)} ${q(value)}`);
   }
 }
@@ -119,7 +143,9 @@ export function compose(site, args, { bin, env = {} } = {}) {
     });
     return { stdout, stderr: '', status: 0 };
   } catch (error) {
-    if (error.status === undefined) throw error;
+    if (error.status === undefined) {
+      throw error;
+    }
     return { stdout: error.stdout ?? '', stderr: error.stderr ?? '', status: error.status };
   }
 }
@@ -162,8 +188,12 @@ export async function waitFor(check, { timeoutMs, intervalMs = 5000 } = {}) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     const result = await check();
-    if (result) return result;
-    if (Date.now() > deadline) return null;
+    if (result) {
+      return result;
+    }
+    if (Date.now() > deadline) {
+      return null;
+    }
     await sleep(intervalMs);
   }
 }
@@ -172,13 +202,17 @@ export async function waitFor(check, { timeoutMs, intervalMs = 5000 } = {}) {
 export function composeBinaries() {
   const bins = [{ label: `compose ${composeVersion()}`, bin: undefined }];
   const min = process.env.GD_TEST_MIN_COMPOSE;
-  if (min) bins.push({ label: `compose ${composeVersion(min)} (declared minimum)`, bin: min });
+  if (min) {
+    bins.push({ label: `compose ${composeVersion(min)} (declared minimum)`, bin: min });
+  }
   return bins;
 }
 
 function composeVersion(bin) {
   const argv = bin ? ['version', '--short'] : ['compose', 'version', '--short'];
-  return execFileSync(bin ?? 'docker', argv, { encoding: 'utf8' }).trim().replace(/^v/, '');
+  return execFileSync(bin ?? 'docker', argv, { encoding: 'utf8' })
+    .trim()
+    .replace(/^v/, '');
 }
 
 // --- Installation ----------------------------------------------------------
@@ -189,22 +223,35 @@ function composeVersion(bin) {
 
 /** Never travels with a release: local state, secrets, and generated routes. */
 const RELEASE_EXCLUDE = new Set([
-  '.git', 'data', 'node_modules', '.env', 'ghost.env', '.ghost-docker.json',
+  '.git',
+  'data',
+  'node_modules',
+  '.env',
+  'ghost.env',
+  '.ghost-docker.json',
 ]);
 
 /** Copy the working tree into `dest` as a release would ship it. */
 export function copyWorktree(dest) {
   mkdirSync(dest, { recursive: true });
   for (const entry of readdirSync(REPO_DIR)) {
-    if (RELEASE_EXCLUDE.has(entry) || entry.startsWith('.ghost-') ||
-        entry.startsWith('.env.tmp.') || entry.startsWith('ghost.env.tmp.')) continue;
+    if (
+      RELEASE_EXCLUDE.has(entry) ||
+      entry.startsWith('.ghost-') ||
+      entry.startsWith('.env.tmp.') ||
+      entry.startsWith('ghost.env.tmp.')
+    ) {
+      continue;
+    }
     cpSync(join(REPO_DIR, entry), join(dest, entry), { recursive: true });
   }
   // Generated and operator-owned routes are per-site, not part of a release.
   for (const sub of ['sites', 'custom', 'global']) {
     const routes = join(dest, 'caddy', sub);
     for (const file of readdirSync(routes)) {
-      if (file.endsWith('.caddy')) rmSync(join(routes, file), { force: true });
+      if (file.endsWith('.caddy')) {
+        rmSync(join(routes, file), { force: true });
+      }
     }
   }
   rmSync(join(dest, 'caddy', '.staging'), { recursive: true, force: true });
@@ -219,11 +266,15 @@ const GIT_IDENTITY = {
 };
 
 export function git(repo, args) {
-  return execFileSync('git', ['-C', repo, '-c', 'commit.gpgsign=false', '-c', 'tag.gpgsign=false', ...args], {
-    encoding: 'utf8',
-    env: { ...process.env, ...GIT_IDENTITY },
-    stdio: ['pipe', 'pipe', 'pipe'],
-  });
+  return execFileSync(
+    'git',
+    ['-C', repo, '-c', 'commit.gpgsign=false', '-c', 'tag.gpgsign=false', ...args],
+    {
+      encoding: 'utf8',
+      env: { ...process.env, ...GIT_IDENTITY },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    },
+  );
 }
 
 /**
@@ -244,7 +295,9 @@ export function makeCandidateRelease(dir, tags = ['v9.9.9']) {
   git(repo, ['add', '-A']);
   git(repo, ['commit', '-q', '-m', 'candidate release']);
   tags.forEach((tag, index) => {
-    if (index > 0) git(repo, ['commit', '-q', '--allow-empty', '-m', `release ${tag}`]);
+    if (index > 0) {
+      git(repo, ['commit', '-q', '--allow-empty', '-m', `release ${tag}`]);
+    }
     git(repo, ['tag', tag]);
   });
   return { repo, tags, url: `file://${repo}` };
@@ -259,7 +312,9 @@ export function run(command, args, { cwd, env = {}, input, timeout } = {}) {
     encoding: 'utf8',
     env: { ...process.env, ...env },
   });
-  if (result.error && result.error.code !== 'ETIMEDOUT') throw result.error;
+  if (result.error && result.error.code !== 'ETIMEDOUT') {
+    throw result.error;
+  }
   return {
     stdout: result.stdout ?? '',
     stderr: result.stderr ?? '',

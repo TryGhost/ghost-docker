@@ -1,19 +1,18 @@
 const fs = require('fs');
-const path = require('path');
 
 // Hardcoded exclusions - add any default exclusions here
 // Can be exact matches or prefixes (to exclude entire sections)
 const HARDCODED_EXCLUSIONS = [
-    // We don't want the database, server, logging, process or paths
-    // entries since they're not relevant in Docker anymore
-    'database',
-    'server',
-    'logging',
-    'process',
-    'paths',
-    // We don't need URL or admin__url because the container owns them
-    'url',
-    'admin__url',
+  // We don't want the database, server, logging, process or paths
+  // entries since they're not relevant in Docker anymore
+  'database',
+  'server',
+  'logging',
+  'process',
+  'paths',
+  // We don't need URL or admin__url because the container owns them
+  'url',
+  'admin__url',
 ];
 
 // Parse command line arguments
@@ -22,15 +21,15 @@ function parseArgs() {
   const options = {
     configFile: null,
     exclude: [],
-    include: null
+    include: null,
   };
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--exclude' && i + 1 < args.length) {
-      options.exclude = args[i + 1].split(',').map(s => s.trim());
+      options.exclude = args[i + 1].split(',').map((s) => s.trim());
       i++; // Skip next argument
     } else if (args[i] === '--include' && i + 1 < args.length) {
-      options.include = args[i + 1].split(',').map(s => s.trim());
+      options.include = args[i + 1].split(',').map((s) => s.trim());
       i++; // Skip next argument
     } else if (!args[i].startsWith('--')) {
       options.configFile = args[i];
@@ -38,7 +37,9 @@ function parseArgs() {
   }
 
   if (!options.configFile) {
-    console.error('Usage: node config-to-env.js <config.json> [--exclude key1,key2] [--include key1,key2]');
+    console.error(
+      'Usage: node config-to-env.js <config.json> [--exclude key1,key2] [--include key1,key2]',
+    );
     process.exit(1);
   }
 
@@ -83,13 +84,21 @@ function formatValue(value) {
   const text = String(value);
   let out = '';
   for (const c of text) {
-    if (c === '\\') { out += '\\\\'; }
-    else if (c === '"') { out += '\\"'; }
-    else if (c === '$') { out += '$$'; }
-    else if (c === '\n') { out += '\\n'; }
-    else if (c === '\r') { out += '\\r'; }
-    else if (c === '\t') { out += '\\t'; }
-    else { out += c; }
+    if (c === '\\') {
+      out += '\\\\';
+    } else if (c === '"') {
+      out += '\\"';
+    } else if (c === '$') {
+      out += '$$';
+    } else if (c === '\n') {
+      out += '\\n';
+    } else if (c === '\r') {
+      out += '\\r';
+    } else if (c === '\t') {
+      out += '\\t';
+    } else {
+      out += c;
+    }
   }
   return `"${out}"`;
 }

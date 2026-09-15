@@ -1,7 +1,10 @@
 # Recovery checkpoints
 
 S4 introduces `scripts/recovery.sh` and a containerized manager. The host still
-needs only the installer prerequisites; Node runs inside the manager. A source
+needs only the installer prerequisites; Node runs inside the manager. The manager
+is TypeScript executed directly by the pinned Node 22 image, with no compilation
+step or npm runtime dependencies. See `docs/development.md` for type-checking and
+formatting. A source
 checkout builds its own manager before downtime and executes the resulting image
 ID. Releases publish `ghcr.io/tryghost/ghost-docker/manager`; set
 `GD_MANAGER_IMAGE=ghcr.io/tryghost/ghost-docker/manager@sha256:…` to use a published

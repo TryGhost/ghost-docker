@@ -4,5 +4,5 @@ RUN apk add --no-cache bash jq curl
 COPY --from=docker /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=docker /usr/local/libexec/docker/cli-plugins /usr/local/libexec/docker/cli-plugins
 COPY scripts/lib /opt/scripts/lib
-COPY manager/*.mjs /opt/manager/
-ENTRYPOINT ["node", "/opt/manager/main.mjs"]
+COPY manager/*.ts manager/package.json /opt/manager/
+ENTRYPOINT ["node", "/opt/manager/main.ts"]

@@ -18,7 +18,9 @@ import { tempDir, cleanup, sh, shValue, q, REPO_DIR } from './helpers.mjs';
 // invariant — the helper migrate.sh calls exists and runs — instead of one
 // spelling of its filename.
 const MIGRATE = readFileSync(join(REPO_DIR, 'scripts', 'migrate.sh'), 'utf8');
-const REFERENCED = [...new Set([...MIGRATE.matchAll(/scripts\/(config-to-env\.[a-z]+)/g)].map((m) => m[1]))];
+const REFERENCED = [
+  ...new Set([...MIGRATE.matchAll(/scripts\/(config-to-env\.[a-z]+)/g)].map((m) => m[1])),
+];
 const SCRIPT = join(REPO_DIR, 'scripts', REFERENCED[0] ?? 'config-to-env.js');
 
 describe('legacy migration helper', () => {
@@ -55,14 +57,21 @@ describe('legacy migration helper', () => {
       const ghostEnv = join(dir, 'ghost.env');
       writeFileSync(ghostEnv, out);
       assert.equal(shValue(`env_get ${q(ghostEnv)} mail__options__auth__pass`).trim(), 'p$ss"word');
-      assert.ok(sh(`env_lint ${q(ghostEnv)}`).status === 0, 'generated ghost.env fails its own lint');
+      assert.ok(
+        sh(`env_lint ${q(ghostEnv)}`).status === 0,
+        'generated ghost.env fails its own lint',
+      );
     } finally {
       cleanup(dir);
     }
   });
 
   test('migrate.sh calls exactly one helper, and it exists', () => {
-    assert.equal(REFERENCED.length, 1, `migrate.sh references ${REFERENCED.length} helpers: ${REFERENCED}`);
+    assert.equal(
+      REFERENCED.length,
+      1,
+      `migrate.sh references ${REFERENCED.length} helpers: ${REFERENCED}`,
+    );
     assert.ok(existsSync(SCRIPT), `migrate.sh calls ${REFERENCED[0]}, which does not exist`);
   });
 });

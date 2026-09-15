@@ -103,3 +103,6 @@ caddy/Caddyfile.local
 .ghost-docker.json.tmp*
 .env.tmp.*
 ghost.env.tmp.*
+
+# Development tooling only; never part of the manager runtime.
+node_modules/

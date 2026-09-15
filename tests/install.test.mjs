@@ -9,8 +9,18 @@ import assert from 'node:assert/strict';
 import { existsSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  tempDir, cleanup, copyWorktree, makeCandidateRelease, git, run, occupyPort,
-  sh, shOk, shSucceeds, q, REPO_DIR,
+  tempDir,
+  cleanup,
+  copyWorktree,
+  makeCandidateRelease,
+  git,
+  run,
+  occupyPort,
+  sh,
+  shOk,
+  shSucceeds,
+  q,
+  REPO_DIR,
 } from './helpers.mjs';
 
 // A checkout to run install.sh from. Copied rather than used in place so a
@@ -63,7 +73,11 @@ describe('install.sh options', () => {
   });
 
   test('the final-phase flags are refused as unimplemented, not as unknown', () => {
-    for (const flag of [['--image-registry', 'ghcr'], ['--ghost-channel', 'nightly'], ['--without', 'redis']]) {
+    for (const flag of [
+      ['--image-registry', 'ghcr'],
+      ['--ghost-channel', 'nightly'],
+      ['--without', 'redis'],
+    ]) {
       const result = install(site, ['--local', ...flag]);
       assert.equal(result.status, 3, flag[0]);
       assert.match(result.stderr, /not implemented yet/);
@@ -218,8 +232,14 @@ describe('preflight', () => {
 
 describe('site identity and secrets', () => {
   test('a production project name is derived from the domain', () => {
-    assert.equal(shOk('install_project_name production Example.COM /tmp/x').trim(), 'ghost-example-com');
-    assert.equal(shOk('install_project_name production blog.example.com /tmp/x').trim(), 'ghost-blog-example-com');
+    assert.equal(
+      shOk('install_project_name production Example.COM /tmp/x').trim(),
+      'ghost-example-com',
+    );
+    assert.equal(
+      shOk('install_project_name production blog.example.com /tmp/x').trim(),
+      'ghost-blog-example-com',
+    );
   });
 
   // Two local sites on one host share no state, so their identities must
@@ -272,7 +292,10 @@ describe('Ghost version resolution', () => {
       const result = sh(fakeDocker, { env: { MOCK_DIGEST: digest } });
       assert.equal(result.status, 0, result.stderr.toString());
       assert.deepEqual(result.stdout.toString().trim().split('\t'), [
-        '6-alpine', '6.3.1', digest, '/var/lib/ghost/content',
+        '6-alpine',
+        '6.3.1',
+        digest,
+        '/var/lib/ghost/content',
         '/var/lib/ghost/current/core/server/data/tinybird',
       ]);
       assert.equal(readFileSync(pulls, 'utf8').trim().split('\n').length, 1);
@@ -294,12 +317,24 @@ describe('release selection', () => {
   // bootstrap.sh is sourced in library mode so that ordering can be tested
   // without cloning anything.
   const bootstrap = (script, env = {}) =>
-    run('bash', ['-c', `GD_BOOTSTRAP_SOURCED=1 . ${JSON.stringify(join(REPO_DIR, 'bootstrap.sh'))}\n${script}`], { env });
+    run(
+      'bash',
+      [
+        '-c',
+        `GD_BOOTSTRAP_SOURCED=1 . ${JSON.stringify(join(REPO_DIR, 'bootstrap.sh'))}\n${script}`,
+      ],
+      { env },
+    );
 
   before(() => {
     dir = tempDir('release');
     ({ repo, url: repoUrl } = makeCandidateRelease(dir, [
-      'v1.9.0', 'v1.10.0', 'v1.11.0-beta.2', 'v1.11.0-beta.10', 'v0.1.0', 'not-a-release',
+      'v1.9.0',
+      'v1.10.0',
+      'v1.11.0-beta.2',
+      'v1.11.0-beta.10',
+      'v0.1.0',
+      'not-a-release',
     ]));
   });
   after(() => cleanup(dir));
@@ -320,7 +355,8 @@ describe('release selection', () => {
       const config = join(dir, 'gitconfig');
       writeFileSync(config, '[versionsort]\n  suffix = -other\n  suffix = \n  suffix = -beta.\n');
       const result = bootstrap('_latest_release beta', {
-        GD_BOOTSTRAP_REPO: repo, GIT_CONFIG_GLOBAL: config,
+        GD_BOOTSTRAP_REPO: repo,
+        GIT_CONFIG_GLOBAL: config,
       });
       assert.equal(result.status, 0, result.output);
       assert.equal(result.stdout.trim(), 'v1.11.0');
@@ -349,10 +385,14 @@ describe('release selection', () => {
     const occupied = join(dir, 'occupied');
     mkdirSync(occupied, { recursive: true });
     writeFileSync(join(occupied, 'something'), 'x');
-    const result = run(join(REPO_DIR, 'bootstrap.sh'), ['--dir', occupied, '--ref', 'v1.10.0', '--local'], {
-      env: { GD_BOOTSTRAP_REPO: repoUrl },
-      timeout: 60_000,
-    });
+    const result = run(
+      join(REPO_DIR, 'bootstrap.sh'),
+      ['--dir', occupied, '--ref', 'v1.10.0', '--local'],
+      {
+        env: { GD_BOOTSTRAP_REPO: repoUrl },
+        timeout: 60_000,
+      },
+    );
     assert.notEqual(result.status, 0);
     // Checked before the daemon probe: a wrong directory should be reported
     // straight away, not after waiting on Docker.
