@@ -163,8 +163,12 @@ Directories/files/archives are private from creation (`0700`/`0600`). Existing
 outputs, source overlap (including symlink aliases), and archive collisions are
 refused before source lifecycle changes. Supported content includes hidden files,
 full themes, settings, files/images/media, and data redirects. Runtime logs/apps,
-SQLite files, external storage and custom adapters are omitted. Links/special
-files inside copied content are rejected explicitly by the exporter.
+SQLite files, external storage and custom adapters are omitted. Individual theme
+directory links under `content/themes/` are resolved and materialized as regular
+directories, including CLI defaults linked through `current` and external
+development themes. Output may not overlap their resolved targets. Broken/cyclic
+theme links, links to non-directories, nested links and other content links/special
+files are rejected explicitly by the exporter.
 
 Portable content/member files preserve Ghost API response bytes, not a complete
 database. Author data travels but reusable staff authentication does not; IDs may
