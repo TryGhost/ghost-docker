@@ -94,6 +94,9 @@ export function copyTree(source: string, target: string, owner: Owner | null = n
   }
   fs.chownSync(target, ...(owner || ([stat.uid, stat.gid] as Owner)));
   if (stat.isDirectory()) {
+    // mkdir's mode is filtered by the manager's private umask. Restore the
+    // source permissions so service users can traverse their mounted config.
+    fs.chmodSync(target, stat.mode & 0o777);
     syncDirectory(target);
   }
 }

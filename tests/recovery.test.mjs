@@ -9,11 +9,40 @@ import {
   durableJSON,
   inventory,
   copyTree,
+  privateDirectory,
   verifyCheckpoint,
   checkSpace,
   retainCompleted,
 } from '../manager/storage.ts';
 import { tempDir, cleanup, sh, shOk, q } from './helpers.mjs';
+
+test('checkpoint copies preserve directory permissions under the manager umask', () => {
+  const dir = tempDir();
+  const source = path.join(dir, 'mysql-init');
+  const checkpoint = path.join(dir, 'checkpoint');
+  const restored = path.join(dir, 'restored');
+  const previousMask = process.umask(0o077);
+  try {
+    fs.mkdirSync(source);
+    fs.chmodSync(source, 0o755);
+    fs.mkdirSync(path.join(source, 'nested'));
+    fs.chmodSync(path.join(source, 'nested'), 0o750);
+    fs.writeFileSync(path.join(source, 'init.sh'), '#!/bin/sh\n');
+    fs.chmodSync(path.join(source, 'init.sh'), 0o755);
+    privateDirectory(checkpoint);
+    copyTree(source, path.join(checkpoint, 'mysql-init'));
+    copyTree(path.join(checkpoint, 'mysql-init'), restored);
+    for (const copied of [path.join(checkpoint, 'mysql-init'), restored]) {
+      assert.equal(fs.statSync(copied).mode & 0o777, 0o755);
+      assert.equal(fs.statSync(path.join(copied, 'nested')).mode & 0o777, 0o750);
+      assert.equal(fs.statSync(path.join(copied, 'init.sh')).mode & 0o777, 0o755);
+    }
+    assert.equal(fs.statSync(checkpoint).mode & 0o777, 0o700);
+  } finally {
+    process.umask(previousMask);
+    cleanup(dir);
+  }
+});
 
 test('operation lock excludes another live process and recover cannot steal it', async () => {
   const dir = tempDir();

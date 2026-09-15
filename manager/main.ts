@@ -74,7 +74,8 @@ const composeArgs = (...argv: string[]) => [
   `${site}/compose.yml`,
   ...argv,
 ];
-const compose = (...argv: string[]) => run('docker', composeArgs(...argv));
+const compose = (...argv: string[]) =>
+  run('docker', composeArgs(...argv), { label: `Docker Compose ${argv[0]}` });
 
 async function envGet(key: string, fallback = ''): Promise<string> {
   try {
@@ -264,7 +265,7 @@ async function sql(db: DatabaseConnection, sqlText: string) {
       '-e',
       sqlText,
     ),
-    { env: db.env },
+    { env: db.env, label: 'Database query' },
   );
 }
 
@@ -635,7 +636,7 @@ async function restorePayload(source: string) {
       '--port=3306',
       '--user=root',
     ),
-    { env: state.db.env, input: `${payload}/database.sql` },
+    { env: state.db.env, input: `${payload}/database.sql`, label: 'Database restore' },
   );
   for (const [database, tables] of Object.entries(manifest.counts)) {
     for (const [table, count] of Object.entries(tables)) {
