@@ -62,7 +62,7 @@ stand as written.
 | `url` | Required public URL, unchanged from source config. |
 | `adminUrl` | Optional separate admin URL, unchanged. |
 | `database.path` | Required relative path: `database.sql` for MySQL, content JSON for portable. |
-| `database.members` | Required for portable only; relative members CSV path. |
+| `database.members` | Required for portable only; relative members CSV path. A successful zero-byte export means no members; skip member import for that file. |
 | `content` | Required `content/` asset root. |
 | `config` | Required raw string map, described below. |
 
