@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set -e
 
 # Check if .tinyb exists in current directory
 if [[ ! -f "./.tinyb" ]]
@@ -7,9 +8,9 @@ then
     if [[ -f "/home/tinybird/.tinyb" ]]
     then
         cp /home/tinybird/.tinyb ./.tinyb
-        echo "Copied .tinyb auth file to current directory"
+        echo "Copied .tinyb auth file to current directory" >&2
     else
-        echo "No .tinyb auth file found, please run 'docker compose run --rm tinybird-login' first to login"
+        echo "No .tinyb auth file found, please run 'docker compose run --rm tinybird-login' first to login" >&2
         exit 1
     fi
 fi

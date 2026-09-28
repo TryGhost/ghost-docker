@@ -15,14 +15,18 @@ Note: Currently Traffic Analytics features are behind a feature flag. For now, y
 ## Destructive deployments
 
 Deployments allow destructive operations so Ghost upgrades can remove obsolete
-resources, including materialized views. Before deploying, we require a nonempty
-`datasources/analytics_events.datasource` in the synced project. If it is missing
-or empty, deployment stops before calling Tinybird. Sync also stops on missing
-source directories or copy errors.
+resources, including materialized views. Before deploying, we run
+`tb --cloud --output json deploy --check --allow-destructive-operations` to ask
+Tinybird for the proposed changes without applying them. Deployment stops if the
+plan's `deleted_datasource_names` includes `analytics_events`, if the check fails,
+or if the JSON plan is missing or unrecognized. Other resource deletions are allowed.
+Sync also stops on missing source directories or copy errors.
 
-This guard prevents omission of the raw analytics datasource. It does not protect
+This guard prevents planned deletion of the raw analytics datasource. It does not protect
 against destructive schema changes to that datasource or deletions of other
-resources. Use a workspace dedicated to Ghost.
+resources. Use a workspace dedicated to Ghost. The check and deploy are separate
+requests; avoid concurrent deployments or changes to project files between them.
 
 After updating these scripts, rebuild the helper image with
-`docker compose build tinybird-deploy`.
+`docker compose build --no-cache tinybird-deploy` to install a current Tinybird CLI
+with JSON deployment-check output.
