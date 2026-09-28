@@ -13,6 +13,7 @@ WORKDIR /home/tinybird
 COPY handleLogin.sh /usr/local/bin/tinybird-login
 COPY getTokens.sh /usr/local/bin/get-tokens
 COPY tb-wrapper /usr/local/bin/tb-wrapper
+COPY deploy.sh /usr/local/bin/tinybird-deploy.sh
 
 RUN curl https://tinybird.co | sh
 

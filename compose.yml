@@ -145,14 +145,11 @@ services:
     # Do not alter this without updating the Ghost container as well
     image: ghost:${GHOST_VERSION:-6-alpine}
     command: >
-      sh -c "
-        if [ -d /var/lib/ghost/current/core/server/data/tinybird ]; then
-          rm -rf /data/tinybird/*;
-          cp -rf /var/lib/ghost/current/core/server/data/tinybird/* /data/tinybird/;
-          echo 'Tinybird files synced into shared volume.';
-        else
-          echo 'Tinybird source directory not found.';
-        fi
+      sh -ec "
+        test -d /var/lib/ghost/current/core/server/data/tinybird;
+        rm -rf /data/tinybird/*;
+        cp -rf /var/lib/ghost/current/core/server/data/tinybird/* /data/tinybird/;
+        echo 'Tinybird files synced into shared volume.';
       "
     volumes:
       - tinybird_files:/data/tinybird
@@ -169,10 +166,7 @@ services:
       context: ./tinybird
       dockerfile: Dockerfile
     working_dir: /data/tinybird
-    command: >
-      sh -c "
-        tb-wrapper --cloud deploy
-      "
+    command: [sh, /usr/local/bin/tinybird-deploy.sh]
     volumes:
       - tinybird_home:/home/tinybird
       - tinybird_files:/data/tinybird
