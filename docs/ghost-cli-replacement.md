@@ -2,8 +2,14 @@
 
 Status: revised 2026-09-02 after code and Compose review. This is an implementation
 plan, not authorization to execute its steps. Single-site installations are the
-initial release target. Shared infrastructure, image distribution/channel extensions,
-and default Redis follow in the final phases.
+initial release target. Image distribution/channel extensions and default Redis
+follow in the final phases.
+
+Delivery order revised 2026-10-05; see "Delivery order" in §3. Step numbers are
+unchanged so existing branches, pull requests and documents keep their
+references. S4, S5 and S6 are split into lettered parts, local import no longer
+waits for the recovery runtime, and shared infrastructure (S13) now precedes
+Admin-driven upgrades (S7-S10).
 
 This document lives in the repository so that every branch in the stack carries
 the contracts it is implementing against. Amend it in the PR that changes a
@@ -12,8 +18,8 @@ decision, rather than letting the code and the plan drift apart.
 Repos involved:
 
 - `TryGhost/ghost-docker`: installation, configuration, import, upgrades, operations.
-- `TryGhost/Ghost-CLI`: migration bundle export, PR #2333.
-- `TryGhost/Ghost`: upgrade adapter, Admin API, and Admin UI.
+- `TryGhost/Ghost-CLI`: migration bundle export, PR #2333 (merged; released in 1.33.0).
+- `TryGhost/Ghost`: upgrade adapter and Admin API (PR #31277, open), and Admin UI.
 
 Each step below is a separate work package. Read its dependencies and the contracts
 in this document before implementation. Do not treat step prompts as independent
@@ -25,12 +31,12 @@ of those contracts. Update operator documentation and tests with each step.
 | --- | --- |
 | Initial audience | Local and single-site production installations; most servers run one site. |
 | Site model | One checkout = one site. One base `compose.yml`, with `local` and `production` modes selected through `COMPOSE_PROFILES`. |
-| Shared infrastructure | Deferred to S13, after the single-site replacement is complete. It is not a dependency of the initial release. |
+| Shared infrastructure | S13. Not a dependency of local or single-site production installations. Scheduled after tagged single-site production (S4, S5e, S6b) and before Admin-driven upgrades, so the upgrade supervisor is built once against per-site projects instead of being reshaped later. |
 | ActivityPub and analytics | Per-site initially, including for future members of shared infrastructure. Each site owns its ActivityPub database/storage and Tinybird configuration/deployment lifecycle. No shared ActivityPub or analytics service in S13. |
 | Versions | Resolve and persist an exact Ghost image version on installation. Ghost upgrades and stack/repository updates are separate operations. Record resolved image digests for recovery. |
-| Distribution | Clone at a release tag. Stable tags `vX.Y.Z`; beta tags `vX.Y.Z-beta.N`. A bootstrap shim selects the release and delegates to that checkout. |
+| Distribution | Clone at a release tag. Stable tags `vX.Y.Z`; beta tags `vX.Y.Z-beta.N`. A bootstrap shim selects the release and delegates to that checkout. The shim is served from this repository's `gh-pages` branch at `https://docker.ghost.org`. Releases are beta tags cut from `next` until S12 qualifies a stable release; `main` keeps the pre-S1 layout until the legacy migration (S6b) exists. |
 | Installation | Scriptable `install.sh`, with flags for every required prompt. Local mode uses MySQL too. Requires `bash`, `docker`, `docker compose`, `jq` and `curl` on the host, verified in preflight; `scripts/migrate.sh` already required both `bash` and `jq`. Helper scripts stay bash 3.2 compatible so macOS's system bash works. No host Node requirement for a new install; Node is otherwise only used to run the test suite. The one exception is the legacy `scripts/migrate.sh`, which shells out to `scripts/config-to-env.js` and therefore still needs Node until `install.sh --import` replaces it. |
-| Migration | Ghost-CLI exports a bundle; Docker imports it. Fix the encoding contract before declaring v1 frozen. `install.sh --import` replaces `scripts/migrate.sh` outright rather than living alongside it; retire the old scripts, and with them the last host Node dependency, only after replacement fidelity and recovery tests pass. |
+| Migration | Ghost-CLI exports a bundle (`ghost migrate-export`, Ghost-CLI 1.33.0+); Docker imports it. Three kinds: `mysql-dump` (MySQL sources), `mysql-data` (default for local SQLite sources: data-only MySQL inserts loaded into a schema Ghost creates), and `portable` (explicit SQLite fallback through the Admin API, with documented losses). `install.sh --migrate` runs the export and the import in one command from a Ghost-CLI installation. `install.sh --import` replaces `scripts/migrate.sh` outright rather than living alongside it; retire the old scripts, and with them the last host Node dependency, only after replacement fidelity and recovery tests pass. |
 | Upgrades | Optional supervisor using a file exchange and Docker socket. Ship a tested host-driven upgrade operation first, then reuse its recovery contract in the supervisor. |
 | UX | Standard Compose commands for daily operation; scripts for installation, doctor/list, migration, backup/restore, and upgrades. No wrapper binary named `ghost`. |
 | Where tooling runs | A thin host shell layer (bootstrap, preflight/doctor, dispatch) plus a pinned manager image that holds the stateful operations. See §2.10. Host requirements stay `bash`, `docker`, `docker compose`, `jq`, `curl`; no host language runtime. |
@@ -235,8 +241,24 @@ time. S13 adds an infra-wide registration lock.
 
 ### 2.4 Bundle format and migration
 
-Reference: Ghost-CLI PR #2333 and its `docs/migration-bundle.md`. Review the local
-`claude/ghost-cli-migration-export-c00253` branch without assuming it is merged.
+Reference: `docs/migration-bundle.md` in Ghost-CLI at tag `v1.33.0`, the first
+release containing `ghost migrate-export` (PR #2333). The released exporter is the
+authority for what a bundle contains; `docs/bundle-v1.md` in this repository must
+match it before any importer work starts (S5a).
+
+Bundle kinds:
+
+| Kind | Source | Database payload | Import path |
+| --- | --- | --- | --- |
+| `mysql-dump` | MySQL/mysql2 | Schema and data for the selected database | Provision, load, start Ghost |
+| `mysql-data` | Local SQLite; the exporter's default | Data-only MySQL `INSERT`s for every table, including migration history; `database.rows` holds per-table counts | Provision, boot Ghost once at the exact source version to create the schema, stop it, load, verify counts, start Ghost |
+| `portable` | Local SQLite with `--sqlite-format portable` | Content JSON and members CSV from the Admin API | Isolated authenticated API import; lossy |
+
+`mysql-data` is the expected route for local SQLite sites and preserves IDs, staff
+credentials, members and settings. `portable` remains supported as the fallback
+for a source whose data the exporter refuses to write as `mysql-data` (values
+MySQL would reject). It is never selected automatically: the operator chooses it
+knowing the documented losses.
 
 Before freezing the contract:
 
@@ -279,7 +301,12 @@ Import sequence:
    selected Docker mode. Do not blindly apply host uid 1000 under rootless/userns.
 7. Restore the selected database only, with explicit connection and database name.
    `mysql-dump` does not contain CREATE DATABASE/users/grants. Provision first, then
-   restore before Ghost is started; propagate pipeline failures.
+   restore before Ghost is started; propagate pipeline failures. `mysql-data`
+   contains no schema at all: provision an empty utf8mb4 database, start Ghost
+   once at exactly `ghost.version` with no ingress so it creates its own schema
+   and fixtures, stop it, then load `database.sql` with the `mysql` client and
+   compare per-table `COUNT(*)` with `database.rows`. Never synthesize DDL from
+   the bundle.
 8. For portable data, start an isolated destination with no public ingress, set up
    the owner, authenticate, and perform multipart content/member imports. Explicitly
    mount the helper script. Use the unique service alias, correct Host/Origin/proxy
@@ -297,6 +324,59 @@ Import sequence:
 For rehearsal/local imports, provide a safe documented way to suppress outbound
 email, newsletters, payments/webhooks, and federation activity. Do not silently send
 real production traffic from a copied database.
+
+#### Local imports
+
+A local import targets a fresh checkout that has never served traffic, so it does
+not depend on the S4 recovery runtime. The failure contract is simpler: nothing
+outside the new checkout is modified, a failed import leaves the checkout marked
+incomplete and refuses to start it, and the documented recovery is to remove the
+checkout and run the import again. Steps 1 and 10 above reduce accordingly: there
+is no pre-existing site lock to honour and no ingress to switch. Path validation,
+private staging, the exact source image, raw config handling and verification all
+still apply. When S4 lands, local import adopts the shared operation lock like
+every other mutating command.
+
+Production imports keep the full sequence and require S4.
+
+#### `install.sh --migrate`
+
+`--migrate` is a wrapper: detect a Ghost-CLI installation, run
+`ghost migrate-export`, and hand the resulting bundle to the `--import` path. It
+adds no import logic of its own, so both entry points share one tested
+implementation.
+
+- Source selection: the current directory by default, or `--migrate=PATH`. The
+  directory must contain a `.ghost-cli` file. Require Ghost-CLI 1.33.0 or later
+  from the output of `ghost --version`; the version recorded in `.ghost-cli` is
+  the last one used, not the one installed. Report a Ghost 5.x source before
+  running anything, with the `ghost update` instruction.
+- Locations: the exporter refuses an output path inside the installation or its
+  content directory, and the bootstrap default of `./ghost-docker` would place the
+  checkout inside the source. With `--migrate`, default the checkout to a sibling
+  of the source directory and write the bundle to a private directory outside
+  both; `--dir` overrides the checkout location. Keep the bundle after a
+  successful import and print its path.
+- Mode: taken from the manifest's `sourceInstallType`; `--local`/`--domain` are
+  not required for a local source.
+- Prompts: under `curl | bash` stdin is the script, so the exporter runs with
+  `/dev/tty` attached. The installer asks for its own confirmation once and passes
+  `--force` to skip the exporter's beta prompt; with `--no-prompt` the operator
+  must have requested migration explicitly and `--force --no-prompt` is passed.
+- Ports: an ordinary export restarts the source on its own port. The installer
+  does not treat that as a conflict to resolve by stopping the source: it selects
+  a free port for the Docker site and reports both URLs, so the source keeps
+  running until the operator is satisfied. `--port` overrides the choice.
+- Export failure: surface the exporter's message unchanged. When `mysql-data`
+  validation refuses the source, offer one retry with `--sqlite-format portable`
+  after showing the portable losses. Never fall back without that confirmation,
+  and never under `--no-prompt`.
+- Scope: local installations first (S5c). On a production installation
+  `--migrate` refuses with a pointer to the manual export/import procedure until
+  production cutover is implemented (S5e), because an existing proxy holds ports
+  80/443 and the cutover rules above apply.
+- The source installation is never modified beyond what `ghost migrate-export`
+  itself does, and is never removed.
 
 ### 2.5 Backup, upgrade, and recovery
 
@@ -387,6 +467,26 @@ Release-please manages releases. Configure dependency changes explicitly as
 releasable patches; do not assume `chore(deps)` does that by default. Specify beta
 release mechanics and test version selection rather than using lexical sorting.
 
+The bootstrap shim is published from the `gh-pages` branch with the custom domain
+`docker.ghost.org`, so the documented entry point is
+`curl -fsSL https://docker.ghost.org/bootstrap.sh | bash -s -- ...`. Publish it from
+a workflow on release, never by hand, and test the served file rather than the
+checkout's copy. The shim resolves a tag, so nothing is installable until the first
+tag exists: cut the first beta tag as part of S6a.
+
+Until the legacy migration exists (S6b), releases are beta tags cut from `next`,
+and `main` keeps the pre-S1 layout that existing installations update with
+`git pull`. Merging `next` into `main` before S6b would break those installations.
+
+This section is delivered in two parts. S6a covers release-please, beta/stable
+resolution, shim hosting, and `update.sh` for installations already on the S1
+layout: lock where available, reject a dirty tree, resolve and check out the
+release, validate Compose and Caddy, pull, apply, verify readiness, and return to
+the previous commit when validation fails before any service changed. S6b adds
+the journaled pre/post-checkout hook framework, migration `0001-compose-profiles`,
+the pre-S1 bootstrap path, and checkpoint-backed recovery; it requires S4. The
+transactional flow below is the complete S6b contract.
+
 `scripts/update.sh [--check] [--channel stable|beta] [--to vX.Y.Z]` updates the stack,
 not Ghost. Preserve the exact Ghost pin; if a stack release requires a newer Ghost,
 stop with the required upgrade sequence. Initially reject stack downgrades unless
@@ -431,7 +531,7 @@ install.sh [--local | --domain example.com [--admin-domain admin.example.com]]
            [--dir PATH] [--port 2368] [--version 6.3.1]
            [--channel stable|beta] [--ref vX.Y.Z]
            [--with analytics,activitypub,supervisor]
-           [--import BUNDLE] [--no-prompt] [--no-start]
+           [--import BUNDLE | --migrate[=PATH]] [--no-prompt] [--no-start]
 ```
 
 The curl-able shim contains only bootstrap logic; installation logic lives at the
@@ -455,7 +555,8 @@ edit of `compose.yml`, not a supported mode; see §2.1.
 
 Installation writes configuration, renders routing, initializes permissions and
 metadata, then verifies readiness before publishing the Admin URL. `--no-start`
-must not start application services. Imported sites follow the isolated flow in §2.4.
+must not start application services. Imported sites follow the isolated flow in §2.4;
+`--migrate` is the same flow preceded by a Ghost-CLI export.
 
 `site.sh list` includes stopped containers (`docker ps -a` with labels) and, where
 possible, known installations with no current container. State what cannot be
@@ -686,30 +787,73 @@ scope. A prompt authorizes only that work package, not execution of later steps.
 Dependency checks should inspect the actual implementation, not rely on step numbers
 being marked complete in a document.
 
+### Delivery order
+
+Revised 2026-10-05. Four milestones, in this order:
+
+| Milestone | Outcome | Steps |
+| --- | --- | --- |
+| M1 Local sites | A theme developer or migration-tool author moves each local Ghost-CLI site to Docker with one command. Local mode runs Ghost and MySQL with no Caddy. | S5a, S5b, S5c, S5d; first beta tag and shim hosting from S6a |
+| M2 Tagged single-site production | Production installs from a tagged release at `docker.ghost.org`, updates the stack between tags, has backup/restore, imports a production Ghost-CLI site, and migrates the pre-S1 layout. | S6a, S4a-S4e, S5e, S6b |
+| M3 Multi-site | Several sites on one host behind shared Caddy/MySQL. | S13 |
+| M4 One-click Admin updates | Ghost Admin requests an upgrade that the host executes and recovers. | S7, S8, S9, S10 |
+
+S11 and S14-S16 follow M4. S12 is the qualification gate for the first stable tag
+and for merging `next` into `main`; it needs M2 at minimum and is re-run for each
+later milestone that ships before it.
+
+S7 depends only on S4 and S6a. It is scheduled with M4 because it defines the
+execution interface the supervisor reuses, but it can be pulled into M2 if
+operators need a scripted Ghost upgrade before Admin-driven updates exist. Until
+it ships, the documented Ghost upgrade is editing the exact version pin and
+running `docker compose up -d` after a manual backup.
+
 ```text
-S1 contracts/config + Compose foundation
- ├─ S2 installer
- ├─ S3 migration exporter (can begin after the bundle contract is settled)
- └─ S4 backup/restore and operation journal
-S5 importer/cutover          needs S2, S3, S4
-S6 stack releases/updater    needs S1, S2, S4
-S7 host Ghost upgrade       needs S4, S6 compatibility rules
-S8 supervisor protocol/app  needs S7
-S9 Ghost adapter/API        needs S8 protocol contract
-S10 Admin UI                needs S9
-S11 file-based secrets      needs S1, S4-S8 credential consumers
-S12 release qualification   needs S1-S10; qualify S11 if included
-S13 shared infrastructure   needs S12; optional
-S14 service image registries needs S12; independent of S13
-S15 Ghost nightly channel   needs S14 image resolution; explicit opt-in
-S16 default Redis           needs S12; independent of S13-S15
+S1 contracts/config + Compose foundation      implemented
+ ├─ S2 installer                               implemented
+ ├─ S3 migration exporter                      released in Ghost-CLI 1.33.0
+ └─ S4 backup/restore and operation journal    draft PR #300; lands as S4a-S4e
+
+M1
+S5a bundle contract sync       needs S3 as released
+S5b local import               needs S2, S5a (mysql-dump, mysql-data)
+S5c local --migrate            needs S5b
+S5d portable import            needs S5b
+S6a releases, shim hosting,    needs S2; first beta tag is an M1 prerequisite
+    update.sh
+
+M2
+S4a-S4e recovery runtime       needs S1; S4a/S4b are independent of the rest
+S5e production import/cutover  needs S4, S5b; S5d for portable sources
+S6b legacy-layout migration    needs S4, S6a
+
+M3
+S13 shared infrastructure      needs S4, S5e, S6b
+
+M4
+S7 host Ghost upgrade          needs S4, S6a compatibility rules
+S8 supervisor protocol/app     needs S7; S13 if shipped
+S9 Ghost adapter/API           needs S8 protocol contract (Ghost PR #31277)
+S10 Admin UI                   needs S9
+
+Later
+S11 file-based secrets         needs S1, S4-S8 credential consumers
+S12 release qualification      needs M2; covers every milestone shipped
+S14 service image registries   needs S12; independent of S13
+S15 Ghost nightly channel      needs S14 image resolution; explicit opt-in
+S16 default Redis              needs S12; independent of S13-S15
 ```
+
+Work in flight when this order was set: PR #300 (S4) is a draft against `next`;
+`codex/update-supervisor` holds an S8 prototype stacked on it and stays parked
+until the Ghost adapter contract in PR #31277 settles, then is reworked against
+it. Neither blocks M1.
 
 That graph is also the branch order. Each step is one pull request stacked on
 the ones it depends on, so a reviewer sees only that step's diff, and the
 contracts in §2 stay reviewable in the branch that changes them. Steps with a
-shared dependency and no dependency on each other (S2, S3 and S4 on S1) can be
-separate stacks off the same base. Mark a step's status in its section when its
+shared dependency and no dependency on each other (S5b-S5d and S6a, or S4 and M1)
+can be separate stacks off the same base. Mark a step's status in its section when its
 PR lands, and amend the affected contract in §2 in the same PR rather than
 afterwards.
 
@@ -827,6 +971,11 @@ blockers for dependent steps.
 
 ### S3 — Complete the Ghost-CLI export contract and cutover support
 
+Status: implemented. PR #2333 merged and released in Ghost-CLI 1.33.0
+(2026-10-05). The released command also added the `mysql-data` kind and the
+`--sqlite-format` option, which postdate the text below; see §2.4 and S5a. The
+prompt is retained for reference only.
+
 Repo: Ghost-CLI, PR #2333 branch. Deps: agreed S1/§2.4 contract. Review the current
 export implementation/tests, use raw values in `config`, require the v1 metadata,
 test plain-tar extraction, and implement/document deliberate final-export behavior. Review portable snapshot consistency and supported losses.
@@ -899,6 +1048,22 @@ Acceptance: restore a representative site to a fresh destination and verify data
 assets/theme/configuration; inject interrupted backup/restore, full disk, stale lock,
 and SQL pipeline failure. Recover without exposing an incomplete destination.
 
+Status: implemented as one draft pull request (#300). Land it as a stack
+(`gh stack`), bottom first, so each review is one concern:
+
+- S4a — Formatting, lint and type-check baseline (oxfmt, Oxlint, `tsc --noEmit`)
+  and the reformatted existing tests. No behaviour change.
+- S4b — Configuration validation compares decoded JSON values. Independent fix.
+- S4c — Shared operation lock, applied to install, configuration and Caddy
+  mutations; unresolved operations surfaced by the site checker.
+- S4d — Manager image, host dispatcher and publish workflow.
+- S4e — Checkpoints, isolated restore, journal, retention, space checks, recovery
+  documentation and drills.
+
+S4a and S4b do not depend on the recovery work and can land on `next` ahead of
+M2 to keep later diffs small. S4 as a whole is an M2 step: nothing in M1 waits
+for it.
+
 **Implementation prompt**
 
 ```text
@@ -936,64 +1101,128 @@ blockers for dependent steps.
 
 ### S5 — Bundle import and migration cutover
 
-Repo: ghost-docker. Deps: S2, S3, S4. Implement §2.4 and wire `install.sh --import`.
-Use a bootstrap helper without dependencies, staged data, the explicit DB target,
-isolated portable import, and verified cutover. Support manifest defaults overridden
-by flags and deliberate source-restart/recovery instructions.
+Repo: ghost-docker. Implement §2.4 and wire `install.sh --import` and
+`install.sh --migrate`. Delivered in five parts; each is its own pull request.
 
-Acceptance: exercise both bundle kinds produced by the exporter, raw config values,
-separate admin URLs, asset/theme/redirect fidelity, partial retries, invalid archives,
-and a same-server migration. Verify the documented portable losses. Only then delete
-`scripts/migrate.sh` and `scripts/config-to-env.js` and replace their documentation.
+**S5a — Bundle contract sync.** Deps: S3 as released. Bring `docs/bundle-v1.md`,
+§2.4 and the fixtures under `tests/fixtures/migration-bundle-v1/` in line with
+Ghost-CLI 1.33.0: the `mysql-data` kind, `database.rows`, `--sqlite-format`, and
+portable as an explicit fallback. Add a `mysql-data` fixture produced by the
+released exporter. Documentation and fixtures only.
+
+Status: implemented. `tests/fixtures/migration-bundle-v1/mysql-data.json` is the
+shared manifest fixture from Ghost-CLI `v1.33.0`, byte for byte, alongside the
+two existing ones. Full exporter-produced bundles are generated by the S5b tests,
+not checked in.
+
+**S5b — Local import.** Deps: S2, S5a. Not S4; see "Local imports" in §2.4.
+`scripts/import.sh` and `install.sh --import BUNDLE` for `sourceInstallType: local`
+bundles of kind `mysql-dump` and `mysql-data`: private staging, path/link
+validation, a pinned manifest helper with no Compose dependency, the exact source
+Ghost image, raw config values, explicit database target, the schema-boot step for
+`mysql-data`, row-count verification, and content staging. A `portable` bundle is
+rejected with a clear message until S5d; a `production` bundle until S5e.
+
+Acceptance: real exporter-produced bundles of both kinds from Ghost-CLI 1.33.0;
+special config values; theme, asset and redirect fidelity; staff login with source
+credentials after a `mysql-data` import; row counts match; invalid, truncated and
+path-escaping archives refused before anything is written; a failed import cannot
+be started and a clean re-run succeeds; Linux and macOS.
+
+**S5c — Local `--migrate`.** Deps: S5b. Implement "`install.sh --migrate`" in §2.4
+for local installations, including the bootstrap shim passing the option through
+and the sibling-directory default.
+
+Acceptance: run from inside a local SQLite and a local MySQL Ghost-CLI install,
+both directly and through the served shim; refuse a non-install directory, a
+Ghost-CLI older than 1.33.0, a Ghost 5.x source and a production install, each
+before any change; source left running on its port with the Docker site on
+another; exporter failure surfaced, with the portable retry offered only
+interactively.
+
+**S5d — Portable import.** Deps: S5b. Step 8 of the import sequence: isolated
+destination with no public ingress, owner setup, authenticated multipart content
+and member imports, documented losses verified. `manager/demo-import.mjs` on
+`codex/update-supervisor` is a starting point, not a finished implementation.
+Enables the `--migrate` portable retry.
+
+Acceptance: a portable bundle from a local SQLite source, including an empty
+members file; each documented loss demonstrated by a test rather than asserted;
+a retry cannot duplicate a partially completed import.
+
+**S5e — Production import and cutover.** Deps: S4, S5b; S5d for portable sources.
+The full §2.4 sequence for `sourceInstallType: production`: site lock, recovery
+copies, separate admin URLs, isolated verification, final-export
+(`--leave-stopped`) handling, explicit ingress switch, and source-restart
+instructions. Extends `--migrate` to production installations.
+
+Acceptance: a same-server migration with an existing proxy on 80/443 and a
+cross-host migration; partial retries; rehearsal imports with outbound side
+effects suppressed. Only when this part passes, delete `scripts/migrate.sh` and
+`scripts/config-to-env.js` and replace their documentation.
 
 **Implementation prompt**
+
+Replace `<part>` with one of S5a-S5e.
 
 ```text
 Read docs/ghost-cli-replacement.md in this repository first. Treat the
 referenced step, its dependencies, and the architecture contracts as the
 requirements for this implementation.
 
-Implement S5 — Bundle import and migration cutover. Read repository
-instructions and verify S2 installer, S3 exporter contract/fixtures, and S4
-recovery primitives are available. Consult the Ghost-CLI migration-bundle
-document in the exporter branch.
+Implement <part> of S5 — Bundle import and migration cutover. Read repository
+instructions and verify that part's listed dependencies are present in the
+code, not merely marked complete. Use docs/migration-bundle.md from Ghost-CLI
+at tag v1.33.0 as the exporter reference, and produce test bundles with the
+released exporter rather than hand-written fixtures where the part calls for
+real bundles.
 
-Follow section 2.4 and S5. Implement scripts/import.sh and install.sh --import
-using private staging, safe path/link validation, an independent pinned
-manifest helper, required v1 metadata, raw config values, explicit target DB
-selection, and the exact source Ghost image. Do not support the unpublished
-quoted-config draft format.
+Follow section 2.4 and the named part only. Do not implement behaviour that
+belongs to a later part: reject it with a clear message naming what is not yet
+supported. Do not support the unpublished quoted-config draft format. Never
+synthesize schema for a mysql-data bundle, never select portable
+automatically, and never expose an uninitialized or partially imported site
+through public ingress. A local import must not depend on the S4 recovery
+runtime; a production import must.
 
-Handle mysql-dump and isolated authenticated portable imports, explicitly
-mount helper scripts, preserve URL/admin overrides, and verify
-content/assets/configuration before cutover. Define safe partial retries and
-source write-freeze/restart instructions. Rehearsal imports need documented
-outbound-side-effect controls. Public ingress must not expose an uninitialized
-or partially imported site.
+Meet every acceptance item listed for the part. Delete
+migrate.sh/config-to-env.js only in S5e, after its fidelity and recovery gates
+pass.
 
-Test real exporter-produced bundles of both kinds, special config values,
-separate admin URLs, themes/assets/redirects, retries, invalid archives, and
-same-server cutover. Verify portable losses explicitly. Delete
-migrate.sh/config-to-env.js only after these replacement fidelity and recovery
-gates pass; update all migration documentation.
-
-Complete this step only. Update the relevant documentation and focused tests
+Complete this part only. Update the relevant documentation and focused tests
 as part of the implementation. Finish with a summary of changed
 behavior/files, verification results, and any unmet acceptance criteria or
-blockers for dependent steps.
+blockers for dependent parts.
 ```
 
 ### S6 — Stack releases, updater, and legacy migration
 
-Repo: ghost-docker. Deps: S1, S2, S4. Implement §2.7, release-please configuration,
-beta resolution, bootstrap update instructions, and the transactional migration
-framework. Preserve the exact Ghost version across stack updates. Use a stable
-updater runtime while replacing the checkout itself.
+Repo: ghost-docker. Implement §2.7 in two parts. Preserve the exact Ghost version
+across stack updates. Use a stable updater runtime while replacing the checkout
+itself.
+
+**S6a — Releases, shim hosting, and the updater.** Deps: S2. release-please on
+`next` producing beta tags, explicit dependency-only patch releases, tested
+stable/beta resolution, the `gh-pages` workflow serving `bootstrap.sh` at
+`docker.ghost.org`, README and shim comments pointing there, and `update.sh` for
+installations already on the S1 layout as described in §2.7. Cut the first beta
+tag. No legacy migration and no hook framework.
+
+Acceptance: the served shim installs the newest beta tag and an explicit `--ref`;
+version selection is tested against prerelease ordering rather than lexical sort;
+a dependency-only change produces a release; `update.sh` moves between two tags
+with the Ghost pin unchanged, refuses a dirty tree and a downgrade, and returns to
+the previous commit when validation fails before services change.
+
+**S6b — Legacy-layout migration and transactional updates.** Deps: S4, S6a. The
+journaled pre/post-checkout hook framework, migration `0001-compose-profiles`,
+the bootstrap path for installations without `update.sh`, and checkpoint-backed
+recovery. Gates merging `next` into `main`.
 
 Acceptance: update from the pre-S1 layout, including existing optional profiles,
 custom Caddy routes/overrides, absent metadata, and an untagged starting commit.
 Inject failures before/after hooks, pull, and startup; verify complete recovery or an
-accurate recovery-required outcome. Test dependency-only release generation.
+accurate recovery-required outcome.
 
 **Implementation prompt**
 
@@ -1002,9 +1231,11 @@ Read docs/ghost-cli-replacement.md in this repository first. Treat the
 referenced step, its dependencies, and the architecture contracts as the
 requirements for this implementation.
 
-Implement S6 — Stack releases, updater, and legacy migration. Read repository
-instructions and verify S1, S2, and S4 interfaces and recovery behavior before
-implementing stack updates.
+Implement S6a or S6b (state which) of S6 — Stack releases, updater, and legacy
+migration. Read repository instructions and verify that part's dependencies:
+S2 for S6a; S4 recovery behavior and S6a for S6b. S6a covers releases, shim
+hosting at docker.ghost.org and update.sh between S1-layout tags; everything
+below about hooks, pre-S1 installs and checkpoint recovery belongs to S6b.
 
 Follow section 2.7 and S6. Configure release-please and stable/beta version
 resolution, including explicit dependency-only patch releases. Implement
@@ -1033,7 +1264,7 @@ blockers for dependent steps.
 
 ### S7 — Host-driven Ghost upgrades
 
-Repo: ghost-docker. Deps: S4 and S6 compatibility rules. Implement `scripts/upgrade.sh
+Repo: ghost-docker. Deps: S4 and S6a compatibility rules. Implement `scripts/upgrade.sh
 [version|latest]` following §2.5, initially without a supervisor. Specify the reusable
 execution interface so the supervisor cannot diverge from backup/recovery behavior.
 Keep supported majors/downgrades constrained and feature compatibility explicit.
@@ -1080,7 +1311,9 @@ blockers for dependent steps.
 
 ### S8 — Supervisor image, protocol, and installer integration
 
-Repo: ghost-docker. Deps: S7. Write `docs/upgrade-supervisor.md` with the exact §2.6
+Repo: ghost-docker. Deps: S7; S13's shared-DB rules if it has shipped. A prototype
+exists on `codex/update-supervisor`; rework it against the adapter contract merged
+from Ghost PR #31277 rather than starting over. Write `docs/upgrade-supervisor.md` with the exact §2.6
 schemas, transitions, ownership, policy, and recovery rules, then implement the
 supervisor with a supported Node runtime and minimal dependencies. Reuse S7 behavior.
 Wire `--with supervisor`, request submission/status tooling, and pinned image versions.
@@ -1268,7 +1501,9 @@ blockers for dependent steps.
 
 ### S12 — Single-site release qualification and documentation
 
-Repo: ghost-docker, with cross-repo fixtures. Deps: S1-S10; include S11 if shipping.
+Repo: ghost-docker, with cross-repo fixtures. Deps: M2 (S4, S5, S6) at minimum; qualify
+S13, S7-S10 and S11 when they have shipped. Gates the first stable tag and merging
+`next` into `main`.
 Consolidate CI and qualify the actual minimum supported tools and image versions.
 Run fresh local/production install, optional-service variants, CLI migration,
 legacy stack update, Ghost upgrade/recovery, supervisor/Admin, and restore scenarios.
@@ -1278,7 +1513,8 @@ README/help include quick starts, prerequisites, version/compatibility policy,
 backup/restore, migration losses and cutover, custom proxy configuration, diagnostics,
 and uninstall. Document deletion of bind-mounted data separately from `down -v`, with
 explicit recovery consequences. Explain command equivalences without claiming full
-CLI parity for unsupported features. Keep shared infra marked deferred.
+CLI parity for unsupported features. Describe shared infra according to whether
+S13 has shipped.
 
 **Implementation prompt**
 
@@ -1289,8 +1525,8 @@ requirements for this implementation.
 
 Implement S12 — Single-site release qualification and documentation, using the
 Ghost-CLI and Ghost repositories for cross-repo fixtures/integration as
-needed. Read repository instructions and verify S1–S10 are implemented;
-include S11 qualification only if it is part of the release.
+needed. Read repository instructions and verify S1–S6 are implemented;
+include S7–S10, S11 and S13 qualification for whichever have shipped.
 
 Follow S12 and the acceptance contracts throughout the plan. Consolidate CI
 around the actual supported minimum/current tools and image versions. Exercise
@@ -1302,13 +1538,13 @@ macOS-compatible shell/configuration checks.
 Finish README/help and operational documentation covering version policy,
 custom proxies, migration fidelity/cutover, backup/restore, diagnostics, and
 uninstall. Explain bind-mounted data deletion separately from down -v, and do
-not claim unsupported CLI parity. Keep shared infra explicitly deferred to
-S13.
+not claim unsupported CLI parity. Document shared infra only if S13 has
+shipped; otherwise mark it deferred.
 
 Resolve qualification defects within this release scope. Report the tested
 matrix and any remaining release blockers with evidence; do not infer
-readiness from successful happy-path installs alone or start the optional
-shared-infra phase.
+readiness from successful happy-path installs alone or implement steps that
+have not shipped.
 
 Complete this step only. Update the relevant documentation and focused tests
 as part of the implementation. Finish with a summary of changed
@@ -1318,7 +1554,8 @@ blockers for dependent steps.
 
 ### S13 — Optional shared Caddy/MySQL infrastructure
 
-Repo: ghost-docker. Deps: S12. Only now introduce `infra` and `site` modes and
+Repo: ghost-docker. Deps: S4, S5e, S6b. Scheduled before S7-S10 so upgrades and the
+supervisor are built against per-site projects. Only now introduce `infra` and `site` modes and
 `--infra-only`/`--infra` installation. ActivityPub, traffic analytics, and Tinybird
 jobs remain per-site; no shared analytics/federation variants in this step.
 
@@ -1370,8 +1607,8 @@ referenced step, its dependencies, and the architecture contracts as the
 requirements for this implementation.
 
 Implement S13 — Optional shared Caddy/MySQL infrastructure. Read repository
-instructions and verify S12's single-site qualification is complete before
-expanding the architecture.
+instructions and verify S4 recovery, S5e production import and S6b legacy
+migration are implemented and tested before expanding the architecture.
 
 Follow all S13 design requirements and the existing backup/upgrade/config
 contracts. Add dedicated infra/site modes and --infra-only/--infra
@@ -1382,7 +1619,8 @@ do not add shared versions of them.
 Use unique restricted DB identities, explicit DB targets, unambiguous service
 aliases, and deliberate private/shared networks. Integrate registration locks,
 duplicate checks, validated Caddy reload, recoverable provisioning, and safe
-site-scoped removal. Ensure site backup/restore/supervisor operations cannot
+site-scoped removal. Ensure site backup/restore operations, and supervisor
+operations where S8 has shipped, cannot
 affect another site's databases or require its supervisor to hold infra root
 credentials. Define infra capacity, version, and maintenance policy. Persist
 any required Compose file selection consistently.
