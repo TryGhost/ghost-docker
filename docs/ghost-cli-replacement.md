@@ -122,8 +122,10 @@ DATABASE_USER=ghost
 
 Requirements:
 
-- Ghost publishes `127.0.0.1:${GHOST_PORT:-2368}:2368`. The installer picks a free
-  port when none is supplied; an explicit occupied port is an error.
+- Ghost publishes `127.0.0.1:${GHOST_PORT:-2368}:2368`. When no port is supplied
+  the installer starts at 2368 and skips ports that Docker's own containers
+  already publish, which is what keeps several local sites apart. An explicit
+  port is never changed. See "Ports are not probed" in §2.8.
 - Parameterize database host, name, and user now, even though single-site defaults
   remain `db`/`ghost`/`ghost`. Use the same connection contract for backup and import.
 - Set a unique Ghost network alias `ghost-${COMPOSE_PROJECT_NAME}` and use it in
@@ -676,11 +678,24 @@ Preflight is split by what has to work when Docker is broken:
   access by asking the daemon, never from `docker` group membership. These are
   the only checks that cannot run in a container.
 - **In the manager:** Docker and Compose versions, platform and architecture
-  (from `docker info`), a writable site directory, disk, memory, the ports the
-  selected mode needs, optional-service credentials, URL/DNS, and Compose/Caddy
-  validation. A host port is tested by asking the daemon to publish it on a
-  throwaway container, which is accurate on every platform, including Docker
-  Desktop where the manager cannot see the host's network.
+  (from `docker info`), a writable site directory, disk, memory,
+  optional-service credentials, URL/DNS, and Compose/Caddy validation.
+
+**Ports are not probed.** The manager cannot see the host's ports from inside a
+container, and the first plan for this branch worked around that by having the
+daemon publish each port on a throwaway container. That was dropped: Docker
+already refuses to start a service whose port is taken, and says which port.
+So:
+
+- A port held by another container is known without probing, from what Docker
+  reports its containers publish. The default local port skips those.
+- A port held by anything else is discovered when the services start. The
+  installer catches that failure, names the port and the option that changes
+  it (`--port`), and states that nothing already running was stopped.
+- Because the conflict now surfaces after configuration has been written, **a
+  failed installation removes what it created**, so the same command can be run
+  again in the same directory. Installation needs that for a failed pull or a
+  service that never becomes healthy as well.
 
 Rootless support requires verified socket, port, ownership, and boot behaviour;
 do not infer support from linger alone.
@@ -712,7 +727,7 @@ trusted is a warning, as before.
 Keep nginx/apache running until cutover; a server may proxy other applications,
 so replacing its whole service requires an explicit operator choice. Installation
 never stops or reconfigures anything already running: a port in use is an error
-naming what holds it. Bringing your own proxy is a documented manual edit of
+naming the port, and the container holding it when Docker knows one. Bringing your own proxy is a documented manual edit of
 `compose.yml`, not a supported mode; see §2.1.
 
 Installation writes configuration, renders routing, initializes permissions and
@@ -1120,7 +1135,8 @@ on `next`. The test files are the most complete statement of what must hold.
 Acceptance: `tests/e2e/install.sh` installs a local and a production site from
 the image and from a clone, on Linux and macOS, and checks what
 `install-e2e.test.mjs` checked: the pin, file modes and ownership, a port
-conflict as an error naming the holder, an existing proxy on 80/443 left
+conflict as an error naming the port, after which the directory is as it was
+and the same command succeeds on a free port, an existing proxy on 80/443 left
 running, two local sites side by side, `--no-start` starting nothing, and
 local ingress verified on the loopback port, and production ingress verified
 by both parts of "Reaching a site in order to verify it" (§2.8) before DNS and
