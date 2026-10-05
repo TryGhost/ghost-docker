@@ -40,8 +40,9 @@ interface; the plan says which step delivers each.
   password, and is never passed into the Ghost container. `ghost.env` holds
   Ghost application settings and is the `ghost` service's only `env_file`.
 - `docs/configuration.md`, `docs/caddy.md`, `docs/bundle-v1.md` — contracts.
-- `scripts/migrate.sh`, `scripts/config-to-env.js` — the legacy Ghost-CLI
-  migration, kept until production import (S5e) replaces it.
+- There is no migration tooling on this branch. The legacy `scripts/migrate.sh`
+  on `main` does not understand this layout and was not brought across; it
+  remains the production path on `main` until production import (S5e) exists.
 
 ## Rules that hold whatever is being built
 

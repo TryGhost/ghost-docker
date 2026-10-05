@@ -43,7 +43,7 @@ dependencies and the contracts in §2 before implementing it.
 | Windows | Native, through a PowerShell launcher, and through WSL2. The native path contract in §2.10 is unverified until it has been run on Windows; the launcher ships marked experimental until then. |
 | Versions | Resolve and persist an exact Ghost image version on installation. Ghost upgrades and stack updates are separate operations. Record resolved image digests for recovery. |
 | Installation | Scriptable `install`, with a flag for every prompt. Local mode uses MySQL too. |
-| Migration | Ghost-CLI exports a bundle (`ghost migrate-export`, Ghost-CLI 1.33.0+); the manager imports it. Three kinds: `mysql-dump` (MySQL sources), `mysql-data` (default for local SQLite sources: data-only MySQL inserts loaded into a schema Ghost creates), and `portable` (explicit SQLite fallback through the Admin API, with documented losses). `--migrate` runs the export and the import in one command. The legacy `scripts/migrate.sh` is retired when production import passes its fidelity and recovery tests. |
+| Migration | Ghost-CLI exports a bundle (`ghost migrate-export`, Ghost-CLI 1.33.0+); the manager imports it. Three kinds: `mysql-dump` (MySQL sources), `mysql-data` (default for local SQLite sources: data-only MySQL inserts loaded into a schema Ghost creates), and `portable` (explicit SQLite fallback through the Admin API, with documented losses). `--migrate` runs the export and the import in one command. The legacy `scripts/migrate.sh` stays on `main`, where it works, and is not carried onto this branch, whose layout it does not understand; it disappears from `main` when this branch merges, which S12 allows only after production import (S5e) has passed its fidelity and recovery tests. |
 | Upgrades | Optional supervisor using a file exchange and the Docker socket. Ship a tested host-driven upgrade first, then reuse its recovery contract in the supervisor. Both are commands of the manager. |
 | UX | Standard Compose commands for daily operation; `./ghost-docker` for installation, diagnosis, configuration, migration, backup/restore, and upgrades. No wrapper binary named `ghost`. |
 | Configuration | `.env` contains Compose/operator settings; `ghost.env` contains only Ghost application settings. Do not pass the whole `.env` into Ghost. A mounted Ghost JSON config file was evaluated as a replacement for `ghost.env` and rejected; see §2.1. |
@@ -964,9 +964,10 @@ documents describe commands as `./ghost-docker ...` and say that they do not
 exist yet.
 
 Status: implemented by the pull request that introduced this revision of the
-plan. After it the branch is not installable by any tool: the legacy
-`scripts/migrate.sh` and a hand-written `.env` are the only ways to stand a site
-up until N3.
+plan. After it the branch is not installable by any tool: a hand-written `.env`
+is the only way to stand a site up until N3. The legacy `scripts/migrate.sh`
+was deliberately not brought across: it sets no site mode and cannot generate
+routes, so on this layout it produces a site that does not start.
 
 ### N2 — Manager image, launchers and publishing
 
@@ -1106,8 +1107,8 @@ instructions. Extends `--migrate` to production installations.
 
 Acceptance: a same-server migration with an existing proxy on 80/443 and a
 cross-host migration; partial retries; rehearsal imports with outbound side
-effects suppressed. Only when this part passes, delete `scripts/migrate.sh` and
-`scripts/config-to-env.js` and replace their documentation.
+effects suppressed. This part is what replaces the legacy `scripts/migrate.sh`
+on `main`: S12 must not merge this branch into `main` before it passes.
 
 ### S6 — Releases, the served launcher, and updates
 

@@ -266,10 +266,6 @@ Docker access is established by asking the daemon, never by checking `docker`
 group membership: neither rootless Docker nor a remote `DOCKER_HOST` involves
 that group, and being in it does not mean the daemon is running.
 
-The one exception is the legacy `scripts/migrate.sh`, which is bash, needs
-`jq`, and shells out to `scripts/config-to-env.js` and so needs Node on the
-host. It is retired when production import lands (S5e).
-
 ## Existing installations
 
 This layout is a breaking change for checkouts made before it landed. The
@@ -290,10 +286,9 @@ migration is owned by the stack updater (S6b); the changes it has to handle are:
   server), and `SITE_MODE`, `URL`, `PROJECT_DIR` and an exact `GHOST_IMAGE_REF`
   pin must be added.
 
-`scripts/migrate.sh` still migrates a Ghost-CLI installation and has been
-updated to write Ghost configuration into `ghost.env`. It is kept until the
-bundle import in [docs/bundle-v1.md](bundle-v1.md) has passed fidelity and
-recovery testing.
+Moving a Ghost-CLI installation to Docker is a separate matter: see
+[bundle-v1.md](bundle-v1.md). The legacy `scripts/migrate.sh` on `main` predates
+this layout and is not part of it.
 
 ## Installed image pins
 
