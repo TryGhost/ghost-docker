@@ -4,18 +4,15 @@
 # The policy lives in install.sh; this file holds the steps. The contract is
 # docs/bundle-v1.md, and the sequence is §2.4 of docs/ghost-cli-replacement.md.
 #
-# A bundle is a file somebody else produced. It is only ever read by
-# scripts/lib/import-helper.mjs, inside a pinned image with no network and a
-# read-only root filesystem; everything after that works from the validated
-# copy in the staging directory. The database is loaded as the site's own
-# database user, never as root, so a dump can touch nothing but that database.
+# Importing a bundle means trusting it: its SQL becomes the site's database and
+# its themes become the site. What is defended here is everything else. A
+# bundle is unpacked into a private staging directory inside the site
+# directory, anything in it that is not a plain file or directory is refused,
+# and the database is loaded as the site's own database user, never as root,
+# so a dump can touch nothing but that database.
 
 # shellcheck disable=SC2034
 GD_IMPORT_LIB_LOADED=1
-
-# The image the bundle helper runs in. It supplies Node and nothing else; the
-# helper is mounted from this checkout.
-GD_IMPORT_HELPER_IMAGE="node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402"
 
 # While an import is in progress `.env` carries this instead of the real
 # profiles. It selects no service, so `docker compose up` in a checkout whose
@@ -25,11 +22,11 @@ readonly GD_IMPORT_INCOMPLETE_PROFILE="import-incomplete"
 
 # Present from the first change an import makes until it has been verified.
 GD_IMPORT_MARKER_NAME=".ghost-docker-import"
-
-# Resolved here rather than from common.sh's GD_LIB_DIR so that this file can
-# be sourced on its own.
-GD_IMPORT_HELPER="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/import-helper.mjs"
 GD_IMPORT_STAGING_NAME=".import"
+
+# Kept free on the site's filesystem after a bundle is unpacked, for the
+# database load that follows.
+readonly GD_IMPORT_RESERVE_KB=262144
 
 # Ghost configuration the container owns. docs/bundle-v1.md lists these; the
 # exact keys Compose sets are added to them at run time from compose.yml
@@ -40,42 +37,12 @@ readonly GD_IMPORT_OWNED_PREFIXES=(database__ server__ paths__ logging__)
 # import_marker DIR
 import_marker() { printf '%s/%s\n' "$1" "$GD_IMPORT_MARKER_NAME"; }
 
-# The staging directory of the import this process is running, set by
-# import_stage. Each attempt gets a new one: a path that is removed and then
-# recreated can still show its old contents through a container bind mount on
-# Docker Desktop style file sharing, and a fresh name cannot.
-GD_IMPORT_STAGE=""
-
-# import_staging_root DIR
-# Holds every attempt's staging directory, so cleaning up is one removal.
-import_staging_root() { printf '%s/%s\n' "$1" "$GD_IMPORT_STAGING_NAME"; }
-
 # import_staging DIR
-import_staging() {
-    [[ -n $GD_IMPORT_STAGE ]] || return 1
-    printf '%s\n' "$GD_IMPORT_STAGE"
-}
+import_staging() { printf '%s/%s\n' "$1" "$GD_IMPORT_STAGING_NAME"; }
 
 # import_incomplete DIR
 # True when an earlier import into this checkout did not finish.
 import_incomplete() { [[ -e $(import_marker "$1") ]]; }
-
-# _gd_import_rootless
-# True when the daemon is rootless, where uid 0 in a container is the invoking
-# user and any other uid is a subordinate one the user cannot read back.
-_gd_import_rootless() {
-    docker info --format '{{range .SecurityOptions}}{{println .}}{{end}}' 2>/dev/null | grep -q rootless
-}
-
-# _gd_import_user
-# The container user whose files this user owns on the host.
-_gd_import_user() {
-    if _gd_import_rootless; then
-        printf '0:0\n'
-    else
-        printf '%s:%s\n' "$(id -u)" "$(id -g)"
-    fi
-}
 
 # import_dir_empty PATH
 # True when PATH does not exist or holds nothing.
@@ -85,70 +52,278 @@ import_dir_empty() {
     [[ -z $(ls -A "$1" 2>/dev/null) ]]
 }
 
+# _gd_import_remove PATH...
+# Removes paths this import created. Each must be a non-empty absolute path
+# below a site directory; anything else is a bug and is left alone.
+_gd_import_remove() {
+    local path
+    for path in "$@"; do
+        case $path in
+            /*/*) rm -rf -- "$path" ;;
+            *) printf 'error: refusing to remove %s\n' "${path:-<empty path>}" >&2 ;;
+        esac
+    done
+}
+
+# _gd_import_free_kb PATH
+_gd_import_free_kb() {
+    df -Pk "$1" 2>/dev/null | awk 'NR==2 {print $4}'
+}
+
+# _gd_import_refuse MESSAGE...
+_gd_import_refuse() {
+    printf 'error: %s\n' "$*" >&2
+    return 1
+}
+
+# _gd_import_archive_type FILE -> tar | zip
+# By content, not by name. tar recognises its own compression, so every
+# archive that is not a zip is handed to it and it has the last word.
+_gd_import_archive_type() {
+    local magic
+    magic=$(head -c 2 "$1" 2>/dev/null | od -An -tx1 | tr -d ' \n')
+    if [[ $magic == 504b ]]; then
+        printf 'zip\n'
+    else
+        printf 'tar\n'
+    fi
+}
+
+# _gd_import_unpack BUNDLE TARGET
+# Copies a bundle directory, or unpacks an archive, into the empty TARGET.
+_gd_import_unpack() {
+    local bundle=$1 target=$2 need_kb free_kb name names
+
+    free_kb=$(_gd_import_free_kb "$target")
+    [[ $free_kb =~ ^[0-9]+$ ]] || free_kb=""
+
+    if [[ -d $bundle ]]; then
+        need_kb=$(du -sk "$bundle" 2>/dev/null | awk '{print $1}')
+        if [[ -n $free_kb && $need_kb =~ ^[0-9]+$ ]] && ((need_kb + GD_IMPORT_RESERVE_KB > free_kb)); then
+            _gd_import_refuse "the bundle is $((need_kb / 1024)) MB and the site directory's filesystem has $((free_kb / 1024)) MB free"
+            return 1
+        fi
+        # `/.` copies the directory's contents, dotfiles included. A link is
+        # copied as a link, not followed, and refused by the check afterwards.
+        cp -R "$bundle/." "$target/" 2>/dev/null || {
+            _gd_import_refuse "the bundle directory could not be copied"
+            return 1
+        }
+        return 0
+    fi
+
+    [[ -f $bundle ]] || {
+        _gd_import_refuse "the bundle is neither a directory nor an archive"
+        return 1
+    }
+
+    # An archive expands; twice its size is the least that must be free
+    # before starting. What is actually left is checked after unpacking.
+    need_kb=$(du -sk "$bundle" 2>/dev/null | awk '{print $1}')
+    if [[ -n $free_kb && $need_kb =~ ^[0-9]+$ ]] && ((need_kb * 2 + GD_IMPORT_RESERVE_KB > free_kb)); then
+        _gd_import_refuse "the site directory's filesystem has $((free_kb / 1024)) MB free, too little to unpack a $((need_kb / 1024)) MB bundle"
+        return 1
+    fi
+
+    if [[ $(_gd_import_archive_type "$bundle") == zip ]]; then
+        command -v unzip >/dev/null 2>&1 || {
+            _gd_import_refuse "this bundle is a zip archive and there is no unzip on this host. Install unzip," \
+                "extract the archive yourself and pass the directory, or export again with --archive tgz."
+            return 1
+        }
+        unzip -q "$bundle" -d "$target" >/dev/null 2>&1 || {
+            _gd_import_refuse "the zip archive could not be extracted; it is corrupt or not a bundle"
+            return 1
+        }
+        return 0
+    fi
+
+    # Names are checked before anything is written. tar refuses these by
+    # default too; this does not depend on which tar is installed.
+    names=$(tar -tf "$bundle" 2>/dev/null) || {
+        # shellcheck disable=SC2016  # the backticks are prose
+        _gd_import_refuse 'the bundle is not an archive made by `ghost migrate-export`, or it is corrupt'
+        return 1
+    }
+    while IFS= read -r name; do
+        case "/$name/" in
+            //* | */../*)
+                _gd_import_refuse "the archive holds a path that leaves the bundle: $name"
+                return 1
+                ;;
+        esac
+    done <<<"$names"
+
+    tar -xf "$bundle" -C "$target" --no-same-owner 2>/dev/null || {
+        _gd_import_refuse "the archive could not be extracted; it is corrupt or truncated"
+        return 1
+    }
+}
+
+# _gd_import_lift_single_root TARGET
+# An archive made with `tar -C parent name` keeps the bundle under one top
+# level directory. That is the same bundle, so it is lifted to the root.
+# macOS tar adds `._name` metadata files, which do not count as contents.
+_gd_import_lift_single_root() {
+    local target=$1 entry inner="" count=0
+    [[ -e $target/manifest.json ]] && return 0
+    for entry in "$target"/* "$target"/.[!.]*; do
+        [[ -e $entry || -L $entry ]] || continue
+        [[ -f $entry && $(basename "$entry") == ._* ]] && continue
+        count=$((count + 1))
+        inner=$entry
+    done
+    [[ $count -eq 1 && -d $inner && ! -L $inner && -f $inner/manifest.json ]] || return 0
+    mv "$inner" "$target.lift" && _gd_import_remove "$target" && mv "$target.lift" "$target"
+}
+
+# The manifest rules of docs/bundle-v1.md. Prints the first problem found, or
+# nothing for a valid manifest.
+# shellcheck disable=SC2016  # a jq program, not shell
+readonly GD_IMPORT_MANIFEST_RULES='
+def re_export: " Export the site again with Ghost-CLI 1.33.0 or later.";
+def url_ok: type == "string" and test("^https?://[^/[:space:]]+");
+def relative_ok: type == "string" and length > 0 and (startswith("/") | not)
+    and (split("/") | index("..") | not);
+if type != "object" then "manifest.json is not a JSON object" else
+first(
+  (select(.bundleVersion != 1)
+     | "this is not a version 1 bundle (bundleVersion is \(.bundleVersion | tojson))." + re_export),
+  (("ghostVersion", "sourceEnvironment", "configValues") as $alias | select(has($alias))
+     | "manifest.json uses the unsupported draft field \($alias)." + re_export),
+  (select((.bundleCreatedAt | type) != "string"
+          or (.bundleCreatedAt | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]+)?Z$") | not))
+     | "manifest.json has no valid bundleCreatedAt (an RFC 3339 timestamp in UTC)"),
+  (select(.sourceInstallType != "local" and .sourceInstallType != "production")
+     | "manifest.json sourceInstallType must be \"local\" or \"production\", not \(.sourceInstallType | tojson)"),
+  (select([.kind] | inside(["mysql-dump", "mysql-data", "portable"]) | not)
+     | "manifest.json kind must be one of mysql-dump, mysql-data, portable, not \(.kind | tojson)"),
+  (select((.ghost | type) != "object" or (.ghost.version | type) != "string"
+          or (.ghost.version | test("^[0-9]+[.][0-9]+[.][0-9]+(-[0-9A-Za-z.-]+)?$") | not))
+     | "manifest.json has no exact ghost.version"),
+  (select(.ghost.version | startswith("6.") | not)
+     | "the source site runs Ghost \(.ghost.version); only Ghost 6.x can be imported. Run `ghost update` in the source installation, then export it again."),
+  (select(.url | url_ok | not) | "manifest.json url is not an http(s) URL"),
+  (select(.adminUrl != null and (.adminUrl | url_ok | not)) | "manifest.json adminUrl is not an http(s) URL"),
+  (select(.content != "content/") | "manifest.json content must be \"content/\""),
+  (select((.database | type) != "object") | "manifest.json has no database object"),
+  (select(.database | has("kind"))
+     | "manifest.json uses the unsupported draft field database.kind." + re_export),
+  (select(.kind != "portable" and .database.path != "database.sql")
+     | "manifest.json database.path must be \"database.sql\" for a \(.kind) bundle"),
+  (select(.kind == "portable" and (.database.path | relative_ok | not))
+     | "manifest.json database.path is not a path inside the bundle"),
+  (select(.kind == "portable" and (.database.members | relative_ok | not))
+     | "manifest.json database.members is not a path inside the bundle"),
+  (select(.kind == "mysql-data" and ((.database.rows | type) != "object" or (.database.rows | length) == 0))
+     | "manifest.json database.rows is required for a mysql-data bundle"),
+  (select(.kind == "mysql-data") | .database.rows | to_entries[]
+     | select(.key | test("^[A-Za-z0-9_]{1,64}$") | not)
+     | "manifest.json database.rows names an invalid table: \(.key | tojson)"),
+  (select(.kind == "mysql-data") | .database.rows | to_entries[]
+     | select((.value | type) != "number" or .value < 0 or .value != (.value | floor))
+     | "manifest.json database.rows.\(.key) is not a row count"),
+  (select((.config | type) != "object") | "manifest.json has no config object"),
+  (.config | to_entries[] | select((.value | type) != "string")
+     | "manifest.json config.\(.key) is not a string; bundle v1 config values are raw strings"),
+  empty
+) end'
+
+# _gd_import_validate TARGET
+# Checks an unpacked bundle: nothing but files and directories, a manifest
+# that meets the contract, and the files that manifest names.
+_gd_import_validate() {
+    local target=$1 manifest=$1/manifest.json odd problem path
+
+    odd=$(find "$target" ! -type f ! -type d 2>/dev/null | head -1)
+    if [[ -n $odd ]]; then
+        if [[ -L $odd ]]; then
+            _gd_import_refuse "the bundle contains a symbolic link: ${odd#"$target"/}. Bundles hold only regular files and directories."
+        else
+            _gd_import_refuse "the bundle contains a special file: ${odd#"$target"/}. Bundles hold only regular files and directories."
+        fi
+        return 1
+    fi
+
+    [[ -f $manifest ]] || {
+        # shellcheck disable=SC2016  # the backticks are prose
+        _gd_import_refuse 'the bundle has no manifest.json; it was not made by `ghost migrate-export`'
+        return 1
+    }
+    (($(wc -c <"$manifest") <= 1048576)) || {
+        _gd_import_refuse "manifest.json is implausibly large"
+        return 1
+    }
+
+    problem=$(jq -r "$GD_IMPORT_MANIFEST_RULES" "$manifest" 2>/dev/null) || {
+        _gd_import_refuse "manifest.json is not valid JSON"
+        return 1
+    }
+    [[ -z $problem ]] || {
+        _gd_import_refuse "$problem"
+        return 1
+    }
+
+    [[ -d $target/content ]] || {
+        _gd_import_refuse "the bundle has no content/ directory"
+        return 1
+    }
+    while IFS= read -r path; do
+        [[ -n $path ]] || continue
+        [[ -f $target/$path ]] || {
+            _gd_import_refuse "manifest.json names $path, which is not a file in the bundle"
+            return 1
+        }
+    done < <(jq -r '.database | .path, (.members // empty)' "$manifest")
+}
+
 # import_stage DIR BUNDLE
-# Validates BUNDLE and copies it into a new staging directory, recorded in
-# GD_IMPORT_STAGE; call it directly, not in a subshell. Prints nothing; the
-# validated manifest is then available to import_manifest. Returns non-zero,
-# having left nothing behind, when the bundle is refused.
+# Unpacks BUNDLE into the site's staging directory and validates it. Prints
+# nothing; the validated manifest is then available to import_manifest.
+# Returns non-zero, having left nothing behind, when the bundle is refused.
 import_stage() {
-    local dir=$1 bundle=$2 root staging helper parent name
-    root=$(import_staging_root "$dir")
-    helper=$GD_IMPORT_HELPER
+    local dir=$1 bundle=$2 staging free_kb
+    staging=$(import_staging "$dir")
 
     [[ -e $bundle ]] || {
-        printf 'error: there is no bundle at %s\n' "$bundle" >&2
+        _gd_import_refuse "there is no bundle at $bundle"
         return 1
     }
-    parent=$(CDPATH='' cd -- "$(dirname -- "$bundle")" && pwd -P) || return 1
-    name=$(basename -- "$bundle")
-    # `docker run --volume` splits its argument on colons.
-    case "$parent$dir" in
-        *:*)
-            printf 'error: a bundle or site directory whose path contains a colon cannot be mounted into the\n' >&2
-            printf '  container that reads the bundle. Move it to a path without one.\n' >&2
-            return 1
-            ;;
-    esac
 
-    rm -rf "$root"
-    (umask 077 && mkdir "$root") || return 1
-    staging=$(umask 077 && mktemp -d "$root/stage.XXXXXXXX") || return 1
+    _gd_import_remove "$staging"
+    (umask 077 && mkdir "$staging" "$staging/bundle") || return 1
 
-    # Pinned by digest, so a copy that is already here is the right one.
-    if ! docker image inspect "$GD_IMPORT_HELPER_IMAGE" >/dev/null 2>&1 &&
-        ! docker pull --quiet "$GD_IMPORT_HELPER_IMAGE" >/dev/null 2>&1; then
-        printf 'error: could not pull %s, which reads the bundle. Check that this host can reach the registry.\n' \
-            "$GD_IMPORT_HELPER_IMAGE" >&2
-        rm -rf "$root"
+    if ! _gd_import_unpack "$bundle" "$staging/bundle"; then
+        chmod -R u+rwX "$staging" 2>/dev/null
+        _gd_import_remove "$staging"
+        return 1
+    fi
+    # An archive records its own modes; whatever they were, this user must be
+    # able to read, move and remove what was unpacked.
+    chmod -R u+rwX "$staging/bundle" 2>/dev/null
+
+    _gd_import_lift_single_root "$staging/bundle"
+
+    if ! _gd_import_validate "$staging/bundle"; then
+        _gd_import_remove "$staging"
         return 1
     fi
 
-    # The bundle's parent is mounted rather than the bundle, so one invocation
-    # serves a directory and an archive alike. Read-only, with no network, no
-    # capabilities and nothing writable but staging.
-    if ! docker run --rm \
-        --network none \
-        --read-only \
-        --cap-drop ALL \
-        --security-opt no-new-privileges \
-        --user "$(_gd_import_user)" \
-        --env "GD_IMPORT_BUNDLE_NAME=$bundle" \
-        ${GD_IMPORT_MAX_BYTES:+--env "GD_IMPORT_MAX_BYTES=$GD_IMPORT_MAX_BYTES"} \
-        --volume "$parent:/source:ro" \
-        --volume "$staging:/staging" \
-        --volume "$helper:/helper/import-helper.mjs:ro" \
-        "$GD_IMPORT_HELPER_IMAGE" \
-        node /helper/import-helper.mjs stage "/source/$name" /staging >/dev/null; then
-        rm -rf "$root"
+    free_kb=$(_gd_import_free_kb "$staging")
+    if [[ $free_kb =~ ^[0-9]+$ ]] && ((free_kb < GD_IMPORT_RESERVE_KB)); then
+        _gd_import_refuse "unpacking the bundle left $((free_kb / 1024)) MB free on the site directory's filesystem, too little to load its database"
+        _gd_import_remove "$staging"
         return 1
     fi
 
-    [[ -f $staging/manifest.json ]] || {
-        printf 'error: the bundle was read but no manifest was staged. Please report this.\n' >&2
-        rm -rf "$root"
+    # Content is served by Ghost and read by theme developers, like the
+    # content of a fresh install; the database dump and manifest stay private
+    # inside staging.
+    chmod -R go+rX "$staging/bundle/content" 2>/dev/null
+    jq -c . "$staging/bundle/manifest.json" >"$staging/manifest.json" || {
+        _gd_import_remove "$staging"
         return 1
     }
-    GD_IMPORT_STAGE=$staging
 }
 
 # import_resolve_ghost IMAGE VERSION
@@ -392,22 +567,32 @@ import_verify_ghost_database() {
 # verified empty before writing to them.
 import_discard() {
     local dir=$1
+    [[ $dir == /*/* ]] || {
+        printf 'error: refusing to discard an import in %s\n' "${dir:-<empty path>}" >&2
+        return 1
+    }
+
+    if [[ -f $dir/$GD_ENV_FILE_NAME ]]; then
+        COMPOSE_PROFILES=local compose_run "$dir" stop >/dev/null 2>&1 || true
+    fi
+
+    _gd_import_remove "$dir/data/ghost" "$dir/data/mysql" 2>/dev/null || true
+
+    # Once a container has run, the database and content files belong to that
+    # container's user, which this user may not be able to remove. The database
+    # image is already here, so it does it. Nothing ran if there is no `.env`.
+    if [[ -f $dir/$GD_ENV_FILE_NAME ]] && { [[ -e $dir/data/ghost ]] || [[ -e $dir/data/mysql ]]; }; then
+        COMPOSE_PROFILES=local compose_run "$dir" run --rm --no-deps --user 0:0 \
+            --volume "$dir/data:/import-data" --entrypoint sh db \
+            -c 'cd /import-data && rm -rf ghost mysql' >/dev/null 2>&1 || true
+    fi
 
     if [[ -f $dir/$GD_ENV_FILE_NAME ]]; then
         COMPOSE_PROFILES=local compose_run "$dir" down --volumes --remove-orphans >/dev/null 2>&1 || true
     fi
+    if import_dir_empty "$dir/data"; then _gd_import_remove "$dir/data"; fi
 
-    # The database and content files belong to the containers' own users, so
-    # they are removed from inside a container rather than with host
-    # privileges this user may not have.
-    if [[ -d $dir/data ]]; then
-        docker run --rm --network none --volume "$dir/data:/data" "$GD_IMPORT_HELPER_IMAGE" \
-            sh -c 'rm -rf /data/ghost /data/mysql' >/dev/null 2>&1 || true
-        if import_dir_empty "$dir/data"; then rm -rf "$dir/data"; fi
-    fi
-
-    rm -rf "$(import_staging_root "$dir")"
-    GD_IMPORT_STAGE=""
-    rm -f "$dir/$GD_ENV_FILE_NAME" "$dir/$GD_GHOST_ENV_FILE_NAME" "$dir/$GD_META_FILE_NAME"
-    rm -f "$(import_marker "$dir")"
+    _gd_import_remove "$(import_staging "$dir")" \
+        "$dir/$GD_ENV_FILE_NAME" "$dir/$GD_GHOST_ENV_FILE_NAME" "$dir/$GD_META_FILE_NAME" \
+        "$(import_marker "$dir")"
 }

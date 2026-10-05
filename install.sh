@@ -210,7 +210,7 @@ import_on_exit() {
     trap - EXIT
     case $import_state in
         staged)
-            rm -rf "$(import_staging_root "$dir")"
+            rm -rf "$(import_staging "$dir")"
             ;;
         changing)
             # Whatever happened, a partial site must not be startable.
@@ -219,6 +219,8 @@ import_on_exit() {
             printf '\nThe import did not complete.\n' >&2
             COMPOSE_PROFILES=local compose_run "$dir" logs --no-color --tail 40 ghost db >&2 2>/dev/null || true
             if [[ ${GD_IMPORT_KEEP_FAILED:-0} == 1 ]]; then
+                # Kept for inspection, not left running.
+                COMPOSE_PROFILES=local compose_run "$dir" stop >/dev/null 2>&1 || true
                 printf '\nGD_IMPORT_KEEP_FAILED is set, so what it created was kept for inspection in\n' >&2
                 printf '  %s\nIt cannot be started. Running the import again removes it first.\n' "$dir" >&2
             else
@@ -242,9 +244,6 @@ if [[ -n $import_bundle ]]; then
         import_dir_empty "$data" || die "$data is not empty. A site is imported into a fresh checkout,
   never merged into existing data. Nothing has been changed."
     done
-
-    docker_responsive || die "the Docker daemon is not reachable, and the bundle is read inside a
-  container. Start Docker and run this again. Nothing has been changed."
 
     printf 'Reading the bundle\n'
     trap import_on_exit EXIT
@@ -652,7 +651,7 @@ fi
 if [[ -n $import_bundle ]]; then
     # Verified, or deliberately not started: either way this is now a site.
     import_state=complete
-    rm -rf "$(import_staging_root "$dir")"
+    rm -rf "$(import_staging "$dir")"
     rm -f "$(import_marker "$dir")"
 fi
 

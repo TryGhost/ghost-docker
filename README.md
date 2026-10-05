@@ -156,6 +156,9 @@ node --test --test-timeout=120000 tests/*.test.mjs
 # local and production ingress, against real containers
 GD_TEST_INGRESS=1 node --test --test-timeout=900000 tests/ingress.test.mjs
 
+# real Ghost-CLI sites, exported with the released exporter and imported
+tests/e2e/import.sh
+
 # real installations from a candidate release built out of the working tree
 GD_TEST_INSTALL=1 node --test --test-timeout=1800000 tests/install-e2e.test.mjs
 ```
