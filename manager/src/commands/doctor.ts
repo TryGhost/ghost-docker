@@ -4,6 +4,7 @@
 // reached, is it new enough, is the site directory the one the launcher said
 // it was, and will the files written there belong to whoever ran the launcher.
 import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import type { Context } from '../context.ts';
 import { composeVersion, daemonInfo } from '../docker.ts';
@@ -135,7 +136,15 @@ export async function collect(context: Context, io: Io, keepProbe = false): Prom
     add('ok', 'site directory', cwd);
 
     checks.push(identityCheck(context, io));
-    checks.push(writeCheck(cwd, keepProbe));
+
+    const probe = writeProbe(cwd, keepProbe);
+    checks.push(probe.check);
+    if (probe.token !== null) {
+        checks.push(await bindMountCheck(context, io, probe.token));
+        if (!keepProbe) {
+            rmSync(join(cwd, PROBE_FILE), { force: true });
+        }
+    }
 
     const projectDir = declaredProjectDir(cwd);
     if (projectDir !== null) {
@@ -184,29 +193,99 @@ function identityCheck(context: Context, io: Io): Check {
     };
 }
 
-/** Can the site directory be written, and who owns what is written? */
-function writeCheck(dir: string, keep: boolean): Check {
+/**
+ * Can the site directory be written, and who owns what is written? Leaves the
+ * probe file in place for the bind mount check; the caller removes it.
+ */
+function writeProbe(dir: string, keep: boolean): { check: Check; token: string | null } {
     const path = join(dir, PROBE_FILE);
+    const token = `ghost-docker-probe-${randomUUID()}`;
     try {
-        writeFileSync(path, 'written by ghost-docker doctor\n', { mode: 0o600 });
+        writeFileSync(path, `${token}\n`, { mode: 0o600 });
         const info = statSync(path);
-        if (!keep) {
-            rmSync(path);
-        }
         return {
-            status: 'ok',
-            label: 'writable',
-            detail:
-                `files written here are owned by uid ${info.uid} gid ${info.gid} as the manager sees them` +
-                (keep ? `; left ${PROBE_FILE} for inspection` : ''),
+            token,
+            check: {
+                status: 'ok',
+                label: 'writable',
+                detail:
+                    `files written here are owned by uid ${info.uid} gid ${info.gid} as the manager sees them` +
+                    (keep ? `; left ${PROBE_FILE} for inspection` : ''),
+            },
         };
     } catch (error) {
         return {
-            status: 'error',
-            label: 'writable',
-            detail: `${dir} is not writable by the manager: ${(error as Error).message}`,
+            token: null,
+            check: {
+                status: 'error',
+                label: 'writable',
+                detail: `${dir} is not writable by the manager: ${(error as Error).message}`,
+            },
         };
     }
+}
+
+/**
+ * Does the daemon mean the same directory by this path as the manager does?
+ *
+ * Compose asks the daemon to bind-mount paths under the site directory, and
+ * the daemon resolves them on the host. This asks it to do exactly that: start
+ * a sibling container with the site directory mounted by the path the manager
+ * was given, and read back the file the manager just wrote. It fails when the
+ * daemon cannot start containers, when the path means another directory to the
+ * daemon, and when the file is not where the daemon looks. On native Windows
+ * it is the one check that exercises the daemon connection, the ownership
+ * model and the path translation together (plan §2.10).
+ */
+async function bindMountCheck(context: Context, io: Io, token: string): Promise<Check> {
+    const label = 'bind mounts';
+    if (context.image === null) {
+        return {
+            status: 'warn',
+            label,
+            detail: 'not checked: the launcher did not say which image this is, so no sibling container could be started',
+        };
+    }
+    const result = await io.exec(
+        'docker',
+        [
+            'run',
+            '--rm',
+            '--network',
+            'none',
+            '--volume',
+            `${context.siteDir}:/ghost-docker-probe:ro`,
+            '--entrypoint',
+            'cat',
+            context.image,
+            `/ghost-docker-probe/${PROBE_FILE}`,
+        ],
+        { timeoutMs: 120_000 },
+    );
+    if (result.status === 0 && result.stdout.trim() === token) {
+        return {
+            status: 'ok',
+            label,
+            detail: 'a sibling container sees this directory at the same path the manager does',
+        };
+    }
+    if (result.timedOut) {
+        return {
+            status: 'error',
+            label,
+            detail: 'a sibling container did not finish within 2 minutes',
+        };
+    }
+    const said = result.stderr.trim().split('\n').pop() ?? '';
+    return {
+        status: 'error',
+        label,
+        detail:
+            `a sibling container given ${context.siteDir} did not find the file the manager wrote there` +
+            (said ? ` (${said})` : '') +
+            '. The daemon resolves this path to a different directory than the launcher mounted, ' +
+            'so every Compose bind mount would point at the wrong place.',
+    };
 }
 
 /**

@@ -182,9 +182,13 @@ elseif ($ScriptDir -and (Test-Path -LiteralPath (Join-Path $ScriptDir 'manager/D
         $commit = (& git -C $ScriptDir rev-parse HEAD 2>$null)
         if ($LASTEXITCODE -ne 0) { $commit = '' }
     }
+    # Also tagged with its commit, so the image that belongs to an earlier
+    # checkout is still here if an update has to go back to it.
+    $tags = @('--tag', $Image)
+    if ($commit) { $tags += @('--tag', ('ghost-docker:checkout-' + $commit.Substring(0, [Math]::Min(12, $commit.Length)))) }
     $buildOutput = & docker build --quiet --file (Join-Path $ScriptDir 'manager/Dockerfile') `
         --build-arg 'GD_VERSION=checkout' --build-arg "GD_COMMIT=$commit" `
-        --tag $Image $ScriptDir 2>&1
+        @tags $ScriptDir 2>&1
     if ($LASTEXITCODE -ne 0) {
         [Console]::Error.WriteLine(($buildOutput | Out-String))
         Stop-Launcher "the manager image could not be built from $ScriptDir."

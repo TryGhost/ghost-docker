@@ -161,10 +161,14 @@ elif [[ -n $script_dir && -f $script_dir/manager/Dockerfile && -f $script_dir/co
     source_kind=checkout
     image=ghost-docker:checkout
     commit=$(git -C "$script_dir" rev-parse HEAD 2>/dev/null || printf '')
+    # Also tagged with its commit, so the image that belongs to an earlier
+    # checkout is still here if an update has to go back to it.
+    declare -a tags=(--tag "$image")
+    [[ -z $commit ]] || tags+=(--tag "ghost-docker:checkout-${commit:0:12}")
     if ! build_output=$(docker build --quiet \
         --file "$script_dir/manager/Dockerfile" \
         --build-arg "GD_VERSION=checkout" --build-arg "GD_COMMIT=$commit" \
-        --tag "$image" "$script_dir" 2>&1); then
+        "${tags[@]}" "$script_dir" 2>&1); then
         printf '%s\n' "$build_output" >&2
         die "the manager image could not be built from $script_dir."
     fi

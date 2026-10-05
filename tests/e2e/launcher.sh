@@ -258,12 +258,19 @@ ok "$OUT"
 
 run "$LAUNCHER" --dir "$SITE" doctor
 expect_status 0
-for label in 'manager' 'docker engine' 'platform' 'docker compose' 'site directory' 'identity' 'writable'; do
+for label in 'manager' 'docker engine' 'platform' 'docker compose' 'site directory' 'identity' 'writable' 'bind mounts'; do
     expect_output "ok +$label"
 done
 refute_output 'ERROR|warning'
 [[ -z $(ls -A "$SITE") ]] || fail "doctor left something in the site directory" "$(ls -A "$SITE")"
-ok "doctor passes and leaves the site directory empty"
+ok "doctor passes, a sibling container sees the site directory, and nothing is left in it"
+
+commit=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || printf '')
+if [[ -n $commit ]]; then
+    docker image inspect "ghost-docker:checkout-${commit:0:12}" >/dev/null 2>&1 ||
+        fail "the image built from this checkout was not also tagged with its commit"
+    ok "the image is also tagged ghost-docker:checkout-${commit:0:12}"
+fi
 
 step "Files the manager writes belong to the caller"
 run "$LAUNCHER" --dir "$SITE" doctor --keep-probe
@@ -309,5 +316,35 @@ run docker run --rm --entrypoint sh \
     ghost-docker:checkout -c 'docker compose -f /opt/ghost-docker/stack/compose.yml config --quiet'
 expect_status 0
 ok "docker compose config accepts it, using the image's own Compose"
+
+step "The image holds everything compose.yml refers to"
+# The release payload is defined by the Compose file, not by a list: every
+# bind mount source and build context it names, with every profile on, has to
+# be in the image. Data directories are created at install and are exempt.
+# shellcheck disable=SC2016  # a Node program, not shell
+run docker run --rm --entrypoint sh \
+    -e URL=https://example.com -e DOMAIN=example.com -e DATABASE_PASSWORD=x -e DATABASE_ROOT_PASSWORD=y \
+    -e COMPOSE_PROFILES=production,analytics,activitypub \
+    ghost-docker:checkout -c 'cd /opt/ghost-docker/stack && docker compose -f compose.yml config --format json | node -e "
+const fs = require(\"fs\");
+const project = JSON.parse(fs.readFileSync(0, \"utf8\"));
+const stack = process.cwd() + \"/\";
+const missing = [];
+let checked = 0;
+for (const [name, service] of Object.entries(project.services)) {
+  const paths = (service.volumes || []).filter((v) => v.type === \"bind\").map((v) => v.source);
+  if (service.build) paths.push(service.build.context);
+  for (const path of paths) {
+    if (!path.startsWith(stack) || path.startsWith(stack + \"data/\")) continue;
+    checked += 1;
+    if (!fs.existsSync(path)) missing.push(name + \": \" + path.slice(stack.length));
+  }
+}
+if (missing.length) { console.error(\"not in the image:\\n\" + missing.join(\"\\n\")); process.exit(1); }
+console.log(checked + \" paths\");
+"'
+expect_status 0
+expect_output '^[1-9][0-9]* paths$'
+ok "every bind mount and build context of every profile ($OUT)"
 
 printf '\nAll checks passed.\n'

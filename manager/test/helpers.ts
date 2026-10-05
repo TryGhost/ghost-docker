@@ -1,12 +1,16 @@
 // A fake Io: captured output, a scripted `docker`, a temporary site directory.
-import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { run } from '../src/cli.ts';
 import type { Io } from '../src/io.ts';
 import type { ExecResult } from '../src/process.ts';
 
+/** How the daemon treats a sibling container asked to read the probe file. */
+export type Sibling = 'sees' | 'other-directory' | 'cannot-run' | 'hangs';
+
 export interface Daemon {
+    sibling?: Sibling;
     /** `docker info` as the daemon would answer, or a failure. */
     info?: Record<string, unknown> | { fail: string } | { hang: true };
     compose?: string | null;
@@ -54,6 +58,7 @@ export function harness(): Harness {
             GD_ROOTLESS: '0',
             GD_HOST_OS: 'Linux',
             GD_SOURCE: 'checkout',
+            GD_IMAGE: 'ghost-docker:checkout',
             GD_VERSION_FILE: join(dir, 'no-such-version-file'),
         },
         cleanup: () => rmSync(dir, { recursive: true, force: true }),
@@ -94,6 +99,34 @@ export function harness(): Harness {
                             };
                         }
                         return ok(JSON.stringify(info));
+                    }
+                    if (args[0] === 'run') {
+                        // A sibling container reading the probe file: the daemon really does
+                        // read the directory, unless the test says it resolves the path elsewhere.
+                        const mount = args[args.indexOf('--volume') + 1] ?? '';
+                        const file = args.at(-1) ?? '';
+                        const mode = state.daemon.sibling ?? 'sees';
+                        if (mode === 'hangs') {
+                            return { status: null, stdout: '', stderr: '', timedOut: true };
+                        }
+                        if (mode === 'cannot-run') {
+                            return {
+                                status: 125,
+                                stdout: '',
+                                stderr: 'docker: Error response from daemon: mounts denied',
+                                timedOut: false,
+                            };
+                        }
+                        if (mode === 'other-directory') {
+                            return {
+                                status: 1,
+                                stdout: '',
+                                stderr: `cat: can't open '${file}': No such file or directory`,
+                                timedOut: false,
+                            };
+                        }
+                        const hostDir = mount.split(':')[0] ?? '';
+                        return ok(readFileSync(join(hostDir, file.split('/').pop() ?? ''), 'utf8'));
                     }
                     if (args[0] === 'compose' && args[1] === 'version') {
                         return state.daemon.compose

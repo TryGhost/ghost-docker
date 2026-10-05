@@ -146,6 +146,57 @@ describe('the site directory', () => {
     });
 });
 
+describe('bind mounts', () => {
+    test('a sibling container is started with the site directory at the manager\u2019s own path, read-only', async () => {
+        assert.equal((await check('bind mounts'))!.status, 'ok');
+        const call = h.calls.find((argv) => argv[1] === 'run')!;
+        assert.ok(call.includes(`${h.dir}:/ghost-docker-probe:ro`), call.join(' '));
+        assert.equal(call.at(-1), `/ghost-docker-probe/${PROBE_FILE}`);
+        assert.equal(call.at(-2), 'ghost-docker:checkout');
+        assert.ok(call.includes('none'), 'the sibling was given a network');
+    });
+
+    test('a daemon that resolves the path to another directory is an error that says what it means', async () => {
+        h.daemon.sibling = 'other-directory';
+        const result = await check('bind mounts');
+        assert.equal(result!.status, 'error');
+        assert.match(result!.detail, /did not find the file the manager wrote/);
+        assert.match(result!.detail, /every Compose bind mount would point at the wrong place/);
+        assert.equal((await h.run('doctor')).code, 1);
+    });
+
+    test('a daemon that cannot start the sibling is an error carrying its message', async () => {
+        h.daemon.sibling = 'cannot-run';
+        assert.match((await check('bind mounts'))!.detail, /mounts denied/);
+    });
+
+    test('a sibling that never finishes is an error, not a hang', async () => {
+        h.daemon.sibling = 'hangs';
+        assert.match((await check('bind mounts'))!.detail, /did not finish/);
+    });
+
+    test('the probe file is removed afterwards whatever the outcome', async () => {
+        for (const sibling of ['sees', 'other-directory', 'cannot-run'] as const) {
+            h.daemon.sibling = sibling;
+            await h.run('doctor');
+            assert.ok(!existsSync(join(h.dir, PROBE_FILE)), sibling);
+        }
+    });
+
+    test('without an image name from the launcher it is a warning, not a pass', async () => {
+        delete h.env.GD_IMAGE;
+        const result = await check('bind mounts');
+        assert.equal(result!.status, 'warn');
+        assert.equal((await h.run('doctor')).code, 0);
+    });
+
+    test('it is not attempted when the directory could not be written', async () => {
+        h.env.GD_SITE_DIR = '/proc/ghost-docker-no-such-directory';
+        h.cwd = '/proc/ghost-docker-no-such-directory';
+        assert.equal(await check('bind mounts'), undefined);
+    });
+});
+
 describe('identity', () => {
     test('running as someone other than the caller is an error', async () => {
         h.uid = 0;
