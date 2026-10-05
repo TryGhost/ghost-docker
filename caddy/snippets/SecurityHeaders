@@ -1,3 +1,8 @@
+# Security headers.
+#
+# args[0] — admin domain allowed to frame this site, or "" when there is none.
+# The argument is mandatory: an omitted argument only produces a Caddy warning
+# and would silently ship a broken frame-ancestors policy.
 header {
 	# Enable HSTS
 	Strict-Transport-Security max-age=31536000;
@@ -8,5 +13,5 @@ header {
 	# Referrer policy
 	Referrer-Policy strict-origin-when-cross-origin
 	# Prevent embedding in external iframes
-	Content-Security-Policy "frame-ancestors 'self' {$ADMIN_DOMAIN:}"
+	Content-Security-Policy "frame-ancestors 'self' {args[0]}"
 }

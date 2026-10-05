@@ -170,7 +170,7 @@ WHAT WONT HAPPEN:
   ✓ Original installation remains intact
 
 REQUIREMENTS:
-  ✓ .env file configured for Docker
+  ✓ .env file configured for Docker (see .env.example)
   ✓ MySQL credentials with dump permissions
   ✓ Sufficient disk space for migration
 
@@ -571,9 +571,16 @@ main() {
     node "${PWD}/scripts/config-to-env.js" "${current_location}/config.production.json"
     echo ""
 
-    echo -e "\n# Configuration imported from existing Ghost install at ${current_location}" >> "${PWD}/.env"
-    node "${PWD}/scripts/config-to-env.js" "${current_location}/config.production.json" >> "${PWD}/.env"
-    echo "✓ Configuration imported"
+    # Ghost application configuration goes to ghost.env, which is the only
+    # env_file of the ghost service. .env holds Compose and operator settings,
+    # including the MySQL root password, and is never passed into the container.
+    if [[ ! -f "${PWD}/ghost.env" ]]; then
+        (umask 077 && : > "${PWD}/ghost.env")
+    fi
+    echo -e "\n# Configuration imported from existing Ghost install at ${current_location}" >> "${PWD}/ghost.env"
+    node "${PWD}/scripts/config-to-env.js" "${current_location}/config.production.json" >> "${PWD}/ghost.env"
+    chmod 0600 "${PWD}/ghost.env"
+    echo "✓ Configuration imported into ghost.env"
 
     # Start Ghost
     echo ""
@@ -619,7 +626,8 @@ main() {
     echo "  • Original files: $current_location"
     echo "  • Original database: $mysql_database on $mysql_host"
     echo "  • New content location: ${PWD}/data/ghost/"
-    echo "  • Configuration: ${PWD}/.env"
+    echo "  • Operator configuration: ${PWD}/.env"
+    echo "  • Ghost configuration:    ${PWD}/ghost.env"
     echo ""
     echo "QUICK START COMMANDS:"
     echo "  View logs:        docker compose logs -f ghost"
