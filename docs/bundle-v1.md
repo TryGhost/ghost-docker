@@ -22,9 +22,11 @@ Status of the work:
   Ghost-CLI 1.33.0.
 - Alignment of this document and its fixtures with the released exporter,
   including the `mysql-data` kind: **S5a**, implemented.
-- Importer: **S5b** (local `mysql-dump` and `mysql-data`), **S5c** (local
-  `install.sh --migrate`), **S5d** (`portable`), **S5e** (production import and
-  cutover). Not yet implemented.
+- Importer for local `mysql-dump` and `mysql-data` bundles: **S5b**,
+  implemented as `install.sh --import`. See
+  [install.md](install.md#importing-a-ghost-cli-site).
+- **S5c** (local `install.sh --migrate`), **S5d** (`portable`), **S5e**
+  (production import and cutover): not yet implemented.
 - Updating existing ghost-docker installations from the pre-S1 layout: **S6b**.
 
 The importer's target is `ghost.env`. Replacing it with a mounted Ghost JSON
@@ -106,7 +108,8 @@ Portable `database` example (filenames can vary; always read the manifest):
 ```
 
 `kind` appears only at the top level and the version only at `ghost.version`.
-There are no `database.kind`, `ghostVersion`, or `sourceEnvironment` aliases.
+There are no `database.kind`, `ghostVersion`, or `sourceEnvironment` aliases;
+a manifest carrying one is rejected.
 Matching exporter fixtures are in `tests/fixtures/migration-bundle-v1/` and
 Ghost-CLI's `test/fixtures/migration-bundle-v1/`.
 
@@ -114,9 +117,16 @@ A bundle missing `bundleCreatedAt` or `sourceInstallType`, or carrying a
 `sourceInstallType` outside that set, is rejected. There is no inference
 fallback and no default.
 
-Every path in the manifest is validated. Path traversal, absolute member
-paths, and symlinks or hardlinks that escape the bundle are rejected,
-including in directory bundles.
+Every path in the manifest is validated. Path traversal and absolute member
+paths are rejected, and so is every symbolic link and hard link, wherever it
+points, including in directory bundles: the exporter materializes theme links
+and never emits one, so the importer has no reason to follow any. Devices,
+FIFOs and other special entries are rejected the same way, as is a path that
+appears twice in an archive.
+
+A bundle is accepted as a directory, a gzip-compressed tar (`--archive tgz`),
+or an uncompressed tar. Zip archives are not read; extract them and pass the
+directory.
 
 ### `config`
 
@@ -160,12 +170,30 @@ The authoritative list is `GD_CONTAINER_OWNED_KEYS` and
 `GD_CONTAINER_OWNED_PREFIXES` in [scripts/lib/config.sh](../scripts/lib/config.sh);
 `scripts/config.sh validate` enforces it.
 
+## Importing `mysql-dump`
+
+The dump is loaded with the `mysql` client into the empty database, as the
+site's database user and never as root, so a dump can affect nothing but that
+database. `mysqldump` records the account that defined each view and trigger
+(`DEFINER=`), and creating an object on another account's behalf needs a
+privilege that user deliberately lacks. Those clauses are therefore removed
+from mysqldump's own version-comment lines during the load, and the objects
+belong to the site's user, which is the account Ghost connects as. Nothing
+else in the dump is rewritten.
+
+After the load the importer checks that the database has a Ghost migration
+history, then starts Ghost on it.
+
 ## Reading the manifest
 
 The manifest is read and validated using a pinned helper container, with no
-Compose dependencies, no published ports, and read-only access to the bundle.
-It cannot depend on an already-valid site `.env` or on a running Ghost,
-because neither exists yet at that point in the import.
+Compose dependencies, no published ports, no network, and read-only access to
+the bundle. It cannot depend on an already-valid site `.env` or on a running
+Ghost, because neither exists yet at that point in the import. The helper is
+[scripts/lib/import-helper.mjs](../scripts/lib/import-helper.mjs): it copies
+the bundle into a private staging directory inside the site directory, reading
+archives with its own parser rather than a tar binary, and every later step
+works from that validated copy.
 
 The container is not about JSON parsing convenience — `jq` is available on the
 host and is used freely for the site's own `.ghost-docker.json` and operation
@@ -188,7 +216,7 @@ never synthesizes schema. It must:
 2. Start Ghost at exactly `ghost.version` against that database, with no
    public ingress, and wait for it to finish creating its schema, views and
    fixtures. Stop it.
-3. Load `database.sql` with the `mysql` client. The file disables foreign key
+3. Load `database.sql` with the `mysql` client, as the site's database user. The file disables foreign key
    checks, uses strict SQL mode, and empties and refills each table inside one
    transaction, so a failure (for example a column the destination schema
    lacks) rolls back and the import fails as a whole.
@@ -263,8 +291,8 @@ promising portable fidelity. S3 does not implement the Docker importer.
 
 ## Remaining S5 work
 
-No importer exists yet. S5b imports local `mysql-dump` and `mysql-data` bundles
-into a fresh checkout; S5c adds `install.sh --migrate`, which runs the export
+Local `mysql-dump` and `mysql-data` bundles import into a fresh checkout
+(S5b). Still to come: S5c adds `install.sh --migrate`, which runs the export
 and the import in one command; S5d adds the isolated portable import; S5e adds
 production import, verification, and ingress cutover. See §2.4 and S5 of
 [the plan](ghost-cli-replacement.md).

@@ -10,7 +10,7 @@ const execFileAsync = promisify(execFile);
 export const TESTS_DIR = dirname(fileURLToPath(import.meta.url));
 export const REPO_DIR = join(TESTS_DIR, '..');
 
-const LIBS = ['fs', 'env', 'compose', 'config', 'caddy', 'meta', 'preflight', 'install'];
+const LIBS = ['fs', 'env', 'compose', 'config', 'caddy', 'meta', 'preflight', 'install', 'import'];
 
 /**
  * Run a bash snippet with every ghost-docker library sourced.

@@ -122,7 +122,27 @@ safely. Never source an env file; use `scripts/lib/env.sh`.
 
 ## Migration from Ghost CLI
 
-The repository includes comprehensive migration tools:
+`install.sh --import BUNDLE` imports a **local** Ghost-CLI site from a bundle
+made by `ghost migrate-export` (Ghost-CLI 1.33.0+); contract in
+`docs/bundle-v1.md`, steps in `scripts/lib/import.sh`.
+
+- The bundle is untrusted. It is only read by `scripts/lib/import-helper.mjs`
+  (dependency-free Node, its own tar reader) inside the pinned
+  `GD_IMPORT_HELPER_IMAGE` with no network; links and non-file entries are
+  refused. Do not replace this with a host `tar`.
+- Kinds: `mysql-data` (SQLite source; rows only, so Ghost boots once at the
+  exact source version to create the schema before the load, then row counts
+  are compared) and `mysql-dump`. `portable`, production bundles and
+  `--migrate` exit 3 naming their step.
+- The database is loaded as the site's own MySQL user, never root. mysqldump's
+  `DEFINER=` clauses are dropped on the way in for that reason.
+- While an import runs, `.env` holds `COMPOSE_PROFILES=import-incomplete` so a
+  partial site cannot be started, and `.ghost-docker-import` marks it. A failed
+  import removes everything it created (`import_discard`).
+- `tests/import-helper.test.mjs` needs no Docker. `tests/import-e2e.test.mjs`
+  (`GD_TEST_IMPORT=1`) installs real Ghost-CLI sites and exports them.
+
+For production sites the legacy tools remain until S5e:
 
 - `scripts/migrate.sh` - Main migration script that:
   - Backs up existing Ghost installation
@@ -161,8 +181,9 @@ Rules that must not regress:
 - Host tools are `docker`, `jq`, `curl` (+ `git` for bootstrap), plus
   the Linux/macOS utilities in `GD_HOST_UTILITIES`; `tests/install-e2e.test.mjs` installs with a
   `PATH` of exactly that list.
-- Options for steps that have not landed (`--import`, `--with supervisor`,
-  `--image-registry`, `--ghost-channel`, `--without`) exit 3 naming the step,
+- Options for steps that have not landed (`--with supervisor`,
+  `--image-registry`, `--ghost-channel`, `--without`, and `--import` of a
+  portable or production bundle) exit 3 naming the step,
   not as unknown options.
 
 See `docs/install.md`.

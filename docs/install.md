@@ -48,7 +48,7 @@ install.sh [--local | --domain example.com [--admin-domain admin.example.com]]
            [--dir PATH] [--port 2368] [--version 6.3.1]
            [--channel stable|beta] [--ref vX.Y.Z]
            [--with analytics,activitypub]
-           [--no-prompt] [--no-start]
+           [--import BUNDLE] [--no-prompt] [--no-start]
 ```
 
 | Option | Meaning |
@@ -59,6 +59,7 @@ install.sh [--local | --domain example.com [--admin-domain admin.example.com]]
 | `--port PORT` | The loopback port. Omitted: the first free port at or above 2368. |
 | `--version VERSION` | A Ghost version (`6.3.1`) or a full image tag (`6-alpine`). |
 | `--with LIST` | `analytics`, `activitypub`, or both. |
+| `--import BUNDLE` | Import a local Ghost-CLI site from a migration bundle. See [Importing a Ghost-CLI site](#importing-a-ghost-cli-site). |
 | `--no-prompt` | Never ask. Every required input must then be supplied. |
 | `--no-start` | Write the configuration and routes; start no application services. |
 
@@ -79,7 +80,9 @@ the step they belong to, rather than being reported as unknown options:
 
 | Option | Lands in |
 | --- | --- |
-| `--import BUNDLE` | S5. `scripts/migrate.sh` is the supported migration path today. |
+| `--import` of a `portable` bundle | S5d. Export without `--sqlite-format portable` to get a `mysql-data` bundle. |
+| `--import` of a production site, or with `--domain` | S5e. `scripts/migrate.sh` is the supported path for a production site today. |
+| `--migrate` | S5c. Run `ghost migrate-export` yourself and pass the bundle to `--import`. |
 | `--with supervisor` | S8. The profile is reserved and defines no service. |
 | `--image-registry`, `--ghost-channel`, `--without` | S14–S16. |
 
@@ -116,6 +119,75 @@ the step they belong to, rather than being reported as unknown options:
    *healthy* through their own health checks, and the Admin API must answer
    through the ingress the site actually uses. A running container is not
    readiness, and `up -d` returning zero is not a working site.
+
+## Importing a Ghost-CLI site
+
+A local Ghost-CLI site — the kind `ghost install local` makes — moves to Docker
+in two commands. Export it with Ghost-CLI 1.33.0 or later, from the site's
+directory:
+
+```bash
+ghost migrate-export --output ~/my-site-bundle --archive tgz
+```
+
+Then install from the bundle:
+
+```bash
+curl -fsSL https://ghost.org/docker/bootstrap.sh | bash -s -- --import ~/my-site-bundle.tgz
+```
+
+or, in a checkout you already have, `./install.sh --import ~/my-site-bundle.tgz`.
+No `--local` is needed: the bundle says what kind of site it is.
+
+The exporter picks the bundle kind from the source database:
+
+| Source | Bundle kind | Imported how |
+| --- | --- | --- |
+| Local SQLite | `mysql-data` | Ghost creates its schema in a fresh MySQL database, then every row is loaded and the row counts are compared with the bundle's. |
+| Local MySQL | `mysql-dump` | The dump is loaded into a fresh MySQL database. |
+
+Either way the database arrives whole: posts, members, staff accounts and their
+passwords, settings, and history. Themes, images, files, media, routes and
+redirects come with it, and so does the Ghost configuration from the source's
+`config.*.json`, written to `ghost.env`.
+
+What to expect:
+
+- **The exact source version.** The site is installed at the Ghost version it
+  was exported from, because a rows-only bundle only fits the schema of that
+  version. Upgrade afterwards. `--version` naming a different version is an
+  error. A source older than Ghost 6 is refused: run `ghost update` there first.
+- **A new address.** The site is served at `http://localhost:PORT`, on the
+  first free port at or above 2368 unless `--port` says otherwise. An ordinary
+  export leaves the source running, so the two sit side by side until you run
+  `ghost stop` in the source directory. They are separate copies from the
+  moment of export.
+- **Nothing is merged.** The checkout must not already hold a site, and
+  `data/ghost` and `data/mysql` must be empty.
+- **Nothing is trusted.** The bundle is read inside a container with no network
+  and a read-only view of it. Symbolic links, hard links, absolute paths and
+  anything else that is not a plain file or directory inside the bundle are
+  refused before anything on the host changes. The database is loaded as the
+  site's own database user, never as root.
+- **A failure leaves nothing behind.** If any step fails — the dump will not
+  load, the row counts disagree, Ghost will not start on the imported data —
+  the containers, data and configuration the import created are removed and
+  the checkout is as it was, so the same command can simply be run again. The
+  bundle and the source site are never modified. Set `GD_IMPORT_KEEP_FAILED=1`
+  to keep the wreckage for inspection instead; it cannot be started, and the
+  next `--import` clears it first.
+
+Bundles are accepted as a directory, a `.tgz`, or a plain `.tar`. A `.zip`
+(`--archive zip`) is not read directly: extract it and pass the directory.
+
+Mail settings travel with the configuration. A local site set up to send
+through a real mail service will send through it from Docker too.
+
+Not yet supported, each refused with a message that says so: `portable`
+bundles, bundles from a production installation, combining `--import` with
+`--with`, and `--migrate` (running the export for you). See the
+[plan](ghost-cli-replacement.md) for where each lands, and
+[bundle-v1.md](bundle-v1.md) for the bundle contract.
 
 ## Ports, and your existing proxy
 

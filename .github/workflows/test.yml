@@ -157,3 +157,37 @@ jobs:
         run: |
           docker ps -a
           docker compose ls || true
+
+  # Real bundles from the released exporter: Ghost is installed on the runner
+  # twice with Ghost-CLI (SQLite and MySQL), exported with `ghost
+  # migrate-export`, and imported. The MySQL source needs `mysqldump` on the
+  # host, which the runner image ships.
+  import:
+    name: Import, from real Ghost-CLI exports
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: "22"
+
+      - name: Check what the exporter needs
+        run: |
+          set -eu
+          docker info --format '{{.ServerVersion}}'
+          mysqldump --version
+          npx --yes ghost-cli@1.33.0 --version
+
+      - name: Export two local Ghost-CLI sites and import them
+        env:
+          GD_TEST_IMPORT: "1"
+          GD_TEST_GHOST_CLI: "npx --yes ghost-cli@1.33.0"
+        run: node --test --test-timeout=3600000 tests/import-e2e.test.mjs
+
+      - name: Show what was left behind on failure
+        if: failure()
+        run: |
+          docker ps -a
+          docker compose ls || true

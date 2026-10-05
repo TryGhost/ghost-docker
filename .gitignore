@@ -79,6 +79,9 @@ data
 ghost.env
 # Installation metadata
 .ghost-docker.json
+# A bundle import in progress: its marker and its private staging copy
+.ghost-docker-import
+.import/
 # Generated and operator-managed Caddy routes, and the validation staging tree
 caddy/sites/*
 !caddy/sites/.gitignore
