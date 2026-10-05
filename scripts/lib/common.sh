@@ -26,6 +26,8 @@ GD_ROOT_DIR=$(CDPATH='' cd -- "$GD_LIB_DIR/../.." && pwd)
 . "$GD_LIB_DIR/preflight.sh"
 # shellcheck source=scripts/lib/install.sh
 . "$GD_LIB_DIR/install.sh"
+# shellcheck source=scripts/lib/import.sh
+. "$GD_LIB_DIR/import.sh"
 
 # usage
 # Prints the calling script's header comment block: everything from the line

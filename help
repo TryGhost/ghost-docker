@@ -8,6 +8,8 @@ cat << 'HELPEOF'
 INSTALLATION:
   curl -fsSL .../bootstrap.sh | bash -s -- --domain example.com
   curl -fsSL .../bootstrap.sh | bash -s -- --local
+  curl -fsSL .../bootstrap.sh | bash -s -- --import BUNDLE
+                               # a local Ghost-CLI site, from `ghost migrate-export`
 
   ./install.sh --help          # every option, in this checkout
   scripts/site.sh check        # diagnose this site

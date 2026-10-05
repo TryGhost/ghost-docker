@@ -5,7 +5,7 @@
 #              [--dir PATH] [--port 2368] [--version 6.3.1]
 #              [--channel stable|beta] [--ref vX.Y.Z]
 #              [--with analytics,activitypub]
-#              [--no-prompt] [--no-start]
+#              [--import BUNDLE] [--no-prompt] [--no-start]
 #
 #   --local            Ghost and MySQL, published on 127.0.0.1:PORT.
 #   --domain DOMAIN    Production: Ghost, MySQL and Caddy with HTTPS.
@@ -18,6 +18,9 @@
 #   --channel CHANNEL  Release channel to record: stable (default) or beta.
 #   --ref REF          The stack release this checkout is at.
 #   --with LIST        Optional per-site services: analytics, activitypub.
+#   --import BUNDLE    Import a local site exported by `ghost migrate-export`
+#                      (Ghost-CLI 1.33.0+): a bundle directory or .tgz. The
+#                      site is installed at the bundle's exact Ghost version.
 #   --no-prompt        Never ask. Every required input must then be supplied.
 #   --no-start         Configure the site but start no application services.
 #
@@ -45,6 +48,7 @@ channel=""
 ref=""
 with=""
 no_start=0
+import_bundle=""
 
 die() {
     printf 'error: %s\n' "$1" >&2
@@ -115,8 +119,17 @@ while (($#)); do
         --with=*) with=${1#*=} ;;
         --no-prompt) GD_NO_PROMPT=1 ;;
         --no-start) no_start=1 ;;
-        --import | --import=*)
-            unimplemented "--import" "bundle import lands in S5; scripts/migrate.sh is the supported migration path today"
+        --import)
+            [[ ${2:-} ]] || die "--import needs the path of a migration bundle" "$EXIT_USAGE"
+            import_bundle=$2
+            shift
+            ;;
+        --import=*)
+            import_bundle=${1#*=}
+            [[ -n $import_bundle ]] || die "--import needs the path of a migration bundle" "$EXIT_USAGE"
+            ;;
+        --migrate | --migrate=*)
+            unimplemented "--migrate" "it lands in S5c. Run \`ghost migrate-export\` in the Ghost-CLI site, then pass the bundle to --import"
             ;;
         --image-registry | --image-registry=* | --ghost-channel | --ghost-channel=* | --without | --without=*)
             unimplemented "${1%%=*}" "service image registries, the Ghost nightly channel and Redis land in S14-S16"
@@ -153,6 +166,23 @@ if [[ -n $dir ]]; then
 fi
 dir=$checkout
 
+# --- An import that did not finish -----------------------------------------
+#
+# Everything such an import wrote went into data directories it had verified
+# empty, and it never reached the point of serving anything, so there is
+# nothing in it to preserve.
+
+if import_incomplete "$dir"; then
+    [[ -n $import_bundle ]] || die "an earlier import into $dir did not finish, so this checkout holds a
+  partial site that cannot be started. Run the import again:
+    ./install.sh --import BUNDLE
+  which removes what it left behind first."
+    docker_responsive || die "the Docker daemon is not reachable, and it is needed to remove what an
+  earlier, unfinished import left in $dir. Nothing has been changed."
+    printf 'Removing what an earlier, unfinished import left behind\n'
+    import_discard "$dir"
+fi
+
 # --- Refuse to install over an existing site -------------------------------
 
 for existing in "$GD_ENV_FILE_NAME" "$GD_META_FILE_NAME"; do
@@ -161,6 +191,93 @@ for existing in "$GD_ENV_FILE_NAME" "$GD_META_FILE_NAME"; do
   Move it aside, or install into a new directory with bootstrap.sh. Nothing has
   been changed."
 done
+
+# --- Read the bundle -------------------------------------------------------
+#
+# Before anything else is decided: the bundle says what kind of site this is
+# and which Ghost version it runs. A bundle that is refused leaves this
+# checkout exactly as it was.
+
+# none      nothing to undo
+# staged    only the staging directory exists
+# changing  configuration, containers or data may exist
+# complete  the imported site was verified
+import_state=none
+import_kind=""
+
+import_on_exit() {
+    local rc=$?
+    trap - EXIT
+    case $import_state in
+        staged)
+            rm -rf "$(import_staging_root "$dir")"
+            ;;
+        changing)
+            # Whatever happened, a partial site must not be startable.
+            [[ ! -f $dir/$GD_ENV_FILE_NAME ]] ||
+                env_set "$dir/$GD_ENV_FILE_NAME" COMPOSE_PROFILES "$GD_IMPORT_INCOMPLETE_PROFILE" 2>/dev/null || true
+            printf '\nThe import did not complete.\n' >&2
+            COMPOSE_PROFILES=local compose_run "$dir" logs --no-color --tail 40 ghost db >&2 2>/dev/null || true
+            if [[ ${GD_IMPORT_KEEP_FAILED:-0} == 1 ]]; then
+                printf '\nGD_IMPORT_KEEP_FAILED is set, so what it created was kept for inspection in\n' >&2
+                printf '  %s\nIt cannot be started. Running the import again removes it first.\n' "$dir" >&2
+            else
+                printf '\nRemoving what it created\n' >&2
+                import_discard "$dir"
+                printf 'This checkout is as it was before the import. The bundle and the source site\n' >&2
+                printf 'were not changed. Fix the error above and run the import again.\n' >&2
+            fi
+            ;;
+    esac
+    exit "$rc"
+}
+
+if [[ -n $import_bundle ]]; then
+    [[ $mode != production ]] || unimplemented "--import with --domain" \
+        "production import and cutover land in S5e; this release imports local sites"
+    [[ -z $with ]] || die "--with cannot be combined with --import. Import the site first, then enable
+  optional services; see docs/configuration.md." "$EXIT_USAGE"
+
+    for data in "$dir/data/ghost" "$dir/data/mysql"; do
+        import_dir_empty "$data" || die "$data is not empty. A site is imported into a fresh checkout,
+  never merged into existing data. Nothing has been changed."
+    done
+
+    docker_responsive || die "the Docker daemon is not reachable, and the bundle is read inside a
+  container. Start Docker and run this again. Nothing has been changed."
+
+    printf 'Reading the bundle\n'
+    trap import_on_exit EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    import_state=staged
+    import_stage "$dir" "$import_bundle" ||
+        die "the bundle was refused. Nothing has been changed on this host."
+
+    import_kind=$(import_manifest "$dir" .kind)
+    import_source_type=$(import_manifest "$dir" .sourceInstallType)
+    import_version=$(import_manifest "$dir" .ghost.version)
+    import_source_url=$(import_manifest "$dir" .url)
+    printf '  ok       %-22s %s, Ghost %s, from %s\n' "$import_kind" "$import_source_type" "$import_version" "$import_source_url"
+
+    [[ $import_source_type == local ]] || unimplemented "importing a production site" \
+        "production import and cutover land in S5e; this release imports local sites"
+    case $import_kind in
+        mysql-dump | mysql-data) ;;
+        portable)
+            unimplemented "importing a portable bundle" \
+                "it lands in S5d. Export the source site again without --sqlite-format portable to get a mysql-data bundle"
+            ;;
+        *) die "unsupported bundle kind: $import_kind" ;;
+    esac
+
+    if [[ -n $ghost_version && ${ghost_version#v} != "$import_version" ]]; then
+        die "--version is $ghost_version but the bundle was exported from Ghost $import_version.
+  A site is imported at its source version; upgrade it afterwards." "$EXIT_USAGE"
+    fi
+    ghost_version=$import_version
+    mode=local
+fi
 
 # --- Mode ------------------------------------------------------------------
 
@@ -315,7 +432,11 @@ fi
 # --- Resolve the exact Ghost image -----------------------------------------
 
 printf '\nResolving the Ghost image\n'
-resolved_ghost=$(install_resolve_ghost "$GD_DEFAULT_GHOST_IMAGE" "$ghost_version") || exit 1
+if [[ -n $import_bundle ]]; then
+    resolved_ghost=$(import_resolve_ghost "$GD_DEFAULT_GHOST_IMAGE" "$ghost_version") || exit 1
+else
+    resolved_ghost=$(install_resolve_ghost "$GD_DEFAULT_GHOST_IMAGE" "$ghost_version") || exit 1
+fi
 IFS=$'\t' read -r ghost_tag ghost_exact_version ghost_digest ghost_content_path ghost_tinybird_path \
     <<<"$resolved_ghost"
 printf '  ok       ghost                  %s (%s) %s\n' \
@@ -324,6 +445,12 @@ printf '  ok       ghost                  %s (%s) %s\n' \
 # --- Write the configuration -----------------------------------------------
 
 printf '\nWriting configuration\n'
+
+if [[ -n $import_bundle ]]; then
+    # From here on a failure has something to undo.
+    import_state=changing
+    date -u +%Y-%m-%dT%H:%M:%SZ >"$(import_marker "$dir")"
+fi
 
 env_file="$dir/$GD_ENV_FILE_NAME"
 ghost_env_file="$dir/$GD_GHOST_ENV_FILE_NAME"
@@ -405,6 +532,10 @@ if ((want_analytics || want_activitypub)); then
 fi
 printf '  ok       %s\n' "$GD_GHOST_ENV_FILE_NAME"
 
+if [[ -n $import_bundle ]]; then
+    import_apply_config "$dir" || die "the bundle's configuration could not be written to $GD_GHOST_ENV_FILE_NAME"
+fi
+
 # Bind mount sources must exist before the daemon resolves them. Ownership
 # inside the containers is the images' own business: Ghost's entrypoint takes
 # its content directory, and assuming a host uid here would be wrong under
@@ -417,6 +548,52 @@ if ! config_validate "$dir"; then
     die "the generated configuration did not validate. Please report this."
 fi
 printf '  ok       configuration validates\n'
+
+# --- Import the site's data ------------------------------------------------
+#
+# Content first, while the content directory is still this user's and no
+# container has mounted it; then the database. Ghost is not started on the
+# imported data until every check here has passed.
+
+if [[ -n $import_bundle ]]; then
+    printf '\nImporting the site\n'
+    env_set "$env_file" COMPOSE_PROFILES "$GD_IMPORT_INCOMPLETE_PROFILE"
+    GD_IMPORT_PROFILES=$profiles
+
+    import_place_content "$dir" || die "the bundle's content could not be moved into $dir/data/ghost"
+    printf '  ok       content\n'
+
+    import_database_start "$dir" || die "the database did not become ready"
+    printf '  ok       database is ready\n'
+
+    if [[ $import_kind == mysql-data ]]; then
+        # Rows only: Ghost creates the schema they are loaded into.
+        import_schema_boot "$dir" ||
+            die "Ghost $ghost_exact_version did not finish creating its database schema"
+        printf '  ok       Ghost %s created its schema\n' "$ghost_exact_version"
+    else
+        tables=$(import_database_tables "$dir") || die "the database could not be queried"
+        [[ $tables == 0 ]] || die "the database already holds $tables tables; refusing to load a dump over them"
+    fi
+
+    import_database_load "$dir" "$import_kind" ||
+        die "the bundle's database could not be loaded. MySQL's own message is above."
+    printf '  ok       database loaded\n'
+
+    if [[ $import_kind == mysql-data ]]; then
+        if ! mismatches=$(import_verify_rows "$dir"); then
+            printf '%s\n' "$mismatches" | sed 's/^/  ERROR    /' >&2
+            die "the loaded database does not match the bundle's recorded row counts"
+        fi
+        printf '  ok       row counts match the bundle (%s tables)\n' "$(import_manifest "$dir" '.database.rows | length')"
+    else
+        import_verify_ghost_database "$dir" ||
+            die "the loaded database has no Ghost migration history; it does not look like a Ghost database"
+        printf '  ok       the database has a Ghost migration history\n'
+    fi
+
+    env_set "$env_file" COMPOSE_PROFILES "$profiles"
+fi
 
 # --- Routing ---------------------------------------------------------------
 
@@ -453,6 +630,12 @@ printf '  ok       %s\n' "$GD_META_FILE_NAME"
 started=0
 if ((no_start)); then
     printf '\nNot starting: --no-start was given.\n'
+    if [[ -n $import_bundle ]]; then
+        # The import needed the database, and Ghost once for a rows-only
+        # bundle. Leave nothing running; the data stays where it is.
+        compose_run "$dir" down --remove-orphans >/dev/null 2>&1 ||
+            die "the services the import started could not be stopped"
+    fi
 else
     printf '\nStarting services\n'
     compose_run "$dir" up --wait --wait-timeout "$GD_READY_TIMEOUT" ||
@@ -464,6 +647,13 @@ else
     if ! install_verify_ingress "$dir" "$mode" "$port" "$http_port" "$domain" "$admin_domain"; then
         die "the site started but is not reachable through its own ingress"
     fi
+fi
+
+if [[ -n $import_bundle ]]; then
+    # Verified, or deliberately not started: either way this is now a site.
+    import_state=complete
+    rm -rf "$(import_staging_root "$dir")"
+    rm -f "$(import_marker "$dir")"
 fi
 
 # --- Summary ---------------------------------------------------------------
@@ -491,7 +681,32 @@ Configuration
   Both are mode 0600 and are not tracked by Git. Back them up.
 SUMMARY
 
-if ((started)); then
+if [[ -n $import_bundle ]]; then
+    cat <<SUMMARY
+
+Imported
+  From           $import_source_url ($import_kind bundle, Ghost $import_version)
+  Bundle         $import_bundle
+  The bundle and the source installation were not changed. Staff sign in with
+  the accounts and passwords they had on the source site.
+SUMMARY
+    if ((started)); then
+        cat <<'SUMMARY'
+
+Next
+  1. Open Ghost Admin and check the site.
+  2. Stop the source site once you are satisfied: `ghost stop` in its directory.
+     Until then the two are separate copies, and edits to one do not reach the other.
+SUMMARY
+    else
+        cat <<'SUMMARY'
+
+Next
+  Nothing is running. Start the site with:
+    docker compose up -d
+SUMMARY
+    fi
+elif ((started)); then
     if [[ $mode == production ]]; then
         cat <<'SUMMARY'
 

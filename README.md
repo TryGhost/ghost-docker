@@ -101,9 +101,24 @@ request, stacked on the ones it depends on.
 
 ## Migrating from Ghost-CLI
 
-`scripts/migrate.sh` remains the supported path today; it writes Ghost
-configuration into `ghost.env`. The migration bundle format that replaces it is
-specified in [docs/bundle-v1.md](docs/bundle-v1.md).
+A **local** Ghost-CLI site moves in two commands, with Ghost-CLI 1.33.0 or
+later:
+
+```sh
+# In the Ghost-CLI site's directory
+ghost migrate-export --output ~/my-site-bundle --archive tgz
+
+# Anywhere outside it
+curl -fsSL https://ghost.org/docker/bootstrap.sh | bash -s -- --import ~/my-site-bundle.tgz
+```
+
+The whole database comes across — posts, members, staff accounts and their
+passwords — along with themes, images and configuration, at the exact Ghost
+version of the source. SQLite sites are converted to MySQL on the way. See
+[docs/install.md](docs/install.md#importing-a-ghost-cli-site).
+
+For a **production** site, `scripts/migrate.sh` remains the supported path
+today. The bundle format is specified in [docs/bundle-v1.md](docs/bundle-v1.md).
 
 ## Upgrading an existing checkout
 

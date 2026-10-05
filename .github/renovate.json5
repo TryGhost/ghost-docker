@@ -8,6 +8,17 @@
 		":separatePatchReleases",
 	],
 	suppressNotifications: ["prIgnoreNotification"],
+	customManagers: [
+		{
+			description: "The pinned image the migration bundle helper runs in",
+			customType: "regex",
+			managerFilePatterns: ["/^scripts/lib/import\\.sh$/"],
+			matchStrings: [
+				"GD_IMPORT_HELPER_IMAGE=\"(?<depName>[^:@\"]+):(?<currentValue>[^@\"]+)@(?<currentDigest>sha256:[a-f0-9]+)\"",
+			],
+			datasourceTemplate: "docker",
+		},
+	],
 	packageRules: [
 		{
 			description: "Group ActivityPub containers together",
@@ -46,6 +57,12 @@
 				"ghost",
 			],
 			pinDigests: false,
+		},
+		{
+			description: "Keep the bundle helper on Node 22, the line the helper is tested on",
+			matchDatasources: ["docker"],
+			matchPackageNames: ["node"],
+			allowedVersions: "22-alpine",
 		},
 		{
 			description: "Restrict MySQL to patch updates only within 8.0",

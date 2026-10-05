@@ -329,9 +329,12 @@ real production traffic from a copied database.
 
 A local import targets a fresh checkout that has never served traffic, so it does
 not depend on the S4 recovery runtime. The failure contract is simpler: nothing
-outside the new checkout is modified, a failed import leaves the checkout marked
-incomplete and refuses to start it, and the documented recovery is to remove the
-checkout and run the import again. Steps 1 and 10 above reduce accordingly: there
+outside the new checkout is modified, and a failed import removes what it created
+(containers, the data it wrote into directories it had verified empty,
+configuration, staging) so the same command can be run again in the same
+checkout. While an import is in progress the checkout is marked incomplete and
+`.env` selects no Compose service, so an import interrupted before it could clean
+up cannot be started; the next import clears it first. Steps 1 and 10 above reduce accordingly: there
 is no pre-existing site lock to honour and no ingress to switch. Path validation,
 private staging, the exact source image, raw config handling and verification all
 still apply. When S4 lands, local import adopts the shared operation lock like
@@ -1122,6 +1125,15 @@ validation, a pinned manifest helper with no Compose dependency, the exact sourc
 Ghost image, raw config values, explicit database target, the schema-boot step for
 `mysql-data`, row-count verification, and content staging. A `portable` bundle is
 rejected with a clear message until S5d; a `production` bundle until S5e.
+
+Status: implemented as `install.sh --import`, with `scripts/lib/import.sh` and
+the containerised `scripts/lib/import-helper.mjs`. There is no separate
+`scripts/import.sh`: an import is an installation, so the installer is its only
+entry point. Three things were settled during implementation and are recorded
+in `docs/bundle-v1.md`: every link in a bundle is refused, not only escaping
+ones; `DEFINER=` clauses are dropped from a `mysql-dump` so that it can be loaded
+by the site's unprivileged database user; and zip archives are not read
+directly. `--import` cannot yet be combined with `--with`.
 
 Acceptance: real exporter-produced bundles of both kinds from Ghost-CLI 1.33.0;
 special config values; theme, asset and redirect fidelity; staff login with source

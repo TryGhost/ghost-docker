@@ -6,11 +6,11 @@
 // be exercised.
 import { test, describe, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, writeFileSync, mkdirSync, readFileSync, symlinkSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   tempDir, cleanup, copyWorktree, makeCandidateRelease, git, run, occupyPort,
-  sh, shOk, shSucceeds, q, REPO_DIR,
+  sh, shOk, shSucceeds, q, REPO_DIR, TESTS_DIR, dockerAvailable,
 } from './helpers.mjs';
 
 // A checkout to run install.sh from. Copied rather than used in place so a
@@ -20,6 +20,133 @@ const checkout = (dir, name = 'site') => copyWorktree(join(dir, name));
 /** install.sh from a scratch checkout. Never starts anything. */
 const install = (site, args, options = {}) =>
   run(join(site, 'install.sh'), args, { cwd: site, timeout: 120_000, ...options });
+
+// --import, up to the point where it would change something. Reading a bundle
+// happens in a container, so the cases that get that far need a daemon; the
+// ones before it do not. None of them may leave anything in the checkout.
+describe('install.sh --import refusals', () => {
+  const FIXTURES = join(TESTS_DIR, 'fixtures', 'migration-bundle-v1');
+  const docker = dockerAvailable() ? false : 'needs a Docker daemon to read a bundle';
+  let dir;
+  let site;
+  beforeEach(() => {
+    dir = tempDir('install-import');
+    site = checkout(dir);
+  });
+  afterEach(() => cleanup(dir));
+
+  /** A bundle directory for one of the shared manifest fixtures. */
+  const bundle = (kind, mutate = (m) => m) => {
+    const root = join(dir, `bundle-${kind}`);
+    const manifest = mutate(JSON.parse(readFileSync(join(FIXTURES, `${kind}.json`), 'utf8')));
+    mkdirSync(join(root, 'content', 'data'), { recursive: true });
+    writeFileSync(join(root, 'database.sql'), 'SELECT 1;\n');
+    writeFileSync(join(root, 'content', 'data', 'content.json'), '{}\n');
+    writeFileSync(join(root, 'content', 'data', 'members.csv'), '');
+    writeFileSync(join(root, 'manifest.json'), JSON.stringify(manifest));
+    return root;
+  };
+
+  const untouched = () => {
+    for (const name of ['.env', 'ghost.env', '.ghost-docker.json', '.ghost-docker-import', '.import', 'data']) {
+      assert.ok(!existsSync(join(site, name)), `left ${name} behind`);
+    }
+  };
+
+  test('--import needs a path', () => {
+    const result = install(site, ['--import']);
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /--import needs the path/);
+  });
+
+  test('--import with --domain is refused as not implemented yet, naming the step', () => {
+    const result = install(site, ['--domain', 'example.com', '--import', bundle('mysql-dump'), '--no-prompt']);
+    assert.equal(result.status, 3);
+    assert.match(result.stderr, /S5e/);
+    untouched();
+  });
+
+  test('--import with --with is a usage error', () => {
+    const result = install(site, ['--import', bundle('mysql-data'), '--with', 'activitypub', '--no-prompt']);
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /--with cannot be combined with --import/);
+    untouched();
+  });
+
+  test('existing data is never merged into', () => {
+    mkdirSync(join(site, 'data', 'ghost', 'images'), { recursive: true });
+    const result = install(site, ['--import', bundle('mysql-data'), '--no-prompt']);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /data\/ghost is not empty/);
+    assert.ok(!existsSync(join(site, '.env')));
+  });
+
+  test('an unfinished import blocks an ordinary install, and says how to clear it', () => {
+    writeFileSync(join(site, '.ghost-docker-import'), '2026-10-05T00:00:00Z\n');
+    const result = install(site, ['--local', '--no-prompt']);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /did not finish/);
+    assert.match(result.stderr, /install\.sh --import BUNDLE/);
+    assert.ok(!existsSync(join(site, '.env')));
+  });
+
+  test('a bundle that does not exist is refused before anything is written', { skip: docker }, () => {
+    const result = install(site, ['--import', join(dir, 'nowhere.tgz'), '--no-prompt']);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /there is no bundle at/);
+    assert.match(result.stderr, /Nothing has been changed/);
+    untouched();
+  });
+
+  test('a file that is not a bundle is refused before anything is written', { skip: docker }, () => {
+    const file = join(dir, 'notes.tgz');
+    writeFileSync(file, 'this is not an archive\n'.repeat(200));
+    const result = install(site, ['--import', file, '--no-prompt']);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /neither a directory nor a tar archive/);
+    untouched();
+  });
+
+  test('a bundle holding a symbolic link is refused before anything is written', { skip: docker }, () => {
+    const root = bundle('mysql-data', (m) => { m.sourceInstallType = 'local'; return m; });
+    symlinkSync('/etc', join(root, 'content', 'escape'));
+    const result = install(site, ['--import', root, '--no-prompt']);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /symbolic link: content\/escape/);
+    untouched();
+  });
+
+  test('a production bundle is refused as not implemented yet', { skip: docker }, () => {
+    const result = install(site, ['--import', bundle('mysql-dump'), '--no-prompt']);
+    assert.equal(result.status, 3);
+    assert.match(result.stderr, /importing a production site is not implemented yet/);
+    assert.match(result.stderr, /S5e/);
+    untouched();
+  });
+
+  test('a portable bundle is refused, naming the export that works today', { skip: docker }, () => {
+    const result = install(site, ['--import', bundle('portable'), '--no-prompt']);
+    assert.equal(result.status, 3);
+    assert.match(result.stderr, /importing a portable bundle is not implemented yet/);
+    assert.match(result.stderr, /S5d/);
+    assert.match(result.stderr, /mysql-data/);
+    untouched();
+  });
+
+  test('--version that disagrees with the bundle is a usage error', { skip: docker }, () => {
+    const result = install(site, ['--import', bundle('mysql-data'), '--version', '6.3.0', '--no-prompt']);
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /bundle was exported from Ghost 6\.2\.0/);
+    untouched();
+  });
+
+  test('the bundle itself is never modified', { skip: docker }, () => {
+    const root = bundle('portable');
+    const before = readdirSync(root, { recursive: true }).sort();
+    install(site, ['--import', root, '--no-prompt']);
+    assert.deepEqual(readdirSync(root, { recursive: true }).sort(), before);
+  });
+});
 
 describe('install.sh options', () => {
   let dir;
@@ -46,12 +173,13 @@ describe('install.sh options', () => {
   // Steps that have not landed must say so. A script written against the
   // documented interface gets an answer it can act on, and nothing advertises
   // support that does not exist.
-  test('--import fails as unimplemented, naming the step and the path that works today', () => {
-    const result = install(site, ['--local', '--import', '/tmp/bundle.tar.gz']);
+  test('--migrate fails as unimplemented, naming the two commands that do the same today', () => {
+    const result = install(site, ['--migrate']);
     assert.equal(result.status, 3);
-    assert.match(result.stderr, /--import is not implemented yet/);
-    assert.match(result.stderr, /S5/);
-    assert.match(result.stderr, /migrate\.sh/);
+    assert.match(result.stderr, /--migrate is not implemented yet/);
+    assert.match(result.stderr, /S5c/);
+    assert.match(result.stderr, /ghost migrate-export/);
+    assert.match(result.stderr, /--import/);
   });
 
   test('--with supervisor fails as unimplemented rather than enabling an empty profile', () => {
