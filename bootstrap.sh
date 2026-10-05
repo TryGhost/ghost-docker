@@ -134,6 +134,15 @@ esac
 # membership: neither rootless Docker nor a remote DOCKER_HOST involves the
 # docker group, and being in it does not mean the daemon is running.
 
+# Git Bash and its relatives run this far and no further: said here, before
+# anything is cloned, rather than by the installer afterwards.
+case $(uname -s 2>/dev/null || printf '') in
+    MINGW* | MSYS* | CYGWIN*)
+        die "this shell is not supported. On Windows, run this inside WSL2 with Docker
+  Desktop's WSL integration enabled. See docs/install.md#windows in the repository."
+        ;;
+esac
+
 # The target directory is checked first: it costs nothing, and being told the
 # directory is wrong beats waiting on a daemon probe to find that out.
 [[ -n $dir ]] || dir=./ghost-docker
