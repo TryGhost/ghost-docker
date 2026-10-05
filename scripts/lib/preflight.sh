@@ -172,6 +172,12 @@ preflight_os() {
     arch=$(uname -m 2>/dev/null || printf 'unknown')
     case $os in
         Linux | Darwin) ;;
+        MINGW* | MSYS* | CYGWIN*)
+            # Git Bash and its relatives run bash, but not the Docker bind
+            # mounts, file modes and devices these scripts depend on.
+            _gd_report error "operating system" "this shell ($os) is not supported. On Windows, run this inside WSL2 with Docker Desktop's WSL integration enabled; see docs/install.md#windows"
+            return
+            ;;
         *)
             _gd_report error "operating system" "$os is not supported; Linux and macOS are"
             return
@@ -185,6 +191,42 @@ preflight_os() {
             ;;
     esac
     _gd_report ok platform "$os/$arch"
+}
+
+# preflight_wsl DIR [VERSION_FILE] [MOUNTS_FILE]
+# Under WSL, a site directory on a Windows drive (`/mnt/c/...`) is a problem
+# that shows up later and looks unrelated: file modes are not enforced there,
+# so `.env` is not private, and MySQL's data directory is unreliable on it.
+# Reports nothing outside WSL. The files are parameters so that this can be
+# exercised on a host that is not WSL.
+preflight_wsl() {
+    local dir=$1 version=${2:-/proc/version} mounts=${3:-/proc/mounts} probe fstype
+    [[ -r $version && -r $mounts ]] || return 0
+    grep -qi microsoft "$version" 2>/dev/null || return 0
+
+    probe=$dir
+    while [[ -n $probe && ! -d $probe ]]; do probe=$(dirname "$probe"); done
+    probe=$(CDPATH='' cd -- "${probe:-.}" 2>/dev/null && pwd -P) || return 0
+
+    # The filesystem type of the longest mount point that contains the path.
+    fstype=$(awk -v path="$probe" '
+        {
+            mount = $2
+            prefix = (mount == "/") ? "/" : mount "/"
+            if (path == mount || index(path "/", prefix) == 1) {
+                if (length(mount) >= best) { best = length(mount); type = $3 }
+            }
+        }
+        END { print type }' "$mounts" 2>/dev/null)
+
+    case $fstype in
+        9p | drvfs | v9fs)
+            _gd_report warn "windows drive" "$probe is on a Windows drive ($fstype). File permissions are not enforced there and MySQL is unreliable on it. Install into the Linux filesystem instead, for example ~/ghost; see docs/install.md#windows"
+            ;;
+        *)
+            _gd_report ok "wsl" "the site directory is on the Linux filesystem"
+            ;;
+    esac
 }
 
 # preflight_commands [COMMAND...]
@@ -407,6 +449,7 @@ preflight_site() {
     preflight_commands "${GD_REQUIRED_COMMANDS[@]}"
     preflight_docker
     preflight_writable "$dir"
+    preflight_wsl "$dir"
     preflight_disk "$dir"
     preflight_memory
     preflight_port "$ghost_port" "Ghost on the loopback interface"

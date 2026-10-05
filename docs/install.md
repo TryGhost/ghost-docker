@@ -233,6 +233,33 @@ run by the installer; the summary prints the two commands that finish it. See
 `--with activitypub` needs no credentials. Either optional profile sets
 `labs__publicAPI` in `ghost.env`, which both features require.
 
+## Windows
+
+Supported through **WSL2**, with Docker Desktop's WSL integration enabled for
+your distribution (Docker Desktop → Settings → Resources → WSL integration).
+Inside WSL the host is Linux, and everything in this document applies as
+written. PowerShell, `cmd` and Git Bash are not supported: the scripts are
+bash and depend on Docker bind mounts, file modes and devices that those
+environments do not provide. Git Bash is refused with a message saying so.
+
+- **Install into the Linux filesystem**, for example `~/ghost`, not under
+  `/mnt/c`. On a Windows drive file permissions are not enforced, so `.env` is
+  not private, bind mounts are slow, and MySQL's data directory is unreliable.
+  Preflight warns when the site directory is on one.
+- **Editing themes.** The site's files are inside WSL, at
+  `data/ghost/themes` in the checkout. Open them from Windows through
+  `\\wsl$\<distribution>\home\<you>\ghost`, or with an editor's WSL
+  integration.
+- **Migrating a Ghost-CLI site that runs on Windows.** Export it on Windows
+  with `ghost migrate-export`, then import the bundle from WSL through its
+  `/mnt/c/...` path, for example
+  `./install.sh --import /mnt/c/Users/you/my-site-bundle.tgz`. Reading a bundle
+  from a Windows drive is fine; only the site itself has to live in WSL.
+
+This path follows from how WSL2 works rather than from a test run: the test
+suite runs on Linux and macOS. Treat it as expected to work, and report what
+does not.
+
 ## Host tools
 
 Beyond `bash`, the installer requires **`docker`** (with Compose v2),

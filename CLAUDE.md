@@ -177,6 +177,9 @@ Rules that must not regress:
   so is an occupied 80/443 in production.
 - Every prompt reads `/dev/tty` and has a flag or environment-variable
   equivalent. No prompt has a silent default.
+- Windows means WSL2. Git Bash/MSYS/Cygwin are refused in preflight and in
+  `bootstrap.sh`; a site directory on a Windows drive under WSL is a preflight
+  warning (`preflight_wsl`). None of this is tested on Windows.
 - Docker access is established by asking the daemon, never from `docker` group
   membership. Read-only probes have deadlines so a wedged daemon is reported
   rather than hung on.

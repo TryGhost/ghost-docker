@@ -289,6 +289,96 @@ describe('port selection', () => {
   });
 });
 
+// Windows is supported through WSL2 only. There is no Windows runner, so the
+// platform is described to the checks rather than detected: a `uname` function
+// stands in for Git Bash, and files stand in for WSL's /proc.
+describe('preflight on Windows', () => {
+  let dir;
+  beforeEach(() => { dir = tempDir('preflight-windows'); });
+  afterEach(() => cleanup(dir));
+
+  const wsl = (siteDir, mounts) => {
+    const version = join(dir, 'version');
+    const mountsFile = join(dir, 'mounts');
+    writeFileSync(version, 'Linux version 5.15.153.1-microsoft-standard-WSL2 (gcc)\n');
+    writeFileSync(mountsFile, mounts);
+    return shOk(`preflight_wsl ${q(siteDir)} ${q(version)} ${q(mountsFile)}`);
+  };
+
+  for (const os of ['MINGW64_NT-10.0-22631', 'MSYS_NT-10.0-22631', 'CYGWIN_NT-10.0']) {
+    test(`${os.split('_')[0]} is refused, pointing at WSL2`, () => {
+      const records = shOk(`uname() { if [ "$1" = -s ]; then echo ${os}; else echo x86_64; fi; }; preflight_os`);
+      assert.match(records, /^error\toperating system\t/);
+      assert.match(records, /WSL2/);
+      assert.match(records, /docs\/install\.md#windows/);
+      assert.ok(shSucceeds(`preflight_failed ${q(records)}`), 'the refusal did not fail preflight');
+    });
+  }
+
+  test('the bootstrap refuses Git Bash before it clones anything', () => {
+    const bin = join(dir, 'bin');
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'uname'), '#!/bin/sh\necho MINGW64_NT-10.0-22631\n', { mode: 0o755 });
+    const target = join(dir, 'site');
+    const result = run(join(REPO_DIR, 'bootstrap.sh'), ['--local', '--dir', target], {
+      env: { PATH: `${bin}:${process.env.PATH}` },
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /WSL2/);
+    assert.ok(!existsSync(target), 'cloned anyway');
+  });
+
+  test('a site directory on a Windows drive under WSL is a warning, not a refusal', () => {
+    const site = join(dir, 'c', 'Users', 'me', 'ghost');
+    mkdirSync(site, { recursive: true });
+    const real = shOk(`cd ${q(dir)} && pwd -P`).trim();
+    const records = wsl(site, [
+      '/dev/sdc / ext4 rw,relatime 0 0',
+      `C:\\134 ${real}/c 9p rw,noatime,aname=drvfs;path=C:\\134 0 0`,
+      '',
+    ].join('\n'));
+    assert.match(records, /^warn\twindows drive\t/);
+    assert.match(records, /Linux filesystem/);
+    assert.ok(!shSucceeds(`preflight_failed ${q(records)}`), 'the warning failed preflight');
+  });
+
+  test('a site directory in the Linux filesystem under WSL is fine', () => {
+    const site = join(dir, 'home', 'me', 'ghost');
+    mkdirSync(site, { recursive: true });
+    const real = shOk(`cd ${q(dir)} && pwd -P`).trim();
+    const records = wsl(site, [
+      '/dev/sdc / ext4 rw,relatime 0 0',
+      `C:\\134 ${real}/c 9p rw,noatime 0 0`,
+      '',
+    ].join('\n'));
+    assert.match(records, /^ok\twsl\t/);
+  });
+
+  test('a directory that does not exist yet is judged by where it will be', () => {
+    const real = shOk(`cd ${q(dir)} && pwd -P`).trim();
+    mkdirSync(join(dir, 'c'));
+    const records = wsl(join(dir, 'c', 'new', 'site'), `/dev/sdc / ext4 rw 0 0\nC: ${real}/c drvfs rw 0 0\n`);
+    assert.match(records, /^warn\twindows drive\t/);
+  });
+
+  test('a mount whose name is only a prefix of the path does not match', () => {
+    const site = join(dir, 'cache', 'ghost');
+    mkdirSync(site, { recursive: true });
+    const real = shOk(`cd ${q(dir)} && pwd -P`).trim();
+    const records = wsl(site, `/dev/sdc / ext4 rw 0 0\nC: ${real}/c 9p rw 0 0\n`);
+    assert.match(records, /^ok\twsl\t/);
+  });
+
+  test('nothing is reported on a host that is not WSL', () => {
+    const version = join(dir, 'version');
+    const mounts = join(dir, 'mounts');
+    writeFileSync(version, 'Linux version 6.8.0-45-generic (buildd@lcy02)\n');
+    writeFileSync(mounts, '/dev/sda1 / ext4 rw 0 0\n');
+    assert.equal(shOk(`preflight_wsl ${q(dir)} ${q(version)} ${q(mounts)}`), '');
+    assert.equal(shOk(`preflight_wsl ${q(dir)} ${q(join(dir, 'absent'))} ${q(mounts)}`), '');
+  });
+});
+
 describe('preflight', () => {
   test('records are STATUS, LABEL, DETAIL, and only errors fail a run', () => {
     const records = shOk('preflight_os; preflight_commands docker jq');

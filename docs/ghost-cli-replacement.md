@@ -553,6 +553,14 @@ access instead of requiring root/docker-group membership. Rootless support requi
 verified socket, port, ownership, and boot behavior; do not infer support from linger
 alone. Handle systems without systemd or explicitly narrow the supported platforms.
 
+Windows is supported through WSL2 only, where the host is Linux; the site must
+live in the Linux filesystem, not on a Windows drive, and preflight warns when it
+does not. Git Bash and similar shells are refused with a pointer to WSL2.
+Ghost-CLI runs natively on Windows, so this is a narrower platform than the tool
+being replaced. Native Windows without WSL would need the installer itself to
+run in the manager image (§2.10) behind a small platform launcher; decide that
+when S4 lands the image, not before.
+
 Check daemon startup on Linux; document Docker Desktop/OrbStack startup for local
 macOS. Bind-mounted paths must be available at daemon startup. Keep nginx/apache
 running until cutover; a server may proxy other applications, so replacing its whole
