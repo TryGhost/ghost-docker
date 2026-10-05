@@ -370,10 +370,16 @@ implementation.
   `/dev/tty` attached. The installer asks for its own confirmation once and passes
   `--force` to skip the exporter's beta prompt; with `--no-prompt` the operator
   must have requested migration explicitly and `--force --no-prompt` is passed.
-- Ports: an ordinary export restarts the source on its own port. The installer
-  does not treat that as a conflict to resolve by stopping the source: it selects
-  a free port for the Docker site and reports both URLs, so the source keeps
-  running until the operator is satisfied. `--port` overrides the choice.
+- Source lifecycle: `--migrate` never starts or restarts the source Ghost. A
+  `mysql-data` or `mysql-dump` export needs Ghost stopped, not running, so the
+  export is run with `--leave-stopped`: a running source is stopped and stays
+  stopped, and a source that was already stopped is never started. The Docker
+  site therefore takes the source's own port and URL when that port is free,
+  and `--port` overrides the choice. If the import then fails and the source
+  was running beforehand, start it again with `ghost start` so the operator is
+  back where they began; say so either way. The one exception is the portable
+  retry below, which exports through the Admin API and so needs Ghost running;
+  the exporter starts and stops it itself.
 - Export failure: surface the exporter's message unchanged. When `mysql-data`
   validation refuses the source, offer one retry with `--sqlite-format portable`
   after showing the portable losses. Never fall back without that confirmation,
@@ -383,7 +389,8 @@ implementation.
   production cutover is implemented (S5e), because an existing proxy holds ports
   80/443 and the cutover rules above apply.
 - The source installation is never modified beyond what `ghost migrate-export`
-  itself does, and is never removed.
+  itself does, and is never removed. After a successful migration it is left
+  stopped and intact; `ghost start` there brings it back.
 
 ### 2.5 Backup, upgrade, and recovery
 
