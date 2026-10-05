@@ -47,6 +47,7 @@ dependencies and the contracts in §2 before implementing it.
 | Upgrades | Optional supervisor using a file exchange and the Docker socket. Ship a tested host-driven upgrade first, then reuse its recovery contract in the supervisor. Both are commands of the manager. |
 | UX | Standard Compose commands for daily operation; `./ghost-docker` for installation, diagnosis, configuration, migration, backup/restore, and upgrades. No wrapper binary named `ghost`. |
 | Configuration | `.env` contains Compose/operator settings; `ghost.env` contains only Ghost application settings. Do not pass the whole `.env` into Ghost. A mounted Ghost JSON config file was evaluated as a replacement for `ghost.env` and rejected; see §2.1. |
+| Recovery rigor | §2.5 and the update flow in §2.7 describe a ceiling. The floor for the first stable release is: back up before changing, restore on failure, report truthfully, one operation at a time. See the note at the top of §2.5. |
 | Shared infrastructure | S13. Not a dependency of local or single-site production installations. Scheduled after tagged single-site production and before Admin-driven upgrades, so the upgrade supervisor is built once against per-site projects. |
 | ActivityPub and analytics | Per-site, including for future members of shared infrastructure. Each site owns its ActivityPub database/storage and Tinybird configuration/deployment lifecycle. |
 | Ghost nightly channel | Future explicit opt-in via `--ghost-channel nightly`; published to GHCR, independently of the stack release channel. Stable remains the default. |
@@ -407,6 +408,25 @@ The launcher mounts the bundle read-only for it.
 
 ### 2.5 Backup, upgrade, and recovery
 
+**This section is a ceiling, not a floor.** It describes the most careful
+version of each operation, so that nothing here is designed in a way that rules
+it out. It is more than most self-hosted software does, and the first stable
+release does not have to reach all of it. The floor for that release is:
+
+- a verified backup is taken before an upgrade or a stack update changes
+  anything;
+- a failure restores that backup and the previous image and configuration;
+- the outcome is reported truthfully: done, restored, or needs the operator;
+- two operations cannot run on one site at once.
+
+Beyond the floor — resuming an operation killed at an arbitrary point from its
+journal, maintenance ingress during upgrades, retention policies, the full
+fault-injection matrix — is built when a step shows it is needed, and each of
+S4, S6b and S7 states in its pull request which parts it implements and which it
+defers. Deferring is a decision recorded there, not an omission. What must not
+be deferred is honesty: never report success or a completed rollback that was
+not verified.
+
 Implement backup and restore before promising automated rollback. Backups include
 the Ghost database, content, site configuration, versions/digests, and a manifest.
 Document optional-service state and which remote changes cannot be restored locally.
@@ -518,8 +538,10 @@ Rules:
   the image's, written by `install` and replaced by `update`. They are not
   edited by operators; operator-owned files are `.env`, `ghost.env`,
   `caddy/custom/` and `caddy/global/`. The manager records a checksum of each
-  file it wrote, so `update` can tell an untouched file from an edited one and
-  stops rather than overwriting an edit.
+  file it wrote, so `update` can tell an untouched file from an edited one. An
+  untouched file is replaced. An edited one is never replaced silently: `update`
+  names it, keeps a backup copy beside it, and asks before replacing it. Under
+  `--no-prompt` it stops instead, unless `--replace-edited` was given.
 - **Clone mode.** A launcher that finds itself in a checkout of this repository
   builds the image locally from that checkout and uses the files in place,
   writing nothing over them. Metadata records `source: checkout`. This is how
@@ -1102,8 +1124,9 @@ Acceptance: the served launchers install the newest beta and an explicit
 `--ref`; version selection is tested against prerelease ordering rather than
 lexical sort; a dependency-only change produces a release; `update` moves a site
 between two releases with the Ghost pin unchanged and the launcher re-pinned,
-refuses a downgrade, stops on a hand-edited managed file, and restores the
-previous files when validation fails before services change.
+refuses a downgrade, asks before replacing a hand-edited managed file and keeps
+a backup of it (stopping instead under `--no-prompt` without `--replace-edited`),
+and restores the previous files when validation fails before services change.
 
 **S6b — Legacy-layout migration and transactional updates.** Deps: S4, S6a. The
 journalled migration framework, migration `0001-compose-profiles`, the way in
