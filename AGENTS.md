@@ -1,6 +1,7 @@
-# CLAUDE.md
+# AGENTS.md
 
-Guidance for Claude Code (claude.ai/code) working in this repository.
+Guidance for coding agents working in this repository. This is the only such
+file: there is no separate `CLAUDE.md`.
 
 ## What this branch is
 
