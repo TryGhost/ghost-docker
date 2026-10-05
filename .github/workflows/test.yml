@@ -1,0 +1,90 @@
+name: "Tests"
+on:
+  pull_request:
+  push:
+    branches:
+      - next-docker
+
+jobs:
+  manager:
+    name: Manager (format, lint, types, unit tests)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: manager
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: "22"
+
+      - run: npm ci
+      - run: npm run format:check
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+
+  # The real thing on Linux, where file ownership is real: the image is built
+  # from the checkout, started by the launcher, and what it writes into the
+  # site directory has to belong to the runner's user.
+  launcher-linux:
+    name: Launcher and image on Linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Confirm the daemon answers as this user
+        run: docker info --format '{{.ServerVersion}}' && docker compose version
+
+      - name: Launcher end to end
+        run: tests/e2e/launcher.sh
+
+  # macOS's system bash is 3.2, which the launcher has to run on. GitHub's
+  # macOS runners have no Docker daemon, so the half of the test that runs the
+  # real image skips itself; the half that checks the launcher's own behaviour
+  # against a stand-in docker runs in full.
+  launcher-macos:
+    name: Launcher on macOS, bash 3.2
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Launcher against a stand-in docker
+        env:
+          GD_TEST_BASH: /bin/bash
+        run: |
+          /bin/bash --version | head -1
+          tests/e2e/launcher.sh
+
+  # Windows runners cannot run Linux containers, so this checks the
+  # PowerShell launcher against a stand-in docker only: its refusals, and the
+  # exact `docker run` it builds. It does not show that a manager started this
+  # way works on Windows; ghost-docker.ps1 says so at its top.
+  launcher-windows:
+    name: PowerShell launcher on Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $PSVersionTable.PSVersion.ToString()
+          & .\tests\e2e\launcher.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: PowerShell 7
+        shell: pwsh
+        run: |
+          $PSVersionTable.PSVersion.ToString()
+          & ./tests/e2e/launcher.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: The .cmd shim reaches the launcher
+        shell: cmd
+        run: |
+          ghost-docker.cmd --dir 2>&1 | findstr /C:"--dir needs a path" || (
+            echo the shim did not reach ghost-docker.ps1
+            exit /b 1
+          )

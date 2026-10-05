@@ -1138,6 +1138,11 @@ Repo: ghost-docker. Deps: N1. The skeleton every later step fills in. Implement
   tags, and CI that builds the image and runs the tests on Linux, plus the bash
   launcher on macOS and the PowerShell launcher on Windows.
 
+Also `ghost-docker.cmd`, a two-line shim that starts the PowerShell launcher from
+`cmd.exe` with the execution policy bypassed for that one process: a default
+Windows client refuses to run `.ps1` files, and the launcher's logic (deadlines,
+path translation, argument handling) is not something batch can carry.
+
 Acceptance: from a clone, `./ghost-docker version` and `./ghost-docker doctor`
 build the image and run on Linux and macOS; a file the manager writes into the
 site directory is owned by the caller under rootful and rootless Docker; the

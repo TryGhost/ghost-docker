@@ -1,0 +1,21 @@
+# The manager image is built from the repository root. Keep a site's state and
+# secrets, and everything the image does not use, out of the build context.
+.git
+.github
+.claude
+**/node_modules
+data
+.env
+ghost.env
+.ghost-docker.json
+.ghost-docker-import
+.ghost-docker-probe
+.import
+caddy/sites/*.caddy
+caddy/custom/*.caddy
+caddy/global/*.caddy
+caddy/.staging
+docs
+tests
+manager/test
+*.md

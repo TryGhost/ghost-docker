@@ -4,14 +4,44 @@ Configuration to run Ghost and its services with Docker Compose.
 
 > **This is the `next-docker` development branch.** It is being rebuilt around
 > a manager image: a small CLI in a container, started by a launcher that needs
-> only Docker. The stack's configuration and contracts are here; the tooling is
-> not yet. See [the plan](docs/ghost-cli-replacement.md) for what lands when.
-> For a working setup today, use the `main` branch.
+> only Docker. The launcher and image exist and can report on a host; they
+> cannot install a site yet. See [the plan](docs/ghost-cli-replacement.md) for
+> what lands when. For a working setup today, use the `main` branch.
+
+## The launcher
+
+```sh
+./ghost-docker doctor     # Linux, macOS, WSL2
+```
+
+```powershell
+.\ghost-docker.ps1 doctor   # Windows PowerShell; experimental, see below
+```
+
+```bat
+ghost-docker doctor        :: Windows cmd.exe, through ghost-docker.cmd
+```
+
+`doctor` reports what ghost-docker can see: Docker and Compose versions, the
+platform, the site directory, and who will own the files written there.
+`version` and `help` are the only other commands so far; the rest answer that
+they are not implemented yet and name the plan step that delivers them.
+
+Everything runs in a container. From a clone of this repository the launcher
+builds that image from the clone; anywhere else it uses the published one,
+`ghcr.io/tryghost/ghost-docker`. The site directory is the current directory,
+or `--dir PATH`.
+
+On Windows the launcher is experimental: how the site directory's path has to
+be presented to Docker Desktop has not been verified, so nothing that starts
+services should be relied on there yet.
 
 ## What is here
 
 | Path | What it is |
 | --- | --- |
+| [`ghost-docker`](ghost-docker), [`ghost-docker.ps1`](ghost-docker.ps1), [`ghost-docker.cmd`](ghost-docker.cmd) | The launchers: the only code that runs on the host |
+| [`manager/`](manager) | The CLI, and the image it runs in |
 | [`compose.yml`](compose.yml) | The stack: Ghost, MySQL, Caddy, and optional analytics and ActivityPub services |
 | [`caddy/`](caddy) | The tracked Caddyfile and snippets, and where generated and operator routes go |
 | [`.env.example`](.env.example), [`ghost.env.example`](ghost.env.example) | Operator settings and Ghost application settings, deliberately separate |
@@ -40,7 +70,18 @@ that does not exist yet.
 
 ## Requirements
 
-Docker Engine 25.0+ with the Compose v2.24+ plugin.
+Docker Engine 25.0+ with the Compose v2.24+ plugin, and bash or PowerShell to
+start the launcher. Nothing else on the host.
+
+## Developing
+
+```sh
+cd manager && npm ci
+npm run format:check && npm run lint && npm run typecheck && npm test
+
+tests/e2e/launcher.sh        # the bash launcher and the real image
+pwsh tests/e2e/launcher.ps1  # the PowerShell launcher, against a stand-in docker
+```
 
 ## IPv6 networking
 

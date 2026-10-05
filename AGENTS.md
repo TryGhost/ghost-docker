@@ -24,9 +24,25 @@ Branches:
 
 ## Current state
 
-Step N1 only: the stack's files and the contracts. There is **no tooling** on
-this branch yet. `./ghost-docker ...` commands in the documents are the planned
-interface; the plan says which step delivers each.
+Steps N1 and N2: the stack's files and contracts, and the skeleton of the
+tooling. The launchers and the manager image exist; the only commands are
+`version`, `doctor` and `help`. Every other `./ghost-docker ...` command in the
+documents is the planned interface, exits 3 naming its step, and the plan says
+which step delivers it.
+
+- `ghost-docker` (bash), `ghost-docker.ps1` (PowerShell) and `ghost-docker.cmd`
+  (a two-line shim to the PowerShell one) are the only host code. They check
+  Docker, choose the image, and `docker run` it. **The two launchers implement
+  one contract (plan §2.10); change them together**, and add no logic to them
+  that the manager could hold.
+- `manager/` is the CLI: TypeScript run directly by Node (types stripped, no
+  build step, so `erasableSyntaxOnly`), with npm dependencies. `src/cli.ts` is
+  the dispatcher, `src/commands/` the commands, `src/context.ts` the `GD_*`
+  environment the launcher passes, `src/io.ts` the seam tests substitute.
+- `manager/entrypoint.sh` drops from root to the caller's uid and gid, keeping
+  the Docker socket's group. It does not drop under rootless Docker.
+- `manager/Dockerfile` builds from the repository root and also carries the
+  stack's files under `/opt/ghost-docker/stack`.
 
 - `compose.yml` — Ghost, MySQL, Caddy, optional analytics and ActivityPub.
   Site mode is `local` or `production`, selected in `COMPOSE_PROFILES`;
@@ -69,9 +85,20 @@ interface; the plan says which step delivers each.
 
 ## Tests
 
-Unit tests for the CLI are TypeScript. End-to-end scenarios that only run the
-real commands and check outcomes are shell scripts in `tests/e2e/`. Shell code
+Unit tests for the CLI are TypeScript, in `manager/test/`, run by Node's own
+test runner against a fake `Io`. End-to-end scenarios that only run the real
+commands and check outcomes are shell scripts in `tests/e2e/`. Shell code
 passes ShellCheck.
+
+```bash
+cd manager && npm ci
+npm run format:check && npm run lint && npm run typecheck && npm test
+tests/e2e/launcher.sh         # stand-in docker, then the real image
+pwsh tests/e2e/launcher.ps1   # stand-in docker only
+```
+
+The PowerShell launcher is verified against a stand-in `docker` only. Nothing
+has run a real manager on native Windows; do not write as if it had.
 
 ## Common commands
 

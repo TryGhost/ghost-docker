@@ -1,0 +1,4 @@
+*.cmd text eol=crlf
+*.ps1 text eol=lf
+ghost-docker text eol=lf
+*.sh text eol=lf
