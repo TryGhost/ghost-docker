@@ -182,9 +182,8 @@ jobs:
 
       - name: Export two local Ghost-CLI sites and import them
         env:
-          GD_TEST_IMPORT: "1"
           GD_TEST_GHOST_CLI: "npx --yes ghost-cli@1.33.0"
-        run: node --test --test-timeout=3600000 tests/import-e2e.test.mjs
+        run: tests/e2e/import.sh
 
       - name: Show what was left behind on failure
         if: failure()

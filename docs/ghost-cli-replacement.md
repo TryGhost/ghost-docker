@@ -288,9 +288,13 @@ Import sequence:
    and escaping symlinks/hardlinks, including in directory bundles. Bound expansion
    and check space for extracted content, database restore, and recovery copies;
    compressed archive size times 1.5 is not a sufficient estimate.
-3. Read/validate the manifest using a pinned helper container, with no Compose
-   dependencies, no public ports, and read-only access to the bundle. This cannot
-   depend on an already-valid site `.env` or already-running Ghost.
+3. Read/validate the manifest from the staged copy with host tools. This cannot
+   depend on an already-valid site `.env` or already-running Ghost. An earlier
+   revision required a pinned helper container here; it was built and then
+   removed as disproportionate (see "Reading the bundle" in `docs/bundle-v1.md`).
+   Importing a bundle means trusting it, so the guarantees are that it cannot
+   write outside the site directory and that its SQL runs as the site's own
+   database user.
 4. Resolve the exact source Ghost image and check architecture/availability before
    changing the target. Import at the source version; upgrading is a separate step.
 5. Generate `.env` and `ghost.env`; retain operator URL/mode overrides. Omit
@@ -1121,19 +1125,22 @@ not checked in.
 **S5b — Local import.** Deps: S2, S5a. Not S4; see "Local imports" in §2.4.
 `scripts/import.sh` and `install.sh --import BUNDLE` for `sourceInstallType: local`
 bundles of kind `mysql-dump` and `mysql-data`: private staging, path/link
-validation, a pinned manifest helper with no Compose dependency, the exact source
+validation, manifest validation with no Compose dependency, the exact source
 Ghost image, raw config values, explicit database target, the schema-boot step for
 `mysql-data`, row-count verification, and content staging. A `portable` bundle is
 rejected with a clear message until S5d; a `production` bundle until S5e.
 
-Status: implemented as `install.sh --import`, with `scripts/lib/import.sh` and
-the containerised `scripts/lib/import-helper.mjs`. There is no separate
-`scripts/import.sh`: an import is an installation, so the installer is its only
-entry point. Three things were settled during implementation and are recorded
-in `docs/bundle-v1.md`: every link in a bundle is refused, not only escaping
-ones; `DEFINER=` clauses are dropped from a `mysql-dump` so that it can be loaded
-by the site's unprivileged database user; and zip archives are not read
-directly. `--import` cannot yet be combined with `--with`.
+Status: implemented as `install.sh --import`, with `scripts/lib/import.sh`.
+There is no separate `scripts/import.sh`: an import is an installation, so the
+installer is its only entry point. Three things were settled during
+implementation and are recorded in `docs/bundle-v1.md`: the bundle is unpacked
+and validated with host tools (`tar`, `find`, `jq`) rather than in a helper
+container; every symbolic link in a bundle is refused, not only escaping ones;
+and `DEFINER=` clauses are dropped from a `mysql-dump` so that it can be loaded
+by the site's unprivileged database user. `--import` cannot yet be combined
+with `--with`. The end-to-end test is a shell script, `tests/e2e/import.sh`:
+it runs the real commands and checks outcomes, which reads better as shell
+than as Node.
 
 Acceptance: real exporter-produced bundles of both kinds from Ghost-CLI 1.33.0;
 special config values; theme, asset and redirect fidelity; staff login with source

@@ -1,38 +1,39 @@
-// The bundle helper: what it stages, and everything it refuses.
+// Staging a migration bundle: what is accepted, and everything that is refused.
 //
-// scripts/lib/import-helper.mjs normally runs inside a container, but it is
-// plain Node with no dependencies, so it is exercised here directly. Nothing
-// in this file needs Docker. The archives that a well-behaved tar would never
-// produce — absolute paths, `..`, duplicate entries — are built byte by byte.
+// import_stage unpacks a bundle into a site's private staging directory with
+// the host's own tar and validates it. Nothing in this file needs Docker. The
+// archives a well-behaved tar would never produce — absolute paths, `..` —
+// are built byte by byte.
 import { test, describe, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  mkdirSync, writeFileSync, readFileSync, existsSync, symlinkSync, linkSync, readdirSync,
+  mkdirSync, writeFileSync, readFileSync, existsSync, symlinkSync, readdirSync, statSync,
 } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { gzipSync } from 'node:zlib';
 import { join } from 'node:path';
-import { tempDir, cleanup, REPO_DIR, TESTS_DIR } from './helpers.mjs';
+import { tempDir, cleanup, sh, q, TESTS_DIR } from './helpers.mjs';
 
-const HELPER = join(REPO_DIR, 'scripts', 'lib', 'import-helper.mjs');
 const FIXTURES = join(TESTS_DIR, 'fixtures', 'migration-bundle-v1');
 const fixture = (kind) => JSON.parse(readFileSync(join(FIXTURES, `${kind}.json`), 'utf8'));
 
 let dir;
 let counter;
-beforeEach(() => { dir = tempDir('import-helper'); counter = 0; });
+beforeEach(() => { dir = tempDir('import-stage'); counter = 0; });
 afterEach(() => cleanup(dir));
 
-/** Run the helper against a bundle with a fresh staging directory. */
-function stage(bundle, env = {}) {
+/** Stage a bundle into a fresh site directory. */
+function stage(bundle) {
   counter += 1;
-  const staging = join(dir, `staging-${counter}`);
-  mkdirSync(staging, { mode: 0o700 });
-  const result = spawnSync(process.execPath, [HELPER, 'stage', bundle, staging], {
-    encoding: 'utf8',
-    env: { ...process.env, ...env },
-  });
-  return { ...result, staging };
+  const site = join(dir, `site-${counter}`);
+  mkdirSync(site);
+  const result = sh(`import_stage ${q(site)} ${q(bundle)}`);
+  return {
+    status: result.status,
+    stdout: result.stdout.toString(),
+    stderr: result.stderr.toString(),
+    staging: join(site, '.import'),
+  };
 }
 
 /** A bundle directory for a manifest, with the files that manifest names. */
@@ -54,8 +55,7 @@ function bundleDir(manifest, name = 'bundle') {
 const refused = (result, pattern) => {
   assert.equal(result.status, 1, `expected a refusal, got ${result.status}: ${result.stdout}${result.stderr}`);
   assert.match(result.stderr, pattern);
-  assert.ok(!existsSync(join(result.staging, 'bundle')), 'left a partial bundle in staging');
-  assert.ok(!existsSync(join(result.staging, 'manifest.json')), 'left a manifest in staging');
+  assert.ok(!existsSync(result.staging), 'left a staging directory behind');
 };
 
 // --- A tar writer for the entries no real tar emits --------------------------
@@ -94,7 +94,6 @@ describe('staging a valid bundle', () => {
     test(`a ${kind} bundle directory is copied and its manifest returned`, () => {
       const result = stage(bundleDir(fixture(kind)));
       assert.equal(result.status, 0, result.stderr);
-      assert.deepEqual(JSON.parse(result.stdout), fixture(kind));
       assert.deepEqual(JSON.parse(readFileSync(join(result.staging, 'manifest.json'), 'utf8')), fixture(kind));
       assert.ok(existsSync(join(result.staging, 'bundle', 'content', 'themes', 'source', 'package.json')));
       assert.ok(existsSync(join(result.staging, 'bundle', 'content', 'images', '.hidden')), 'dropped a dotfile');
@@ -143,10 +142,34 @@ describe('staging a valid bundle', () => {
     assert.equal(readFileSync(staged, 'utf8'), 'pixels');
   });
 
+  const hasZip = spawnSync('zip', ['-v'], { stdio: 'ignore' }).status === 0
+    && spawnSync('unzip', ['-v'], { stdio: 'ignore' }).status === 0;
+  test('a zip archive is read where unzip is installed', { skip: hasZip ? false : 'needs zip and unzip' }, () => {
+    const source = bundleDir(fixture('mysql-data'));
+    const archive = join(dir, 'bundle.zip');
+    execFileSync('zip', ['-qr', archive, '.'], { cwd: source });
+    const result = stage(archive);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(readFileSync(join(result.staging, 'bundle', 'database.sql'), 'utf8'), 'data\n');
+  });
+
+  test('staged content is readable like a fresh install, the dump stays private', () => {
+    const source = bundleDir(fixture('mysql-data'));
+    execFileSync('chmod', ['-R', 'go-rwx', source]);
+    const archive = join(dir, 'private.tgz');
+    execFileSync('tar', ['-czf', archive, '-C', source, '.']);
+    const result = stage(archive);
+    assert.equal(result.status, 0, result.stderr);
+    const mode = (path) => statSync(join(result.staging, path)).mode & 0o777;
+    assert.equal(mode('bundle/content/themes/source/package.json') & 0o044, 0o044);
+    assert.equal(mode('.') & 0o077, 0, 'the staging directory is not private');
+  });
+
   test('config values come through byte for byte', () => {
     const manifest = fixture('mysql-data');
     const result = stage(bundleDir(manifest));
-    assert.equal(JSON.parse(result.stdout).config.mail__options__auth__pass, 'pa$$word \\" #\n');
+    const staged = JSON.parse(readFileSync(join(result.staging, 'manifest.json'), 'utf8'));
+    assert.equal(staged.config.mail__options__auth__pass, 'pa$$word \\" #\n');
   });
 });
 
@@ -165,17 +188,9 @@ describe('entries that could leave the bundle, or are not files', () => {
     refused(stage(archive), /symbolic link/);
   });
 
-  test('a hard link in an archive', () => {
-    const source = bundleDir(fixture('mysql-dump'));
-    linkSync(join(source, 'database.sql'), join(source, 'content', 'images', 'hardlink'));
-    const archive = join(dir, 'hardlink.tgz');
-    execFileSync('tar', ['-czf', archive, '-C', source, '.']);
-    refused(stage(archive), /hard link/);
-  });
-
   test('an absolute path', () => {
     const archive = tarball('absolute.tgz', [manifestEntry(), tarEntry('/tmp/ghost-docker-escape', { data: Buffer.from('x') })]);
-    refused(stage(archive), /absolute/);
+    refused(stage(archive), /leaves the bundle/);
     assert.ok(!existsSync('/tmp/ghost-docker-escape'));
   });
 
@@ -186,27 +201,12 @@ describe('entries that could leave the bundle, or are not files', () => {
   });
 
   test('a device node', () => {
+    // An unprivileged tar cannot create one and fails; a privileged one
+    // creates it and the check for special files refuses it.
     const archive = tarball('device.tgz', [manifestEntry(), tarEntry('content/null', { type: '3' })]);
-    refused(stage(archive), /character device/);
+    refused(stage(archive), /special file|could not be extracted/);
   });
 
-  test('the same file twice, which would overwrite the first', () => {
-    const archive = tarball('duplicate.tgz', [
-      manifestEntry(),
-      tarEntry('database.sql', { data: Buffer.from('first') }),
-      tarEntry('database.sql', { data: Buffer.from('second') }),
-    ]);
-    refused(stage(archive), /more than once/);
-  });
-
-  test('a file where an earlier entry needs a directory', () => {
-    const archive = tarball('through-file.tgz', [
-      manifestEntry(),
-      tarEntry('content', { data: Buffer.from('a file') }),
-      tarEntry('content/images/x', { data: Buffer.from('x') }),
-    ]);
-    refused(stage(archive), /passes through a file/);
-  });
 });
 
 describe('archives that are not bundles', () => {
@@ -217,25 +217,19 @@ describe('archives that are not bundles', () => {
     const bytes = readFileSync(archive);
     const cut = join(dir, 'cut.tgz');
     writeFileSync(cut, bytes.subarray(0, Math.floor(bytes.length / 2)));
-    refused(stage(cut), /corrupt or truncated|truncated/);
-  });
-
-  test('a zip names the two ways forward', () => {
-    const zip = join(dir, 'bundle.zip');
-    writeFileSync(zip, Buffer.from([0x50, 0x4b, 0x03, 0x04, 0, 0, 0, 0]));
-    refused(stage(zip), /zip bundles are not read directly.*--archive tgz/s);
+    refused(stage(cut), /corrupt/);
   });
 
   test('a file that is no archive at all', () => {
     const file = join(dir, 'notes.txt');
     writeFileSync(file, 'not a bundle\n'.repeat(100));
-    refused(stage(file), /neither a directory nor a tar archive/);
+    refused(stage(file), /not an archive made by `ghost migrate-export`/);
   });
 
   test('gzip of something that is not tar', () => {
     const file = join(dir, 'notes.tgz');
     writeFileSync(file, gzipSync(Buffer.from('not a tar archive\n'.repeat(100))));
-    refused(stage(file), /corrupt, or is not a tar archive/);
+    refused(stage(file), /not an archive made by|could not be extracted/);
   });
 
   test('a path that does not exist', () => {
@@ -248,19 +242,6 @@ describe('archives that are not bundles', () => {
     refused(stage(source), /no manifest\.json/);
   });
 
-  test('a bundle larger than the space it may use', () => {
-    const source = bundleDir(fixture('mysql-dump'));
-    writeFileSync(join(source, 'content', 'images', 'big.bin'), Buffer.alloc(64 * 1024));
-    const archive = join(dir, 'big.tgz');
-    execFileSync('tar', ['-czf', archive, '-C', source, '.']);
-    // Highly compressible: the archive is tiny, the expansion is not.
-    refused(stage(archive, { GD_IMPORT_MAX_BYTES: '4096' }), /does not fit in the free space/);
-    refused(stage(source, { GD_IMPORT_MAX_BYTES: '4096' }), /does not fit in the free space/);
-  });
-
-  test('more entries than the limit', () => {
-    refused(stage(bundleDir(fixture('mysql-dump')), { GD_IMPORT_MAX_ENTRIES: '3' }), /more than 3 entries/);
-  });
 });
 
 describe('manifests that do not meet the contract', () => {
@@ -276,10 +257,10 @@ describe('manifests that do not meet the contract', () => {
     ['the draft ghostVersion alias', (m) => { m.ghostVersion = '6.2.0'; }, /draft field ghostVersion/],
     ['the draft sourceEnvironment alias', (m) => { m.sourceEnvironment = 'development'; }, /draft field sourceEnvironment/],
     ['the draft database.kind alias', (m) => { m.database.kind = 'mysql'; }, /draft field database\.kind/],
-    ['a url that is not http', (m) => { m.url = 'file:///etc/passwd'; }, /not an http\(s\) URL/],
+    ['a url that is not http', (m) => { m.url = 'file:///etc/passwd'; }, /url is not an http\(s\) URL/],
     ['no content root', (m) => { m.content = 'somewhere/'; }, /content must be "content\/"/],
     ['a database path outside the bundle', (m) => { m.database.path = '../database.sql'; }, /database\.path must be "database\.sql"/],
-    ['a database file that is not there', (m) => { m.database.path = 'database.sql'; m.missing = true; }, /not in the bundle/],
+    ['a database file that is not there', (m) => { m.database.path = 'database.sql'; m.missing = true; }, /not a file in the bundle/],
     ['mysql-data without row counts', (m) => { delete m.database.rows; }, /database\.rows is required/],
     ['mysql-data with empty row counts', (m) => { m.database.rows = {}; }, /database\.rows is required/],
     ['a row count that is not a number', (m) => { m.database.rows.posts = '3'; }, /rows\.posts is not a row count/],
@@ -304,7 +285,7 @@ describe('manifests that do not meet the contract', () => {
   test('a portable members path that escapes the bundle', () => {
     const manifest = fixture('portable');
     manifest.database.members = '../../etc/passwd';
-    refused(stage(bundleDir(manifest)), /leaves the bundle/);
+    refused(stage(bundleDir(manifest)), /database\.members is not a path inside the bundle/);
   });
 
   test('a manifest that is not JSON', () => {

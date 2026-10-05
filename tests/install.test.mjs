@@ -10,7 +10,7 @@ import { existsSync, writeFileSync, mkdirSync, readFileSync, symlinkSync, readdi
 import { join } from 'node:path';
 import {
   tempDir, cleanup, copyWorktree, makeCandidateRelease, git, run, occupyPort,
-  sh, shOk, shSucceeds, q, REPO_DIR, TESTS_DIR, dockerAvailable,
+  sh, shOk, shSucceeds, q, REPO_DIR, TESTS_DIR,
 } from './helpers.mjs';
 
 // A checkout to run install.sh from. Copied rather than used in place so a
@@ -21,12 +21,11 @@ const checkout = (dir, name = 'site') => copyWorktree(join(dir, name));
 const install = (site, args, options = {}) =>
   run(join(site, 'install.sh'), args, { cwd: site, timeout: 120_000, ...options });
 
-// --import, up to the point where it would change something. Reading a bundle
-// happens in a container, so the cases that get that far need a daemon; the
-// ones before it do not. None of them may leave anything in the checkout.
+// --import, up to the point where it would change something. A bundle is read
+// with host tools, so none of this needs a daemon, and none of it may leave
+// anything in the checkout.
 describe('install.sh --import refusals', () => {
   const FIXTURES = join(TESTS_DIR, 'fixtures', 'migration-bundle-v1');
-  const docker = dockerAvailable() ? false : 'needs a Docker daemon to read a bundle';
   let dir;
   let site;
   beforeEach(() => {
@@ -90,7 +89,7 @@ describe('install.sh --import refusals', () => {
     assert.ok(!existsSync(join(site, '.env')));
   });
 
-  test('a bundle that does not exist is refused before anything is written', { skip: docker }, () => {
+  test('a bundle that does not exist is refused before anything is written', () => {
     const result = install(site, ['--import', join(dir, 'nowhere.tgz'), '--no-prompt']);
     assert.equal(result.status, 1);
     assert.match(result.stderr, /there is no bundle at/);
@@ -98,16 +97,16 @@ describe('install.sh --import refusals', () => {
     untouched();
   });
 
-  test('a file that is not a bundle is refused before anything is written', { skip: docker }, () => {
+  test('a file that is not a bundle is refused before anything is written', () => {
     const file = join(dir, 'notes.tgz');
     writeFileSync(file, 'this is not an archive\n'.repeat(200));
     const result = install(site, ['--import', file, '--no-prompt']);
     assert.equal(result.status, 1);
-    assert.match(result.stderr, /neither a directory nor a tar archive/);
+    assert.match(result.stderr, /not an archive made by `ghost migrate-export`/);
     untouched();
   });
 
-  test('a bundle holding a symbolic link is refused before anything is written', { skip: docker }, () => {
+  test('a bundle holding a symbolic link is refused before anything is written', () => {
     const root = bundle('mysql-data', (m) => { m.sourceInstallType = 'local'; return m; });
     symlinkSync('/etc', join(root, 'content', 'escape'));
     const result = install(site, ['--import', root, '--no-prompt']);
@@ -116,7 +115,7 @@ describe('install.sh --import refusals', () => {
     untouched();
   });
 
-  test('a production bundle is refused as not implemented yet', { skip: docker }, () => {
+  test('a production bundle is refused as not implemented yet', () => {
     const result = install(site, ['--import', bundle('mysql-dump'), '--no-prompt']);
     assert.equal(result.status, 3);
     assert.match(result.stderr, /importing a production site is not implemented yet/);
@@ -124,7 +123,7 @@ describe('install.sh --import refusals', () => {
     untouched();
   });
 
-  test('a portable bundle is refused, naming the export that works today', { skip: docker }, () => {
+  test('a portable bundle is refused, naming the export that works today', () => {
     const result = install(site, ['--import', bundle('portable'), '--no-prompt']);
     assert.equal(result.status, 3);
     assert.match(result.stderr, /importing a portable bundle is not implemented yet/);
@@ -133,14 +132,14 @@ describe('install.sh --import refusals', () => {
     untouched();
   });
 
-  test('--version that disagrees with the bundle is a usage error', { skip: docker }, () => {
+  test('--version that disagrees with the bundle is a usage error', () => {
     const result = install(site, ['--import', bundle('mysql-data'), '--version', '6.3.0', '--no-prompt']);
     assert.equal(result.status, 2);
     assert.match(result.stderr, /bundle was exported from Ghost 6\.2\.0/);
     untouched();
   });
 
-  test('the bundle itself is never modified', { skip: docker }, () => {
+  test('the bundle itself is never modified', () => {
     const root = bundle('portable');
     const before = readdirSync(root, { recursive: true }).sort();
     install(site, ['--import', root, '--no-prompt']);

@@ -118,15 +118,13 @@ A bundle missing `bundleCreatedAt` or `sourceInstallType`, or carrying a
 fallback and no default.
 
 Every path in the manifest is validated. Path traversal and absolute member
-paths are rejected, and so is every symbolic link and hard link, wherever it
-points, including in directory bundles: the exporter materializes theme links
-and never emits one, so the importer has no reason to follow any. Devices,
-FIFOs and other special entries are rejected the same way, as is a path that
-appears twice in an archive.
+paths are rejected, and so is every symbolic link, wherever it points,
+including in directory bundles: the exporter materializes theme links and
+never emits one, so the importer has no reason to follow any. Devices, FIFOs
+and other special files are rejected the same way.
 
 A bundle is accepted as a directory, a gzip-compressed tar (`--archive tgz`),
-or an uncompressed tar. Zip archives are not read; extract them and pass the
-directory.
+an uncompressed tar, or a zip (`--archive zip`) where `unzip` is installed.
 
 ### `config`
 
@@ -170,37 +168,6 @@ The authoritative list is `GD_CONTAINER_OWNED_KEYS` and
 `GD_CONTAINER_OWNED_PREFIXES` in [scripts/lib/config.sh](../scripts/lib/config.sh);
 `scripts/config.sh validate` enforces it.
 
-## Importing `mysql-dump`
-
-The dump is loaded with the `mysql` client into the empty database, as the
-site's database user and never as root, so a dump can affect nothing but that
-database. `mysqldump` records the account that defined each view and trigger
-(`DEFINER=`), and creating an object on another account's behalf needs a
-privilege that user deliberately lacks. Those clauses are therefore removed
-from mysqldump's own version-comment lines during the load, and the objects
-belong to the site's user, which is the account Ghost connects as. Nothing
-else in the dump is rewritten.
-
-After the load the importer checks that the database has a Ghost migration
-history, then starts Ghost on it.
-
-## Reading the manifest
-
-The manifest is read and validated using a pinned helper container, with no
-Compose dependencies, no published ports, no network, and read-only access to
-the bundle. It cannot depend on an already-valid site `.env` or on a running
-Ghost, because neither exists yet at that point in the import. The helper is
-[scripts/lib/import-helper.mjs](../scripts/lib/import-helper.mjs): it copies
-the bundle into a private staging directory inside the site directory, reading
-archives with its own parser rather than a tar binary, and every later step
-works from that validated copy.
-
-The container is not about JSON parsing convenience — `jq` is available on the
-host and is used freely for the site's own `.ghost-docker.json` and operation
-journals. It is about isolating untrusted bundle content: path traversal,
-absolute member paths, escaping links, and unbounded expansion are all
-properties of a file someone else produced.
-
 ## Importing `mysql-data`
 
 `database.sql` in a `mysql-data` bundle carries every row of every SQLite
@@ -233,6 +200,46 @@ their declared `varchar` length and unique keys that differ only by case or
 accents. One class of bad data is not detectable from SQLite and surfaces at
 step 3: plain `text` values over 64KB in columns Ghost's MySQL schema declares
 as `text`. Report that failure with the option of re-exporting as `portable`.
+
+## Importing `mysql-dump`
+
+The dump is loaded with the `mysql` client into the empty database, as the
+site's database user and never as root, so a dump can affect nothing but that
+database. `mysqldump` records the account that defined each view and trigger
+(`DEFINER=`), and creating an object on another account's behalf needs a
+privilege that user deliberately lacks. Those clauses are therefore removed
+from mysqldump's own version-comment lines during the load, and the objects
+belong to the site's user, which is the account Ghost connects as. Nothing
+else in the dump is rewritten.
+
+After the load the importer checks that the database has a Ghost migration
+history, then starts Ghost on it.
+
+## Reading the bundle
+
+A bundle is unpacked, with the host's `tar` (or `unzip`), into a private
+staging directory inside the site directory, and every later step works from
+that copy. Before anything else on the host changes:
+
+- archive member names are checked, and one that is absolute or has a `..`
+  component is refused before extraction starts;
+- anything unpacked that is not a regular file or a directory is refused;
+- the manifest is validated against this document with `jq`;
+- the files the manifest names must exist as regular files.
+
+None of this depends on an already-valid site `.env` or on a running Ghost,
+because neither exists yet at that point in the import.
+
+This is validation, not isolation. Importing a bundle means trusting it: its
+SQL becomes the site's database and its themes become the site, so no amount
+of care in unpacking makes a hostile bundle safe to import. An earlier draft
+of this contract required reading the bundle inside a pinned helper container;
+that was dropped as disproportionate for a bundle the operator exported
+themselves, which is the supported case. What the importer does guarantee is
+narrower and worth having: a bundle cannot write outside the site directory,
+and its SQL runs as the site's own database user, so it can touch nothing but
+that site's database. Revisit isolation if S5e turns up a case for importing
+bundles of unknown origin.
 
 ## Source consistency and cutover (S3)
 

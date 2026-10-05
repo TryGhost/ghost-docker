@@ -126,10 +126,11 @@ safely. Never source an env file; use `scripts/lib/env.sh`.
 made by `ghost migrate-export` (Ghost-CLI 1.33.0+); contract in
 `docs/bundle-v1.md`, steps in `scripts/lib/import.sh`.
 
-- The bundle is untrusted. It is only read by `scripts/lib/import-helper.mjs`
-  (dependency-free Node, its own tar reader) inside the pinned
-  `GD_IMPORT_HELPER_IMAGE` with no network; links and non-file entries are
-  refused. Do not replace this with a host `tar`.
+- The bundle is unpacked with host `tar` into the private `.import/` staging
+  directory and validated there (`import_stage`): member names that leave the
+  bundle, anything that is not a file or directory, and a manifest that fails
+  the `jq` rules in `GD_IMPORT_MANIFEST_RULES` are refused. This is validation,
+  not isolation; a container helper was built and deliberately removed.
 - Kinds: `mysql-data` (SQLite source; rows only, so Ghost boots once at the
   exact source version to create the schema before the load, then row counts
   are compared) and `mysql-dump`. `portable`, production bundles and
@@ -139,8 +140,9 @@ made by `ghost migrate-export` (Ghost-CLI 1.33.0+); contract in
 - While an import runs, `.env` holds `COMPOSE_PROFILES=import-incomplete` so a
   partial site cannot be started, and `.ghost-docker-import` marks it. A failed
   import removes everything it created (`import_discard`).
-- `tests/import-helper.test.mjs` needs no Docker. `tests/import-e2e.test.mjs`
-  (`GD_TEST_IMPORT=1`) installs real Ghost-CLI sites and exports them.
+- `tests/import.test.mjs` covers staging and needs no Docker.
+  `tests/e2e/import.sh` installs real Ghost-CLI sites, exports them and imports
+  them.
 
 For production sites the legacy tools remain until S5e:
 
@@ -202,7 +204,8 @@ system bash: no `declare -A`, `mapfile`, `${v,,}` or namerefs. It must pass
 `shellcheck`, which picks the dialect from the shebang. Tests are `.mjs` files
 in `tests/` run by Node's built-in runner: the shell libraries are exercised
 through a real shell via `tests/helpers.mjs`, while fixtures, structured-output
-parsing and assertions are JavaScript.
+parsing and assertions are JavaScript. End-to-end scenarios that only run the
+real commands and check outcomes are shell scripts in `tests/e2e/`.
 
 For analytics setup, see `TINYBIRD.md` for detailed instructions.
 

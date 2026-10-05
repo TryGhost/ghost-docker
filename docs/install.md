@@ -164,11 +164,13 @@ What to expect:
   moment of export.
 - **Nothing is merged.** The checkout must not already hold a site, and
   `data/ghost` and `data/mysql` must be empty.
-- **Nothing is trusted.** The bundle is read inside a container with no network
-  and a read-only view of it. Symbolic links, hard links, absolute paths and
-  anything else that is not a plain file or directory inside the bundle are
-  refused before anything on the host changes. The database is loaded as the
-  site's own database user, never as root.
+- **The bundle is checked before anything changes.** It is unpacked into a
+  private staging directory inside the checkout and validated there. A path
+  that would leave the bundle, a symbolic link, or anything else that is not a
+  plain file or directory is refused, as is a manifest that does not meet the
+  [contract](bundle-v1.md). The database is loaded as the site's own database
+  user, never as root. Importing a bundle still means trusting it: its
+  database and themes become your site, so import bundles you made.
 - **A failure leaves nothing behind.** If any step fails — the dump will not
   load, the row counts disagree, Ghost will not start on the imported data —
   the containers, data and configuration the import created are removed and
@@ -177,8 +179,9 @@ What to expect:
   to keep the wreckage for inspection instead; it cannot be started, and the
   next `--import` clears it first.
 
-Bundles are accepted as a directory, a `.tgz`, or a plain `.tar`. A `.zip`
-(`--archive zip`) is not read directly: extract it and pass the directory.
+Bundles are accepted as a directory, a `.tgz`, or a plain `.tar`, and as a
+`.zip` (`--archive zip`) where `unzip` is installed. Archives are unpacked with
+the host's `tar`.
 
 Mail settings travel with the configuration. A local site set up to send
 through a real mail service will send through it from Docker too.
