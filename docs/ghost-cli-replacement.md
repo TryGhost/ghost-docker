@@ -40,7 +40,7 @@ dependencies and the contracts in §2 before implementing it.
 | Distribution | The manager image carries `compose.yml`, the Caddy configuration and the CLI, and writes them into the site directory. A tagged release is an image tag. A git clone of this repository also works: the launcher builds the image from the checkout and uses the files in place. See §2.7. |
 | Docker socket | The manager is given the Docker socket for every command, including install. That is host-privileged, and it is accepted: whoever runs the launcher already has that access. |
 | File ownership | Everything the manager writes into the site directory is owned by the user who ran the launcher. The entrypoint starts as root to read the socket's group, then drops to the caller's uid and gid. See §2.10. |
-| Windows | Native, through a PowerShell launcher, and through WSL2. The native path contract in §2.10 is unverified until it has been run on Windows; the launcher ships marked experimental until then. |
+| Windows | Through WSL2, which is Linux. Natively, through a PowerShell launcher, as an experiment: the daemon connection, file ownership and bind-mount paths are all unverified there, and §2.10 says what qualifies them. |
 | Versions | Resolve and persist an exact Ghost image version on installation. Ghost upgrades and stack updates are separate operations. Record resolved image digests for recovery. |
 | Installation | Scriptable `install`, with a flag for every prompt. Local mode uses MySQL too. |
 | Migration | Ghost-CLI exports a bundle (`ghost migrate-export`, Ghost-CLI 1.33.0+); the manager imports it. Three kinds: `mysql-dump` (MySQL sources), `mysql-data` (default for local SQLite sources: data-only MySQL inserts loaded into a schema Ghost creates), and `portable` (explicit SQLite fallback through the Admin API, with documented losses). `--migrate` runs the export and the import in one command. The legacy `scripts/migrate.sh` stays on `main`, where it works, and is not carried onto this branch, whose layout it does not understand; it disappears from `main` when this branch merges, which S12 allows only after production import (S5e) has passed its fidelity and recovery tests. |
@@ -512,8 +512,23 @@ alone is not evidence that an upgrade path is supported.
 ### 2.7 Releases, distribution and updates
 
 A release is an image. `ghcr.io/tryghost/ghost-docker` is built from this
-repository and carries the CLI, `compose.yml`, the Caddy configuration and the
-example files. Tags:
+repository and carries the CLI and the **release payload**: every file
+`compose.yml` needs beside it in order to run every profile.
+
+| Payload | Why |
+| --- | --- |
+| `compose.yml`, `compose.ipv6.yml` | The stack |
+| `caddy/Caddyfile`, `caddy/snippets/` | Mounted by the `caddy` service |
+| `mysql-init/` | Mounted by `db`; creates the ActivityPub database |
+| `tinybird/` | Build context of the Tinybird helper services in the `analytics` profile |
+| `.env.example`, `ghost.env.example` | Reference |
+
+The payload is defined by what `compose.yml` references, not by this table: a
+test resolves every bind mount and build context in the Compose file and fails
+when one is not in the image. A site installed from the image with no checkout
+must be able to start both optional profiles. Building the Tinybird helpers at
+install time is a cost of the current stack; publishing them as images instead
+belongs with service image distribution (S14). Tags:
 
 | Tag | Meaning |
 | --- | --- |
@@ -533,9 +548,8 @@ Rules:
   one image digest, records the version and digest in `.ghost-docker.json`, and
   writes a launcher into the site directory that runs exactly that digest. A
   moving tag is never what a site runs.
-- **The image writes the files.** `compose.yml`, `caddy/Caddyfile`,
-  `caddy/snippets/` and the example files in the site directory are copies of
-  the image's, written by `install` and replaced by `update`. They are not
+- **The image writes the files.** The release payload in the site directory is
+  a copy of the image's, written by `install` and replaced by `update`. They are not
   edited by operators; operator-owned files are `.env`, `ghost.env`,
   `caddy/custom/` and `caddy/global/`. The manager records a checksum of each
   file it wrote, so `update` can tell an untouched file from an edited one. An
@@ -544,10 +558,30 @@ Rules:
   `--no-prompt` it stops instead, unless `--replace-edited` was given.
 - **Clone mode.** A launcher that finds itself in a checkout of this repository
   builds the image locally from that checkout and uses the files in place,
-  writing nothing over them. Metadata records `source: checkout`. This is how
-  the stack is developed, and how someone who wants to read everything first
-  installs it. Updating such a site is `git checkout` of a newer ref followed
-  by `./ghost-docker update`, which then only migrates configuration.
+  writing nothing over them. Metadata records `source: checkout` and the commit
+  the site was last installed or updated at. This is how the stack is
+  developed, and how someone who wants to read everything first installs it.
+
+  Updating such a site is `git checkout` of a newer ref followed by
+  `./ghost-docker update`. That is the same update as in image mode — validate,
+  pull the service images the new `compose.yml` names, apply, verify — except
+  that the payload is already in place and is not written. The checkout has
+  happened before the updater starts, so the recovery boundary cannot be "the
+  files as the updater found them": those are already the new ones. It is
+  instead:
+  - the **previous commit**, read from metadata, which Git holds and which
+    fully determines the previous payload;
+  - a snapshot of the operator's files (`.env`, `ghost.env`, `caddy/custom/`,
+    `caddy/global/`, generated routes, metadata), which a checkout never
+    touches;
+  - the **previous manager image**, which the launcher keeps by tagging every
+    image it builds with its commit.
+
+  A tracked tree with local modifications, or a checkout whose recorded commit
+  cannot be found, is refused before anything changes. On a failure the
+  updater restores the snapshot and checks the previous commit out again, so
+  the directory is never left as new payload with old configuration, and says
+  which manager image belongs to it.
 - **The launcher is served** from the `gh-pages` branch with the custom domain
   `docker.ghost.org`: `https://docker.ghost.org/install.sh` and
   `https://docker.ghost.org/install.ps1`. They are the repository's own
@@ -566,11 +600,12 @@ there is no script rewriting itself mid-run.
 Transactional flow:
 
 1. Acquire the site lock; reject unresolved operations and, in clone mode, a
-   dirty tracked tree.
+   dirty tracked tree or an unknown previous commit.
 2. Resolve the release, check compatibility, show changes, and record the
    previous version and digest.
-3. Back up `.env`, `ghost.env`, generated and custom Caddy files, the managed
-   files being replaced, metadata, and the migration journal.
+3. Back up `.env`, `ghost.env`, generated and custom Caddy files, metadata, and
+   the migration journal; and the payload being replaced, which in image mode is
+   a copy of the files and in clone mode is the previous commit.
 4. Run the target release's migrations, journalled per phase. Idempotency does
    not substitute for recovery. Record completion only after the corresponding
    stage succeeds.
@@ -578,7 +613,8 @@ Transactional flow:
    release, and verify readiness. Define safe handling of DB/ActivityPub
    schema-affecting stack changes using the backup/recovery contract; do not
    blindly roll back a migrated service image.
-6. On failure, restore the previous files and configuration where safe. If
+6. On failure, restore the previous payload and configuration together where
+   safe (in clone mode, by checking the previous commit out). If
    stateful service changes already occurred, use their recovery procedure or
    report recovery-required. Never report success merely because `up -d`
    returned zero.
@@ -648,6 +684,30 @@ Preflight is split by what has to work when Docker is broken:
 
 Rootless support requires verified socket, port, ownership, and boot behaviour;
 do not infer support from linger alone.
+
+**Reaching a site in order to verify it.** `127.0.0.1` inside the manager is the
+manager, not the host, so the first implementation's probes of host loopback
+cannot be ported as they were. Verification has two parts, reported separately,
+and neither is described as more than it is:
+
+- **Routing, over the site's own network.** A probe attached to the site's
+  Compose network requests Ghost at its unique alias
+  (`ghost-${COMPOSE_PROJECT_NAME}:2368`) and, in production, Caddy on 80 and
+  443 with the site's `Host` header and SNI, accepting Caddy's internal
+  certificate. This shows that the services answer and that the generated
+  routes send each domain where it should go. It says nothing about the host.
+- **Published ports, from the host's network namespace.** A short-lived
+  container of the manager image, started with `--network host`, requests
+  `127.0.0.1` on the published ports: Ghost's loopback port, and Caddy's HTTP
+  and HTTPS ports with `Host` and SNI preserved. On Linux that namespace is the
+  host's, and this is the request an operator's own `curl` would make. On
+  Docker Desktop and OrbStack it is the VM's: it shows the daemon has published
+  the port, not that the desktop application forwards it to the host, and the
+  output says which was shown.
+
+A production site before its DNS points at the host passes both: routing is
+correct and the ports are published. That its certificate is not yet publicly
+trusted is a warning, as before.
 
 Keep nginx/apache running until cutover; a server may proxy other applications,
 so replacing its whole service requires an explicit operator choice. Installation
@@ -803,13 +863,8 @@ Contract for every manager invocation:
   creates on the host. The launcher mounts `DIR` at `DIR` and sets it as the
   working directory; the manager refuses to run when `PROJECT_DIR` and its
   working directory disagree.
-- **Windows paths.** A Windows path cannot be a Linux mount point, so the
-  identical-path rule needs a translation there: the launcher mounts
-  `C:\Users\me\site` at the path the Docker Desktop daemon itself uses for that
-  directory, and passes it as `PROJECT_DIR`. **This is unverified.** It is the
-  first thing to establish when the PowerShell launcher is run on Windows, and
-  the native Windows path stays experimental until it is.
-- **Identity.** The launcher passes the caller's uid and gid. The entrypoint
+- **Identity.** The launcher passes the caller's uid and gid, on hosts that
+  have them. The entrypoint
   starts as root, reads the group that owns the mounted Docker socket, and drops
   to the caller's uid and gid with that group added, so everything written into
   the site directory belongs to the caller and no ownership is fixed up
@@ -821,9 +876,12 @@ Contract for every manager invocation:
     has run. Removing or archiving those needs root, in a short-lived step that
     does only that.
 - **The Docker socket** is host-privileged and is mounted for every command.
-  Support local daemons and the default and rootless socket paths; resolve the
-  socket from the active Docker context; reject a remote daemon clearly, because
-  bind mounts would then refer to another machine's filesystem.
+  On Linux, support local daemons and the default and rootless socket paths:
+  resolve the socket from the active Docker context, and reject a remote daemon
+  clearly, because bind mounts would then refer to another machine's
+  filesystem. On Docker Desktop and OrbStack the daemon is in a VM and the
+  socket to mount is the VM's own, at the default path, whatever the host-side
+  endpoint is.
 - **Terminal.** Prompts need the launcher to attach a terminal even when it was
   itself piped from `curl`. Every prompt has a flag equivalent.
 - **Bundles and other inputs** outside the site directory are mounted read-only
@@ -835,6 +893,38 @@ Contract for every manager invocation:
   daemon: `--project-directory`, an explicit `-f`, and no inherited
   `COMPOSE_FILE`. `docker compose config` is how configuration is resolved; do
   not reimplement Compose interpolation.
+
+**Native Windows is three unverified assumptions, and they stand or fall
+together.** On Linux and macOS the contract above is ordinary practice. On
+Windows each part of it needs something that has not been shown to work:
+
+1. *The daemon connection.* The Windows Docker client talks to a named pipe,
+   which is not a Unix socket and cannot be mounted into a Linux container.
+   The launcher instead mounts the daemon's own socket inside the Docker
+   Desktop VM (`//var/run/docker.sock`).
+2. *Ownership.* There is no uid or gid to pass. The manager runs as the
+   image's default user, and what it writes has to be readable, writable and
+   removable by the Windows user who ran the launcher.
+3. *Nested bind paths.* `C:\Users\me\site` cannot be an identical Linux mount
+   point. The launcher mounts it at the path the daemon uses for that
+   directory (by default `/run/desktop/mnt/host/c/Users/me/site`) and gives the
+   manager that path, so that the bind mounts Compose asks the daemon for
+   resolve to the same directory.
+
+Running `version`, or a `doctor` that only inspects the manager's own view,
+does not qualify any of this: all three can be wrong while those succeed.
+Qualification is one path exercised end to end, which `doctor` performs on
+every platform: the manager writes a file into the site directory, then asks
+the daemon to start a **sibling container that bind-mounts the site directory
+by the path the manager was given** and reads the file back. That fails if the
+daemon cannot be reached, if the manager's path means a different directory to
+the daemon, or if the file is not where the daemon looks. On Windows the file
+must additionally be readable and removable from the Windows side afterwards.
+
+Native Windows stays experimental, and is described as such wherever it is
+mentioned, until that check has passed on a real Docker Desktop installation
+and a site has been started there. CI cannot show it: hosted Windows runners
+do not run Linux containers.
 
 What this does **not** solve, and should not be claimed to: Compose's dotenv
 interpolation. Anything writing `.env` still encodes a literal `$` as `$$`
@@ -982,8 +1072,9 @@ Repo: ghost-docker. Deps: N1. The skeleton every later step fills in. Implement
   `PROJECT_DIR` matches. PR #300's `manager/` (Dockerfile with Docker client and
   Compose, type-stripped TypeScript, lint and type-check setup) is the starting
   point.
-- The image carries `compose.yml`, `caddy/` and the example files at a known
-  path, and reports its own version.
+- The image carries the release payload of §2.7 at a known path, and reports
+  its own version. A test fails when `compose.yml` references a bind mount or
+  build context that the image does not contain.
 - The entrypoint implements the identity rules of §2.10, including the rootless
   case.
 - `ghost-docker` (bash) and `ghost-docker.ps1` (PowerShell), implementing the
@@ -1000,10 +1091,11 @@ build the image and run on Linux and macOS; a file the manager writes into the
 site directory is owned by the caller under rootful and rootless Docker; the
 launcher's refusals (no Docker, daemon down, no Compose) are tested without a
 daemon; the manager's exit status and a usage error reach the caller unchanged;
-the published `edge` image runs the same commands without a checkout. The
-PowerShell launcher runs `version` and `doctor` on a Windows runner, or the pull
-request states exactly what was and was not verified there, including the
-Windows path contract.
+the published `edge` image runs the same commands without a checkout. `doctor`
+includes the sibling-container check of §2.10 and passes on Linux and macOS.
+The PowerShell launcher's own behaviour is tested on a Windows runner against a
+stand-in `docker`; the pull request states that this does not qualify native
+Windows, and what would.
 
 ### N3 — install, config, caddy, check
 
@@ -1030,8 +1122,12 @@ the image and from a clone, on Linux and macOS, and checks what
 `install-e2e.test.mjs` checked: the pin, file modes and ownership, a port
 conflict as an error naming the holder, an existing proxy on 80/443 left
 running, two local sites side by side, `--no-start` starting nothing, and
-ingress verified through Caddy with HTTPS reported as a warning before DNS
-exists. The dotenv encoder passes the round trip through real containers for
+local ingress verified on the loopback port, and production ingress verified
+by both parts of "Reaching a site in order to verify it" (§2.8) before DNS and
+a public certificate exist, with HTTPS trust reported as a warning. A site
+installed into an empty directory from the published image alone, with no
+checkout, starts with `--with activitypub`, and its `analytics` helper images
+build from the payload written there. The dotenv encoder passes the round trip through real containers for
 `$VAR`, `${VAR}`, `$$`, spaces, both quote types, backslashes, newlines, empty
 strings and JSON arrays.
 
@@ -1128,6 +1224,9 @@ between two releases with the Ghost pin unchanged and the launcher re-pinned,
 refuses a downgrade, asks before replacing a hand-edited managed file and keeps
 a backup of it (stopping instead under `--no-prompt` without `--replace-edited`),
 and restores the previous files when validation fails before services change.
+In clone mode, a failed update between two refs whose `compose.yml` differs
+leaves the checkout at the previous commit with the previous configuration and
+the site running, and a dirty tree is refused before anything changes.
 
 **S6b — Legacy-layout migration and transactional updates.** Deps: S4, S6a. The
 journalled migration framework, migration `0001-compose-profiles`, the way in
