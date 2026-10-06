@@ -104,8 +104,16 @@ function Invoke-Launcher([string]$Mode, [hashtable]$Environment, [string[]]$Argu
         $quote = { param($text) "'" + ([string]$text).Replace("'", "''") + "'" }
         $command = '$env:PATH = ' + (& $quote $Path) + '; & ' + (& $quote $LauncherPath) + ' ' +
             (($Arguments | ForEach-Object { & $quote $_ }) -join ' ') + '; exit $LASTEXITCODE'
-        $script:Out = (& $Shell -NoProfile -ExecutionPolicy Bypass -Command $command 2>&1 | Out-String)
+        # Windows PowerShell 5.1 turns each redirected stderr line into an
+        # error record, and the script-wide 'Stop' would make the first one a
+        # terminating error. Relax it for this call only (the assignment is
+        # local to the function) and flatten the records to their text.
+        $ErrorActionPreference = 'Continue'
+        $lines = @(& $Shell -NoProfile -ExecutionPolicy Bypass -Command $command 2>&1 | ForEach-Object {
+                if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message } else { [string]$_ }
+            })
         $script:Code = $LASTEXITCODE
+        $script:Out = ($lines -join "`n") + "`n"
     }
     finally {
         foreach ($key in $saved.Keys) { Set-Variable-InEnvironment $key $saved[$key] }

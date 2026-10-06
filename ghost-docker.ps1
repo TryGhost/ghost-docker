@@ -52,6 +52,19 @@ function Stop-Launcher([string]$Message, [int]$Code = 1) {
 # PowerShell 5.1 has no $IsWindows; it only runs on Windows.
 $OnWindows = if ($null -ne (Get-Variable -Name IsWindows -ErrorAction SilentlyContinue)) { $IsWindows } else { $true }
 
+# Runs a native command with its stderr merged into the returned lines. Under
+# Windows PowerShell 5.1 a redirected stderr line arrives as an error record,
+# which $ErrorActionPreference = 'Stop' would turn into an exception; this
+# runs the command with that preference relaxed and flattens the records.
+# $LASTEXITCODE is the command's.
+function Invoke-Native([scriptblock]$Command) {
+    $ErrorActionPreference = 'Continue'
+    $lines = @(& $Command 2>&1 | ForEach-Object {
+            if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message } else { [string]$_ }
+        })
+    return , $lines
+}
+
 # Runs docker with a deadline. Returns exit code, stdout and whether it had to
 # be killed.
 function Invoke-Docker([string[]]$Arguments, [int]$Seconds) {
@@ -179,18 +192,20 @@ elseif ($ScriptDir -and (Test-Path -LiteralPath (Join-Path $ScriptDir 'manager/D
     $Image = 'ghost-docker:checkout'
     $commit = ''
     if (Get-Command git -ErrorAction SilentlyContinue) {
-        $commit = (& git -C $ScriptDir rev-parse HEAD 2>$null)
-        if ($LASTEXITCODE -ne 0) { $commit = '' }
+        $gitOutput = Invoke-Native { git -C $ScriptDir rev-parse HEAD }
+        if ($LASTEXITCODE -eq 0) { $commit = ($gitOutput -join '').Trim() }
     }
     # Also tagged with its commit, so the image that belongs to an earlier
     # checkout is still here if an update has to go back to it.
     $tags = @('--tag', $Image)
     if ($commit) { $tags += @('--tag', ('ghost-docker:checkout-' + $commit.Substring(0, [Math]::Min(12, $commit.Length)))) }
-    $buildOutput = & docker build --quiet --file (Join-Path $ScriptDir 'manager/Dockerfile') `
-        --build-arg 'GD_VERSION=checkout' --build-arg "GD_COMMIT=$commit" `
-        @tags $ScriptDir 2>&1
+    $buildOutput = Invoke-Native {
+        docker build --quiet --file (Join-Path $ScriptDir 'manager/Dockerfile') `
+            --build-arg 'GD_VERSION=checkout' --build-arg "GD_COMMIT=$commit" `
+            @tags $ScriptDir
+    }
     if ($LASTEXITCODE -ne 0) {
-        [Console]::Error.WriteLine(($buildOutput | Out-String))
+        [Console]::Error.WriteLine(($buildOutput -join "`n"))
         Stop-Launcher "the manager image could not be built from $ScriptDir."
     }
 }
