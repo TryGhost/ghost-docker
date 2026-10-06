@@ -227,10 +227,9 @@ describe('identity', () => {
         assert.equal((await check('rootless'))!.status, 'error');
     });
 
-    test('a host with no uid has nothing to match', async () => {
+    test('a launcher that passed no identity is refused', async () => {
         delete h.env.GD_UID;
         delete h.env.GD_GID;
-        h.env.GD_HOST_OS = 'Windows';
-        assert.equal((await check('identity'))!.status, 'ok');
+        assert.match((await h.run('doctor')).stderr, /GD_UID/);
     });
 });

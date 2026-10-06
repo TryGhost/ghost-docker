@@ -16,7 +16,7 @@ export const processIo: Io = {
     stderr: (text) => void process.stderr.write(text),
     env: process.env,
     cwd: () => process.cwd(),
-    // Absent on Windows, which the manager never runs on: it is a Linux image.
+    // Optional in Node's types only for Windows, which this Linux image never is.
     uid: () => process.getuid?.() ?? 0,
     gid: () => process.getgid?.() ?? 0,
     exec,

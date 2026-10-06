@@ -19,9 +19,9 @@
 #   a checkout         this script next to manager/Dockerfile builds from it
 #   GD_CHANNEL         a published channel (default: edge)
 #
-# Requires bash and Docker with the Compose plugin. Nothing else.
-# The contract this implements is docs/ghost-cli-replacement.md §2.10, and
-# ghost-docker.ps1 implements the same one. Keep them in step.
+# Requires bash and Docker with the Compose plugin. Nothing else. On Windows,
+# run it inside WSL2. The contract this implements is
+# docs/ghost-cli-replacement.md §2.10.
 set -euo pipefail
 
 readonly GD_REGISTRY_IMAGE="ghcr.io/tryghost/ghost-docker"
@@ -81,8 +81,8 @@ host_os=$(uname -s 2>/dev/null || printf 'unknown')
 case $host_os in
     MINGW* | MSYS* | CYGWIN*)
         die "this shell ($host_os) cannot run ghost-docker.
-  On Windows, use the PowerShell launcher, ghost-docker.ps1, or run this one
-  inside WSL2."
+  On Windows, run it inside WSL2: install Docker Desktop with the WSL2 backend,
+  open a WSL terminal, and run ./ghost-docker there."
         ;;
 esac
 

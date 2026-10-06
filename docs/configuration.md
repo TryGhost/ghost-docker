@@ -254,8 +254,7 @@ mapping. The check is skipped when the image has not been pulled yet.
 ## Prerequisites
 
 The host needs **Docker Engine 25.0+** with the **Compose v2.24+** plugin, and
-a shell to start the launcher: `bash` on Linux and macOS, PowerShell on
-Windows. Nothing else. The manager image carries its own Node runtime, Docker
+`bash` to start the launcher (on Windows, inside WSL2). Nothing else. The manager image carries its own Node runtime, Docker
 client and tools, so the host needs no `jq`, `curl`, `git` or Node.
 
 `git` is needed only to work from a clone of this repository instead of a

@@ -56,35 +56,3 @@ jobs:
         run: |
           /bin/bash --version | head -1
           tests/e2e/launcher.sh
-
-  # Windows runners cannot run Linux containers, so this checks the
-  # PowerShell launcher against a stand-in docker only: its refusals, and the
-  # exact `docker run` it builds. It does not show that a manager started this
-  # way works on Windows; ghost-docker.ps1 says so at its top.
-  launcher-windows:
-    name: PowerShell launcher on Windows
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Windows PowerShell 5.1
-        shell: powershell
-        run: |
-          $PSVersionTable.PSVersion.ToString()
-          & .\tests\e2e\launcher.ps1
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - name: PowerShell 7
-        shell: pwsh
-        run: |
-          $PSVersionTable.PSVersion.ToString()
-          & ./tests/e2e/launcher.ps1
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - name: The .cmd shim reaches the launcher
-        shell: cmd
-        run: |
-          ghost-docker.cmd --dir 2>&1 | findstr /C:"--dir needs a path" || (
-            echo the shim did not reach ghost-docker.ps1
-            exit /b 1
-          )

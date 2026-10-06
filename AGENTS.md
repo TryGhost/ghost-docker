@@ -6,8 +6,8 @@ file: there is no separate `CLAUDE.md`.
 ## What this branch is
 
 `next-docker` rebuilds the self-hosted Ghost Docker setup around a **manager
-image**: a TypeScript CLI in a container, started by a launcher (`ghost-docker`,
-`ghost-docker.ps1`) that needs only Docker on the host. The plan, with the
+image**: a TypeScript CLI in a container, started by a launcher (`ghost-docker`)
+that needs only Docker and bash on the host. The plan, with the
 architecture, the contracts and the step breakdown, is
 [docs/ghost-cli-replacement.md](docs/ghost-cli-replacement.md). **Read the
 step you are implementing and the §2 contracts it names before writing code.**
@@ -30,11 +30,9 @@ tooling. The launchers and the manager image exist; the only commands are
 documents is the planned interface, exits 3 naming its step, and the plan says
 which step delivers it.
 
-- `ghost-docker` (bash), `ghost-docker.ps1` (PowerShell) and `ghost-docker.cmd`
-  (a two-line shim to the PowerShell one) are the only host code. They check
-  Docker, choose the image, and `docker run` it. **The two launchers implement
-  one contract (plan §2.10); change them together**, and add no logic to them
-  that the manager could hold.
+- `ghost-docker` (bash) is the only host code. It checks Docker, chooses the
+  image, and `docker run`s it (plan §2.10). Add no logic to it that the
+  manager could hold. Windows is WSL2 only; there is no native launcher.
 - `manager/` is the CLI: TypeScript run directly by Node (types stripped, no
   build step, so `erasableSyntaxOnly`), with npm dependencies. `src/cli.ts` is
   the dispatcher, `src/commands/` the commands, `src/context.ts` the `GD_*`
@@ -80,8 +78,7 @@ which step delivers it.
   membership.
 - Options for steps that have not landed exit `3` and name the step; usage
   errors exit `2`.
-- The two launchers implement one contract. Logic that could live in the
-  manager does.
+- The launcher holds no logic that could live in the manager.
 
 ## Tests
 
@@ -94,11 +91,7 @@ passes ShellCheck.
 cd manager && npm ci
 npm run format:check && npm run lint && npm run typecheck && npm test
 tests/e2e/launcher.sh         # stand-in docker, then the real image
-pwsh tests/e2e/launcher.ps1   # stand-in docker only
 ```
-
-The PowerShell launcher is verified against a stand-in `docker` only. Nothing
-has run a real manager on native Windows; do not write as if it had.
 
 ## Common commands
 

@@ -165,9 +165,6 @@ function identityCheck(context: Context, io: Io): Check {
     const uid = io.uid();
     const gid = io.gid();
     const label = 'identity';
-    if (context.caller === null) {
-        return { status: 'ok', label, detail: `uid ${uid}; the host platform has no uid to match` };
-    }
     if (context.rootless) {
         return uid === 0
             ? {
@@ -233,9 +230,7 @@ function writeProbe(dir: string, keep: boolean): { check: Check; token: string |
  * a sibling container with the site directory mounted by the path the manager
  * was given, and read back the file the manager just wrote. It fails when the
  * daemon cannot start containers, when the path means another directory to the
- * daemon, and when the file is not where the daemon looks. On native Windows
- * it is the one check that exercises the daemon connection, the ownership
- * model and the path translation together (plan §2.10).
+ * daemon, and when the file is not where the daemon looks (plan §2.10).
  */
 async function bindMountCheck(context: Context, io: Io, token: string): Promise<Check> {
     const label = 'bind mounts';

@@ -11,15 +11,7 @@ Configuration to run Ghost and its services with Docker Compose.
 ## The launcher
 
 ```sh
-./ghost-docker doctor     # Linux, macOS, WSL2
-```
-
-```powershell
-.\ghost-docker.ps1 doctor   # Windows PowerShell; experimental, see below
-```
-
-```bat
-ghost-docker doctor        :: Windows cmd.exe, through ghost-docker.cmd
+./ghost-docker doctor     # Linux, macOS, and Windows through WSL2
 ```
 
 `doctor` reports what ghost-docker can see: Docker and Compose versions, the
@@ -32,15 +24,15 @@ builds that image from the clone; anywhere else it uses the published one,
 `ghcr.io/tryghost/ghost-docker`. The site directory is the current directory,
 or `--dir PATH`.
 
-On Windows the launcher is experimental: how the site directory's path has to
-be presented to Docker Desktop has not been verified, so nothing that starts
-services should be relied on there yet.
+On Windows, run the launcher inside WSL2: install Docker Desktop with the
+WSL2 backend, open a WSL terminal, and use `./ghost-docker` there as on
+Linux. There is no native Windows launcher.
 
 ## What is here
 
 | Path | What it is |
 | --- | --- |
-| [`ghost-docker`](ghost-docker), [`ghost-docker.ps1`](ghost-docker.ps1), [`ghost-docker.cmd`](ghost-docker.cmd) | The launchers: the only code that runs on the host |
+| [`ghost-docker`](ghost-docker) | The launcher: the only code that runs on the host |
 | [`manager/`](manager) | The CLI, and the image it runs in |
 | [`compose.yml`](compose.yml) | The stack: Ghost, MySQL, Caddy, and optional analytics and ActivityPub services |
 | [`caddy/`](caddy) | The tracked Caddyfile and snippets, and where generated and operator routes go |
@@ -70,8 +62,8 @@ that does not exist yet.
 
 ## Requirements
 
-Docker Engine 25.0+ with the Compose v2.24+ plugin, and bash or PowerShell to
-start the launcher. Nothing else on the host.
+Docker Engine 25.0+ with the Compose v2.24+ plugin, and bash to start the
+launcher. Nothing else on the host. Windows is supported through WSL2.
 
 ## Developing
 
@@ -79,8 +71,7 @@ start the launcher. Nothing else on the host.
 cd manager && npm ci
 npm run format:check && npm run lint && npm run typecheck && npm test
 
-tests/e2e/launcher.sh        # the bash launcher and the real image
-pwsh tests/e2e/launcher.ps1  # the PowerShell launcher, against a stand-in docker
+tests/e2e/launcher.sh        # the launcher against a stand-in docker, then the real image
 ```
 
 ## IPv6 networking

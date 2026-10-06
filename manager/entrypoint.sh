@@ -10,7 +10,8 @@
 # The cases in which there is nothing to drop (plan §2.10):
 #   - the container was started with --user: it is already someone else
 #   - rootless Docker: root in here already is the caller on the host
-#   - no identity was given: the host has no uid to match (Windows)
+#   - no identity was given: nothing to drop to, and the manager then refuses
+#     to run without one
 #   - the caller is root
 set -eu
 

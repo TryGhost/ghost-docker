@@ -17,12 +17,12 @@ const launcherEnvironment = z.object({
     // this same path, because the daemon resolves Compose bind mounts on the
     // host: a site mounted anywhere else would bind a different directory.
     GD_SITE_DIR: z.string().startsWith('/'),
-    // Who ran the launcher. Absent on platforms with no uid (Windows).
-    GD_UID: numeric.optional(),
-    GD_GID: numeric.optional(),
+    // Who ran the launcher.
+    GD_UID: numeric,
+    GD_GID: numeric,
     // Rootless Docker: uid 0 in the container already is the caller.
     GD_ROOTLESS: z.enum(['0', '1']).default('0'),
-    // `uname -s` on the host, or `Windows`.
+    // `uname -s` on the host.
     GD_HOST_OS: z.string().min(1).default('unknown'),
     // The image this manager was started from, as the launcher referred to it.
     GD_IMAGE: z.string().min(1).optional(),
@@ -32,7 +32,7 @@ const launcherEnvironment = z.object({
 
 export interface Context {
     siteDir: string;
-    caller: { uid: number; gid: number } | null;
+    caller: { uid: number; gid: number };
     rootless: boolean;
     hostOs: string;
     image: string | null;
@@ -52,10 +52,7 @@ export function loadContext(env: NodeJS.ProcessEnv): Context {
     const value = parsed.data;
     return {
         siteDir: value.GD_SITE_DIR,
-        caller:
-            value.GD_UID !== undefined && value.GD_GID !== undefined
-                ? { uid: value.GD_UID, gid: value.GD_GID }
-                : null,
+        caller: { uid: value.GD_UID, gid: value.GD_GID },
         rootless: value.GD_ROOTLESS === '1',
         hostOs: value.GD_HOST_OS,
         image: value.GD_IMAGE ?? null,

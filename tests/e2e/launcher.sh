@@ -136,9 +136,8 @@ printf '#!/bin/sh\necho MINGW64_NT-10.0-22631\n' >"$GITBASH/uname"
 chmod +x "$GITBASH/uname"
 run env PATH="$GITBASH:$FAKE:$PATH" FAKE_DOCKER=ok "$BASH_BIN" "$LAUNCHER" version
 expect_status 1
-expect_output 'ghost-docker\.ps1'
 expect_output 'WSL2'
-ok "Git Bash is pointed at the PowerShell launcher and WSL2"
+ok "Git Bash is pointed at WSL2"
 
 step "The site directory"
 with_fake ok "$BASH_BIN" "$LAUNCHER" --dir "$WORK/no-such-directory" version
