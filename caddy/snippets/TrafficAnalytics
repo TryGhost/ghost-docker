@@ -1,6 +1,11 @@
-# Proxy analytics requests with any prefix (e.g. /.ghost/analytics/ or /blog/.ghost/analytics/)
+# Traffic Analytics.
+#
+# args[0] — analytics upstream, for example traffic-analytics-<project>:3000.
+#
+# Proxy analytics requests with any prefix (e.g. /.ghost/analytics/ or
+# /blog/.ghost/analytics/).
 @analytics_paths path_regexp analytics_match ^(.*)/\.ghost/analytics(.*)$
 handle @analytics_paths {
 	rewrite * {re.analytics_match.2}
-	reverse_proxy traffic-analytics:3000
+	reverse_proxy {args[0]}
 }
