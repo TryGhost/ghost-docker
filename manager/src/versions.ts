@@ -1,5 +1,6 @@
 // Version comparison, and the manager's own version.
 import { readFileSync } from 'node:fs';
+import { coerce, gte } from 'semver';
 import { z } from 'zod';
 
 /** Declared minimums. Verified in CI against this exact minimum and a current release. */
@@ -11,26 +12,13 @@ export const MINIMUM = {
 } as const;
 
 /**
- * -1, 0 or 1 for `a` against `b`, comparing dot separated numeric components.
- * A leading `v` and anything after the numbers (`-beta.1`, `+ce`, `-desktop.1`)
- * are ignored, which is what a minimum-version check needs. Not a semver
- * comparator: release ordering has its own rules (plan §2.10).
+ * Is `version` at least `minimum`? Versions are coerced first: a leading `v`
+ * and anything after the numbers (`-beta.1`, `+ce`, `-desktop.1`) are
+ * dropped, which is what a minimum-version check needs. Release ordering for
+ * the stack itself has its own rules (plan §2.10) and is not this.
  */
-export function compareVersions(a: string, b: string): -1 | 0 | 1 {
-    const parts = (version: string) =>
-        (version.replace(/^v/, '').match(/^\d+(\.\d+)*/)?.[0] ?? '0').split('.').map(Number);
-    const left = parts(a);
-    const right = parts(b);
-    for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
-        const difference = (left[index] ?? 0) - (right[index] ?? 0);
-        if (difference !== 0) {
-            return difference < 0 ? -1 : 1;
-        }
-    }
-    return 0;
-}
-
-export const atLeast = (version: string, minimum: string) => compareVersions(version, minimum) >= 0;
+export const atLeast = (version: string, minimum: string): boolean =>
+    gte(coerce(version) ?? '0.0.0', minimum);
 
 const versionFile = z.object({ version: z.string().min(1), commit: z.string().default('') });
 
