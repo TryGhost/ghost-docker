@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { loadContext, type Context } from '../context.ts';
 import { composeVersion } from '../compose.ts';
-import { daemonInfo, runOnce } from '../docker/client.ts';
+import { daemonInfo, runOnce, type DaemonResult } from '../docker/client.ts';
 import { buildCommand } from '@stricli/core';
 import type { ManagerContext } from '../context-stricli.ts';
 import { EXIT } from '../errors.ts';
@@ -70,112 +70,204 @@ export async function doctor({ json, keepProbe }: DoctorFlags, io: Io): Promise<
 
 const STATUS_LABEL = { ok: 'ok      ', warn: 'warning ', error: 'ERROR   ' } as const;
 
+/** What the checks read. Gathered once, so each check is a function of these. */
+interface Facts {
+    readonly context: Context;
+    readonly io: Io;
+    readonly cwd: string;
+    readonly daemon: DaemonResult;
+    readonly compose: string | null;
+    readonly keepProbe: boolean;
+}
+
+/** One check: its report, several, or nothing when it does not apply. */
+type CheckFn = (facts: Facts) => Check | Check[] | null | Promise<Check | Check[] | null>;
+
+/** About the manager and the daemon, in the order they print. */
+const HOST_CHECKS: readonly CheckFn[] = [
+    manager,
+    dockerDaemon,
+    dockerEngine,
+    platform,
+    rootless,
+    dockerCompose,
+];
+
+/** About the site directory; only meaningful once `siteDirectory` has passed. */
+const SITE_CHECKS: readonly CheckFn[] = [identity, probeAndBindMounts, projectDir];
+
 export async function collect(context: Context, io: Io, keepProbe = false): Promise<Check[]> {
-    const checks: Check[] = [];
-    const add = (status: Check['status'], label: string, detail: string) =>
-        checks.push({ status, label, detail });
+    const facts: Facts = {
+        context,
+        io,
+        keepProbe,
+        cwd: io.cwd(),
+        daemon: await daemonInfo(io.docker),
+        compose: await composeVersion(io.exec),
+    };
+    const checks = await runChecks(HOST_CHECKS, facts);
 
-    const version = managerVersion();
-    add(
-        'ok',
-        'manager',
-        `${version.version}${version.commit ? ` (${version.commit.slice(0, 7)})` : ''}, ` +
-            (context.source === 'checkout' ? 'built from a checkout' : 'from a published image'),
-    );
-
-    // --- The daemon ----------------------------------------------------------
-
-    const daemon = await daemonInfo(io.docker);
-    if (!daemon.ok) {
-        add(
-            'error',
-            'docker daemon',
-            `${daemon.reason}. The launcher mounts the Docker socket; check that Docker is running.`,
-        );
-    } else {
-        const { info } = daemon;
-        add(
-            atLeast(info.serverVersion, MINIMUM.dockerEngine) ? 'ok' : 'error',
-            'docker engine',
-            atLeast(info.serverVersion, MINIMUM.dockerEngine)
-                ? info.serverVersion
-                : `${info.serverVersion} is older than the required ${MINIMUM.dockerEngine}`,
-        );
-
-        const supported =
-            info.osType === 'linux' && SUPPORTED_ARCHITECTURES.includes(info.architecture);
-        add(
-            supported ? 'ok' : 'error',
-            'platform',
-            supported
-                ? `${info.operatingSystem || info.osType} (${info.osType}/${info.architecture}), host ${context.hostOs}` +
-                      (info.rootless ? ', rootless' : '')
-                : `${info.osType}/${info.architecture} has no published images for the services this stack runs`,
-        );
-
-        if (info.rootless !== context.rootless) {
-            add(
-                'error',
-                'rootless',
-                `the daemon says rootless is ${info.rootless}, the launcher said ${context.rootless}. ` +
-                    'File ownership in the site directory would be wrong; please report this.',
-            );
-        }
-    }
-
-    const compose = await composeVersion(io.exec);
-    if (compose === null) {
-        add('error', 'docker compose', 'the Compose client in this image did not run');
-    } else {
-        add(
-            atLeast(compose, MINIMUM.compose) ? 'ok' : 'error',
-            'docker compose',
-            atLeast(compose, MINIMUM.compose)
-                ? `${compose} (the manager's own client)`
-                : `${compose} is older than the required ${MINIMUM.compose}`,
-        );
-    }
-
-    // --- The site directory --------------------------------------------------
-
-    const cwd = io.cwd();
-    if (cwd !== context.siteDir) {
-        // Compose bind mounts are resolved by the daemon against host paths. If
-        // the site is not mounted at its own host path, every bind mount would
-        // silently refer to a different directory on the host.
-        add(
-            'error',
-            'site directory',
-            `working in ${cwd}, but the launcher gave the site directory as ${context.siteDir}. ` +
-                'They must be the same path.',
-        );
+    const site = siteDirectory(facts);
+    checks.push(site);
+    if (site.status === 'error') {
+        // Everything below is about the directory; reported for the wrong one
+        // it would be noise.
         return checks;
     }
-    add('ok', 'site directory', cwd);
+    checks.push(...(await runChecks(SITE_CHECKS, facts)));
+    return checks;
+}
 
-    checks.push(identityCheck(context, io));
+async function runChecks(list: readonly CheckFn[], facts: Facts): Promise<Check[]> {
+    const checks: Check[] = [];
+    for (const check of list) {
+        const result = await check(facts);
+        if (Array.isArray(result)) {
+            checks.push(...result);
+        } else if (result !== null) {
+            checks.push(result);
+        }
+    }
+    return checks;
+}
 
+// --- The manager and the daemon --------------------------------------------
+
+function manager({ context }: Facts): Check {
+    const version = managerVersion();
+    return {
+        status: 'ok',
+        label: 'manager',
+        detail:
+            `${version.version}${version.commit ? ` (${version.commit.slice(0, 7)})` : ''}, ` +
+            (context.source === 'checkout' ? 'built from a checkout' : 'from a published image'),
+    };
+}
+
+function dockerDaemon({ daemon }: Facts): Check | null {
+    if (daemon.ok) {
+        return null;
+    }
+    return {
+        status: 'error',
+        label: 'docker daemon',
+        detail: `${daemon.reason}. The launcher mounts the Docker socket; check that Docker is running.`,
+    };
+}
+
+function dockerEngine({ daemon }: Facts): Check | null {
+    if (!daemon.ok) {
+        return null;
+    }
+    const version = daemon.info.serverVersion;
+    const recent = atLeast(version, MINIMUM.dockerEngine);
+    return {
+        status: recent ? 'ok' : 'error',
+        label: 'docker engine',
+        detail: recent ? version : `${version} is older than the required ${MINIMUM.dockerEngine}`,
+    };
+}
+
+function platform({ daemon, context }: Facts): Check | null {
+    if (!daemon.ok) {
+        return null;
+    }
+    const { info } = daemon;
+    const supported =
+        info.osType === 'linux' && SUPPORTED_ARCHITECTURES.includes(info.architecture);
+    return {
+        status: supported ? 'ok' : 'error',
+        label: 'platform',
+        detail: supported
+            ? `${info.operatingSystem || info.osType} (${info.osType}/${info.architecture}), host ${context.hostOs}` +
+              (info.rootless ? ', rootless' : '')
+            : `${info.osType}/${info.architecture} has no published images for the services this stack runs`,
+    };
+}
+
+/** The launcher and the daemon must agree, or the entrypoint dropped to the wrong identity. */
+function rootless({ daemon, context }: Facts): Check | null {
+    if (!daemon.ok || daemon.info.rootless === context.rootless) {
+        return null;
+    }
+    return {
+        status: 'error',
+        label: 'rootless',
+        detail:
+            `the daemon says rootless is ${daemon.info.rootless}, the launcher said ${context.rootless}. ` +
+            'File ownership in the site directory would be wrong; please report this.',
+    };
+}
+
+function dockerCompose({ compose }: Facts): Check {
+    const label = 'docker compose';
+    if (compose === null) {
+        return { status: 'error', label, detail: 'the Compose client in this image did not run' };
+    }
+    const recent = atLeast(compose, MINIMUM.compose);
+    return {
+        status: recent ? 'ok' : 'error',
+        label,
+        detail: recent
+            ? `${compose} (the manager's own client)`
+            : `${compose} is older than the required ${MINIMUM.compose}`,
+    };
+}
+
+// --- The site directory ------------------------------------------------------
+
+/**
+ * Compose bind mounts are resolved by the daemon against host paths. If the
+ * site is not mounted at its own host path, every bind mount would silently
+ * refer to a different directory on the host.
+ */
+function siteDirectory({ cwd, context }: Facts): Check {
+    const label = 'site directory';
+    if (cwd === context.siteDir) {
+        return { status: 'ok', label, detail: cwd };
+    }
+    return {
+        status: 'error',
+        label,
+        detail:
+            `working in ${cwd}, but the launcher gave the site directory as ${context.siteDir}. ` +
+            'They must be the same path.',
+    };
+}
+
+function identity({ context, io }: Facts): Check {
+    return identityCheck(context, io);
+}
+
+/** The probe file is written for the bind-mount check and removed after it, unless kept. */
+async function probeAndBindMounts({ cwd, keepProbe, context, io }: Facts): Promise<Check[]> {
     const probe = writeProbe(cwd, keepProbe);
-    checks.push(probe.check);
-    if (probe.token !== null) {
-        checks.push(await bindMountCheck(context, io, probe.token));
+    if (probe.token === null) {
+        return [probe.check];
+    }
+    try {
+        return [probe.check, await bindMountCheck(context, io, probe.token)];
+    } finally {
         if (!keepProbe) {
             rmSync(join(cwd, PROBE_FILE), { force: true });
         }
     }
+}
 
-    const projectDir = declaredProjectDir(cwd);
-    if (projectDir !== null) {
-        add(
-            projectDir === cwd ? 'ok' : 'error',
-            'PROJECT_DIR',
-            projectDir === cwd
-                ? 'matches the site directory'
-                : `.env says ${projectDir}, but the site is at ${cwd}. If the site was moved, update PROJECT_DIR.`,
-        );
+function projectDir({ cwd }: Facts): Check | null {
+    const declared = declaredProjectDir(cwd);
+    if (declared === null) {
+        return null;
     }
-
-    return checks;
+    const label = 'PROJECT_DIR';
+    if (declared === cwd) {
+        return { status: 'ok', label, detail: 'matches the site directory' };
+    }
+    return {
+        status: 'error',
+        label,
+        detail: `.env says ${declared}, but the site is at ${cwd}. If the site was moved, update PROJECT_DIR.`,
+    };
 }
 
 /** Is the manager running as the launcher's caller? */
