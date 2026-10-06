@@ -702,27 +702,59 @@ do not infer support from linger alone.
 
 **Reaching a site in order to verify it.** `127.0.0.1` inside the manager is the
 manager, not the host, so the first implementation's probes of host loopback
-cannot be ported as they were. Verification has two parts, reported separately,
-and neither is described as more than it is:
+cannot be ported as they were. Verification has three parts, reported
+separately, and none is described as more than it is:
 
 - **Routing, over the site's own network.** A probe attached to the site's
   Compose network requests Ghost at its unique alias
-  (`ghost-${COMPOSE_PROJECT_NAME}:2368`) and, in production, Caddy on 80 and
-  443 with the site's `Host` header and SNI, accepting Caddy's internal
-  certificate. This shows that the services answer and that the generated
-  routes send each domain where it should go. It says nothing about the host.
-- **Published ports, from the host's network namespace.** A short-lived
-  container of the manager image, started with `--network host`, requests
-  `127.0.0.1` on the published ports: Ghost's loopback port, and Caddy's HTTP
-  and HTTPS ports with `Host` and SNI preserved. On Linux that namespace is the
-  host's, and this is the request an operator's own `curl` would make. On
-  Docker Desktop and OrbStack it is the VM's: it shows the daemon has published
-  the port, not that the desktop application forwards it to the host, and the
-  output says which was shown.
+  (`ghost-${COMPOSE_PROJECT_NAME}:2368`). In production it also requests Caddy
+  on port 80 with the site's `Host` header and expects the redirect to HTTPS
+  that Caddy issues only for a name it serves, and it asks Caddy's admin API
+  (`docker compose exec caddy`, `127.0.0.1:2019/config/`) whether each domain
+  is in the running configuration, as `caddy_verify` did on `next`. This shows
+  that the services answer and that the generated routes send each domain where
+  it should go. It says nothing about the host, and it does not need a
+  certificate.
+- **Published ports, from the host's network namespace, where that namespace
+  can be entered.** On a Linux host with Docker Engine, a short-lived container
+  of the manager image started with `--network host` requests `127.0.0.1` on
+  the published ports: Ghost's loopback port, and Caddy's HTTP port with `Host`
+  preserved. That is the request an operator's own `curl` would make.
+  Everywhere else the daemon is in a VM, or in a user namespace:
+  - *Docker Desktop:* `--network host` enters the VM's namespace unless the
+    host-networking option of Desktop 4.34 or later is enabled, and nothing in
+    `docker info` says whether it is. Both outcomes look like success.
+  - *OrbStack:* host networking is native, but it is one more platform to be
+    shown rather than assumed.
+  - *Rootless Docker:* the namespace entered is the daemon's, not the host's.
 
-A production site before its DNS points at the host passes both: routing is
-correct and the ports are published. That its certificate is not yet publicly
-trusted is a warning, as before.
+  On those platforms the manager does not start the sibling. It reports the
+  ports the daemon says it published (`docker compose ps --format json`), and
+  the output says that they were not verified from the host. The installer
+  still prints the URL; opening it is the verification. No probe is attempted
+  whose result cannot be told apart from the result it is meant to rule out.
+- **HTTPS, as an issuance state, not a probe result.** Caddy obtains a public
+  certificate for a public domain name in the background, retrying with
+  backoff for up to thirty days; it does not substitute its internal CA when
+  issuance fails, and until a certificate exists the TLS handshake for that
+  name fails whatever trust the client ignores. So before DNS points at the
+  host there is no certificate, and no probe can show more. The routing probe
+  attempts the handshake with the site's SNI and reports one of three states:
+  *serving* (a certificate exists, with its issuer and whether it is publicly
+  trusted), *pending* (no certificate yet; the message names the domain, says
+  that Caddy obtains one once the domain's DNS reaches this host, and that
+  `./ghost-docker check` reports the change), or *failing* (Caddy's log shows
+  issuance errors for the name, which are quoted). *Pending* is not a failure
+  of installation. Temporary internal TLS before DNS is deliberately not
+  offered: it would be a second TLS state to transition out of, and the HSTS
+  header Caddy sends would pin the browser to a certificate about to change.
+  Operators who want internal TLS for a private name put `tls internal` in
+  `caddy/custom/`, as today.
+
+A production site before its DNS points at the host therefore passes routing,
+has its ports either verified or reported as published, and shows HTTPS as
+pending. That is the expected state of a fresh production installation, and the
+output says so in those words.
 
 Keep nginx/apache running until cutover; a server may proxy other applications,
 so replacing its whole service requires an explicit operator choice. Installation
@@ -973,10 +1005,10 @@ language:
 - Use Compose `up --wait --wait-timeout` with the existing health checks and
   one-shot dependency conditions, and keep a separate ingress check: the wait
   establishes readiness, not reachability.
-- HTTP and HTTPS probes use deadlines, bypass proxy configuration, preserve
-  Host/SNI, and distinguish routing checks from public certificate trust. A
-  production install before DNS/certificate readiness reports that as a
-  warning.
+- HTTP and HTTPS probes use deadlines, bypass proxy configuration and preserve
+  Host/SNI. Routing, published ports and HTTPS issuance are the three separate
+  results of "Reaching a site in order to verify it" (§2.8); a production
+  install before DNS reports HTTPS as pending, not as a failure.
 
 ## 3. Implementation steps
 
@@ -1139,8 +1171,10 @@ conflict as an error naming the port, after which the directory is as it was
 and the same command succeeds on a free port, an existing proxy on 80/443 left
 running, two local sites side by side, `--no-start` starting nothing, and
 local ingress verified on the loopback port, and production ingress verified
-by both parts of "Reaching a site in order to verify it" (§2.8) before DNS and
-a public certificate exist, with HTTPS trust reported as a warning. A site
+by "Reaching a site in order to verify it" (§2.8) before DNS and a public
+certificate exist: routing passes, the published ports are verified from the
+host on Linux and reported as unverified on macOS, and HTTPS is reported as
+pending. A site
 installed into an empty directory from the published image alone, with no
 checkout, starts with `--with activitypub`, and its `analytics` helper images
 build from the payload written there. The dotenv encoder passes the round trip through real containers for
