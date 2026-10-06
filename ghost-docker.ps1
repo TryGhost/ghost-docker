@@ -69,7 +69,10 @@ function Invoke-Native([scriptblock]$Command) {
 # be killed.
 function Invoke-Docker([string[]]$Arguments, [int]$Seconds) {
     $info = New-Object System.Diagnostics.ProcessStartInfo
-    $info.FileName = 'docker'
+    # Resolved the way `& docker` below resolves it, through PowerShell and
+    # PATHEXT. Process.Start on a bare name searches PATH for an .exe only,
+    # and could pick a different docker than the one the final command runs.
+    $info.FileName = (Get-Command docker -CommandType Application | Select-Object -First 1).Source
     # Every argument used with this function is free of spaces and quotes.
     $info.Arguments = $Arguments -join ' '
     $info.RedirectStandardOutput = $true
