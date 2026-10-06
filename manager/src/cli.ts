@@ -3,9 +3,9 @@
 // `run` is the whole CLI as a function: arguments and an Io in, an exit status
 // out. main.ts is the only caller that touches the real process.
 import { doctor } from './commands/doctor.ts';
-import { loadContext } from './context.ts';
 import { CliError, EXIT, UnimplementedError, UsageError } from './errors.ts';
 import type { Io } from './io.ts';
+import { parseOptions } from './options.ts';
 import { managerVersion } from './versions.ts';
 
 const USAGE = `Usage: ghost-docker <command> [options]
@@ -73,9 +73,7 @@ async function dispatch(argv: readonly string[], io: Io): Promise<number> {
     }
 
     if (command === 'version' || command === '--version') {
-        if (args.length > 0) {
-            throw new UsageError(`version takes no options: ${args.join(' ')}`);
-        }
+        parseOptions('version', args, {});
         const { version, commit } = managerVersion();
         io.stdout(`ghost-docker ${version}${commit ? ` (${commit.slice(0, 7)})` : ''}\n`);
         return EXIT.ok;
@@ -87,7 +85,7 @@ async function dispatch(argv: readonly string[], io: Io): Promise<number> {
     }
 
     if (command === 'doctor') {
-        return doctor(args, loadContext(io.env), io);
+        return doctor(args, io);
     }
 
     throw new UsageError(`unknown command: ${command}`);

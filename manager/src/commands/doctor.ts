@@ -6,11 +6,12 @@
 import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
-import type { Context } from '../context.ts';
+import { loadContext, type Context } from '../context.ts';
 import { composeVersion } from '../compose.ts';
 import { daemonInfo, runOnce } from '../docker/client.ts';
-import { EXIT, UsageError } from '../errors.ts';
+import { EXIT } from '../errors.ts';
 import type { Io } from '../io.ts';
+import { parseOptions } from '../options.ts';
 import { atLeast, managerVersion, MINIMUM } from '../versions.ts';
 
 export interface Check {
@@ -24,18 +25,14 @@ export const PROBE_FILE = '.ghost-docker-probe';
 
 const SUPPORTED_ARCHITECTURES = ['x86_64', 'amd64', 'aarch64', 'arm64'];
 
-export async function doctor(args: readonly string[], context: Context, io: Io): Promise<number> {
-    let json = false;
-    let keepProbe = false;
-    for (const arg of args) {
-        if (arg === '--json') {
-            json = true;
-        } else if (arg === '--keep-probe') {
-            keepProbe = true;
-        } else {
-            throw new UsageError(`unknown option for doctor: ${arg}`);
-        }
-    }
+export async function doctor(args: readonly string[], io: Io): Promise<number> {
+    // Options first, so a mistyped option is reported as one even when the
+    // manager was not started by the launcher.
+    const { json = false, 'keep-probe': keepProbe = false } = parseOptions('doctor', args, {
+        json: { type: 'boolean' },
+        'keep-probe': { type: 'boolean' },
+    });
+    const context = loadContext(io.env);
 
     const checks = await collect(context, io, keepProbe);
 
