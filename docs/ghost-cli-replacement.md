@@ -640,7 +640,8 @@ change.
 ### 2.8 The launcher and its commands
 
 ```text
-ghost-docker install [--local | --domain example.com [--admin-domain admin.example.com]]
+ghost-docker install [--local | --domain example.com [--admin-domain admin.example.com]
+                                [--email ops@example.com]]
                      [--dir PATH] [--port 2368] [--version 6.3.1]
                      [--channel stable|beta] [--ref vX.Y.Z]
                      [--with analytics,activitypub,supervisor]
@@ -1169,6 +1170,15 @@ validation, atomic installation, reload and verification; `.ghost-docker.json`;
 readiness and ingress verification; never stopping or reconfiguring anything
 already running. In image mode `install` writes the managed files of §2.7 and a
 pinned launcher into the site directory; in clone mode it writes neither.
+
+New in this step, not on `next`: `--email`, the ACME account email. Caddy
+needs none to issue, but Let's Encrypt sends expiry and incident notices to
+it, and it is the question people expect at setup. Production installs prompt
+for it when a terminal exists, blank meaning none; it is stored as
+`ACME_EMAIL` in `.env` and rendered into the generated site file as `tls
+{$ACME_EMAIL}` only when set, so it lives with the site that uses it and
+`caddy/global/` stays operator owned. `config set ACME_EMAIL` followed by
+`caddy apply` changes it later.
 
 Reference: `install.sh`, `scripts/lib/{env,config,compose,caddy,meta,preflight,install}.sh`,
 `docs/install.md`, and `tests/{env,env-compose,config,caddy,compose-matrix,ingress,install,install-e2e,meta}.test.mjs`
