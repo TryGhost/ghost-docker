@@ -36,11 +36,11 @@ dependencies and the contracts in §2 before implementing it.
 | Initial audience | Local and single-site production installations; most servers run one site. Theme developers and migration-tool authors moving local Ghost-CLI sites come first. |
 | Site model | One directory = one site. One `compose.yml`, with `local` and `production` modes selected through `COMPOSE_PROFILES`. |
 | Where tooling runs | In a **manager image** published from this repository: a TypeScript CLI with its own dependencies, a Docker client and Compose. The host runs only a **launcher** that checks Docker and starts the image. See §2.10. |
-| Host requirements | Docker Engine 25.0+ with the Compose v2.24+ plugin, and a shell for the launcher: bash on Linux and macOS, PowerShell on Windows. No `jq`, `curl`, `git` or Node on the host. `git` only when working from a clone. |
+| Host requirements | Docker Engine 25.0+ with the Compose v2.24+ plugin, and bash for the launcher. No `jq`, `curl`, `git` or Node on the host. `git` only when working from a clone. |
 | Distribution | The manager image carries `compose.yml`, the Caddy configuration and the CLI, and writes them into the site directory. A tagged release is an image tag. A git clone of this repository also works: the launcher builds the image from the checkout and uses the files in place. See §2.7. |
 | Docker socket | The manager is given the Docker socket for every command, including install. That is host-privileged, and it is accepted: whoever runs the launcher already has that access. |
 | File ownership | Everything the manager writes into the site directory is owned by the user who ran the launcher. The entrypoint starts as root to read the socket's group, then drops to the caller's uid and gid. See §2.10. |
-| Windows | Through WSL2, which is Linux. Natively, through a PowerShell launcher, as an experiment: the daemon connection, file ownership and bind-mount paths are all unverified there, and §2.10 says what qualifies them. |
+| Windows | Through WSL2 only, which is Linux: Docker Desktop's WSL2 backend puts `docker` and its socket inside the distro, and the launcher runs there unchanged. No native launcher; §2.10 records the design to use if one is ever wanted. |
 | Versions | Resolve and persist an exact Ghost image version on installation. Ghost upgrades and stack updates are separate operations. Record resolved image digests for recovery. |
 | Installation | Scriptable `install`, with a flag for every prompt. Local mode uses MySQL too. |
 | Migration | Ghost-CLI exports a bundle (`ghost migrate-export`, Ghost-CLI 1.33.0+); the manager imports it. Three kinds: `mysql-dump` (MySQL sources), `mysql-data` (default for local SQLite sources: data-only MySQL inserts loaded into a schema Ghost creates), and `portable` (explicit SQLite fallback through the Admin API, with documented losses). `--migrate` runs the export and the import in one command. The legacy `scripts/migrate.sh` stays on `main`, where it works, and is not carried onto this branch, whose layout it does not understand; it disappears from `main` when this branch merges, which S12 allows only after production import (S5e) has passed its fidelity and recovery tests. |
@@ -207,8 +207,8 @@ Before publishing the minimum Docker/Compose versions, run the mode matrix again
 that exact minimum and a current version. The installed Compose v5.1.2 accepted
 interpolated restart `no` and network `external=true`; that is not verification of
 older versions. Include `start_interval` and any env-file features in compatibility
-checks. The launchers are the only host code: keep the bash one free of GNU-only
-behaviour and the PowerShell one to what Windows PowerShell 5.1 provides.
+checks. The launcher is the only host code: keep it free of GNU-only behaviour
+and runnable by bash 3.2.
 
 ### 2.2 Environment values, metadata, and permissions
 
@@ -585,10 +585,9 @@ Rules:
   the directory is never left as new payload with old configuration, and says
   which manager image belongs to it.
 - **The launcher is served** from the `gh-pages` branch with the custom domain
-  `docker.ghost.org`: `https://docker.ghost.org/install.sh` and
-  `https://docker.ghost.org/install.ps1`. They are the repository's own
-  `ghost-docker` and `ghost-docker.ps1`, published by a workflow on release and
-  never by hand. Test the served files rather than the checkout's copies.
+  `docker.ghost.org`: `https://docker.ghost.org/install.sh`. It is the
+  repository's own `ghost-docker`, published by a workflow on release and
+  never by hand. Test the served file rather than the checkout's copy.
 
 `./ghost-docker update [--check] [--channel stable|beta] [--to vX.Y.Z]` updates
 the stack, not Ghost. Preserve the exact Ghost pin; if a stack release requires a
@@ -640,7 +639,8 @@ change.
 ### 2.8 The launcher and its commands
 
 ```text
-ghost-docker install [--local | --domain example.com [--admin-domain admin.example.com]]
+ghost-docker install [--local | --domain example.com [--admin-domain admin.example.com]
+                                [--email ops@example.com]]
                      [--dir PATH] [--port 2368] [--version 6.3.1]
                      [--channel stable|beta] [--ref vX.Y.Z]
                      [--with analytics,activitypub,supervisor]
@@ -657,9 +657,7 @@ First use is the served launcher:
 curl -fsSL https://docker.ghost.org/install.sh | bash -s -- install --domain example.com
 ```
 
-```powershell
-& ([scriptblock]::Create((irm https://docker.ghost.org/install.ps1))) install --local
-```
+On Windows that command runs in a WSL2 terminal.
 
 Installation writes a copy of the launcher into the site directory, pinned to
 the image digest that installed it. Every later command is `./ghost-docker ...`
@@ -873,9 +871,8 @@ if shared Caddy/MySQL infra is enabled.
 Two layers. The boundary is set by one question: does this have to work before
 an image can run?
 
-**The launcher.** `ghost-docker` (bash) and `ghost-docker.ps1` (PowerShell), the
-only code that runs on the host. Keep each to a few hundred lines and to exactly
-these jobs:
+**The launcher.** `ghost-docker` (bash), the only code that runs on the host.
+Keep it to a few hundred lines and to exactly these jobs:
 
 - Check that Docker is installed, the daemon answers, and Compose is present, and
   say what to do when they are not.
@@ -888,12 +885,14 @@ these jobs:
   and not in the image.
 - Pass the manager's exit status through unchanged.
 
-The two launchers implement one contract and must not drift. Anything that could
-be a manager command is one; the launcher gains no logic that the manager could
-hold.
+Anything that could be a manager command is one; the launcher gains no logic
+that the manager could hold.
 
 **The manager image.** A TypeScript CLI on a pinned Node image, with its npm
 dependencies, a Docker client and the Compose plugin, and the stack's files.
+The manager speaks to the daemon over the Engine API on the mounted socket,
+with each endpoint it uses typed by a zod schema; it does not parse the
+`docker` CLI's output. Compose has no API and is run as a program.
 One image, several commands; the upgrade supervisor (§2.6) is one of them, not a
 second image. Every operation that reads or changes a site lives here: install,
 configuration, Caddy rendering, import, diagnosis, update, backup and restore,
@@ -904,7 +903,7 @@ repository, and requires that it "follows §2.5 rather than inventing a second
 upgrade/recovery algorithm". One implementation in that image, used by every
 command, is the only arrangement in which that holds. It also removes the host
 as a variable: no bash 3.2 compatibility, no GNU-versus-BSD utilities, no list
-of required host tools, and the same code path on Linux, macOS and Windows.
+of required host tools, and the same code path on Linux, macOS and WSL2.
 
 Contract for every manager invocation:
 
@@ -946,37 +945,40 @@ Contract for every manager invocation:
   `COMPOSE_FILE`. `docker compose config` is how configuration is resolved; do
   not reimplement Compose interpolation.
 
-**Native Windows is three unverified assumptions, and they stand or fall
-together.** On Linux and macOS the contract above is ordinary practice. On
-Windows each part of it needs something that has not been shown to work:
+**Windows is WSL2.** Docker Desktop's recommended backend on Windows is WSL2,
+and its WSL integration puts `docker` and the daemon socket inside the distro,
+so the launcher runs there exactly as on Linux: a Unix socket to mount, a uid
+and gid to pass, and a site directory that can be mounted at its own path.
+Nothing above is special-cased for it. A migration from a Ghost-CLI install on
+native Windows still works, in two steps: `ghost migrate-export` in the
+Windows shell, then `install --import` from WSL2 with the bundle under
+`/mnt/c/`. Only `--migrate`, which runs Ghost-CLI itself, does not cross that
+boundary, and the documentation says so.
 
-1. *The daemon connection.* The Windows Docker client talks to a named pipe,
-   which is not a Unix socket and cannot be mounted into a Linux container.
-   The launcher instead mounts the daemon's own socket inside the Docker
-   Desktop VM (`//var/run/docker.sock`).
-2. *Ownership.* There is no uid or gid to pass. The manager runs as the
-   image's default user, and what it writes has to be readable, writable and
-   removable by the Windows user who ran the launcher.
-3. *Nested bind paths.* `C:\Users\me\site` cannot be an identical Linux mount
-   point. The launcher mounts it at the path the daemon uses for that
-   directory (by default `/run/desktop/mnt/host/c/Users/me/site`) and gives the
-   manager that path, so that the bind mounts Compose asks the daemon for
-   resolve to the same directory.
+A native Windows launcher was built during N2 and removed before it merged.
+It had to assume three things nobody had verified: that the Docker Desktop
+VM's socket can stand in for the Windows named pipe, that files written by the
+image's default user are usable from Windows, and that `C:\Users\me\site`
+is `/run/desktop/mnt/host/c/Users/me/site` to the daemon. Every Windows
+PowerShell 5.1 difference cost a CI round trip against a stand-in Docker that
+could prove none of it. If native Windows is ever wanted, the design is not a
+translating launcher. The manager can `docker inspect` its own container and
+read the daemon-side `Source` of the site mount, so the launcher shrinks to a
+few lines of `.cmd` with `-v "%CD%:/site"` and the manager learns the daemon's
+path at runtime, verified rather than assumed. What that still needs working
+out is how Compose, running inside the manager, reads the site's files at
+that daemon-side path: a symlink inside the manager, if Compose does not
+resolve it away. That is the open question recorded in Linear, and it is not
+on the path to any milestone.
 
-Running `version`, or a `doctor` that only inspects the manager's own view,
-does not qualify any of this: all three can be wrong while those succeed.
-Qualification is one path exercised end to end, which `doctor` performs on
-every platform: the manager writes a file into the site directory, then asks
-the daemon to start a **sibling container that bind-mounts the site directory
-by the path the manager was given** and reads the file back. That fails if the
-daemon cannot be reached, if the manager's path means a different directory to
-the daemon, or if the file is not where the daemon looks. On Windows the file
-must additionally be readable and removable from the Windows side afterwards.
-
-Native Windows stays experimental, and is described as such wherever it is
-mentioned, until that check has passed on a real Docker Desktop installation
-and a site has been started there. CI cannot show it: hosted Windows runners
-do not run Linux containers.
+**Qualifying a platform** is one path exercised end to end, which `doctor`
+performs everywhere: the manager writes a file into the site directory, then
+asks the daemon to start a **sibling container that bind-mounts the site
+directory by the path the manager was given** and reads the file back. That
+fails if the daemon cannot be reached, if the manager's path means a different
+directory to the daemon, or if the file is not where the daemon looks.
+`version`, or a `doctor` that only inspects the manager's own view, qualifies
+nothing: all of it can be wrong while those succeed.
 
 What this does **not** solve, and should not be claimed to: Compose's dotenv
 interpolation. Anything writing `.env` still encodes a literal `$` as `$$`
@@ -1129,14 +1131,17 @@ Repo: ghost-docker. Deps: N1. The skeleton every later step fills in. Implement
   build context that the image does not contain.
 - The entrypoint implements the identity rules of §2.10, including the rootless
   case.
-- `ghost-docker` (bash) and `ghost-docker.ps1` (PowerShell), implementing the
-  launcher contract of §2.10: Docker checks with actionable messages, image
-  selection (pinned digest, channel/ref, or build from checkout), the `docker
-  run` invocation, terminal attachment when piped, exit-status passthrough.
+- `ghost-docker` (bash), implementing the launcher contract of §2.10: Docker
+  checks with actionable messages, image selection (pinned digest, channel/ref,
+  or build from checkout), the `docker run` invocation, terminal attachment
+  when piped, exit-status passthrough.
 - A workflow that builds the image for `linux/amd64` and `linux/arm64` and
   publishes `edge` on pushes to `next-docker` and the version tag on release
-  tags, and CI that builds the image and runs the tests on Linux, plus the bash
-  launcher on macOS and the PowerShell launcher on Windows.
+  tags, and CI that builds the image and runs the tests on Linux, plus the
+  launcher on macOS.
+
+A PowerShell launcher for native Windows was built in this step and removed
+before merging; §2.10 says why and what to do instead if one is wanted.
 
 Acceptance: from a clone, `./ghost-docker version` and `./ghost-docker doctor`
 build the image and run on Linux and macOS; a file the manager writes into the
@@ -1145,9 +1150,6 @@ launcher's refusals (no Docker, daemon down, no Compose) are tested without a
 daemon; the manager's exit status and a usage error reach the caller unchanged;
 the published `edge` image runs the same commands without a checkout. `doctor`
 includes the sibling-container check of §2.10 and passes on Linux and macOS.
-The PowerShell launcher's own behaviour is tested on a Windows runner against a
-stand-in `docker`; the pull request states that this does not qualify native
-Windows, and what would.
 
 ### N3 — install, config, caddy, check
 
@@ -1164,6 +1166,14 @@ validation, atomic installation, reload and verification; `.ghost-docker.json`;
 readiness and ingress verification; never stopping or reconfiguring anything
 already running. In image mode `install` writes the managed files of §2.7 and a
 pinned launcher into the site directory; in clone mode it writes neither.
+
+New in this step, not on `next`: `--email`, the ACME account email. Caddy
+needs none to issue, but Let's Encrypt sends expiry and incident notices to
+it. It is a flag only, never a prompt: omitted means none. It is stored as
+`ACME_EMAIL` in `.env` and rendered into the generated site file as `tls
+{$ACME_EMAIL}` only when set, so it lives with the site that uses it and
+`caddy/global/` stays operator owned. `config set ACME_EMAIL` followed by
+`caddy apply` changes it later.
 
 Reference: `install.sh`, `scripts/lib/{env,config,compose,caddy,meta,preflight,install}.sh`,
 `docs/install.md`, and `tests/{env,env-compose,config,caddy,compose-matrix,ingress,install,install-e2e,meta}.test.mjs`
@@ -1386,7 +1396,7 @@ legacy environment-based installs, older imports, restart, and restore still wor
 
 Repo: ghost-docker, with cross-repo fixtures. Deps: M2 (S4, S5, S6) at minimum; qualify
 S13, S7-S10 and S11 when they have shipped. Gates the first stable tag and merging
-`next-docker` into `main`. Include the launchers on Linux, macOS and Windows.
+`next-docker` into `main`. Include the launcher on Linux, macOS and WSL2.
 Consolidate CI and qualify the actual minimum supported tools and image versions.
 Run fresh local/production install, optional-service variants, CLI migration,
 legacy stack update, Ghost upgrade/recovery, supervisor/Admin, and restore scenarios.

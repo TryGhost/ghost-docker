@@ -6,8 +6,8 @@ file: there is no separate `CLAUDE.md`.
 ## What this branch is
 
 `next-docker` rebuilds the self-hosted Ghost Docker setup around a **manager
-image**: a TypeScript CLI in a container, started by a launcher (`ghost-docker`,
-`ghost-docker.ps1`) that needs only Docker on the host. The plan, with the
+image**: a TypeScript CLI in a container, started by a launcher (`ghost-docker`)
+that needs only Docker and bash on the host. The plan, with the
 architecture, the contracts and the step breakdown, is
 [docs/ghost-cli-replacement.md](docs/ghost-cli-replacement.md). **Read the
 step you are implementing and the §2 contracts it names before writing code.**
@@ -24,9 +24,32 @@ Branches:
 
 ## Current state
 
-Step N1 only: the stack's files and the contracts. There is **no tooling** on
-this branch yet. `./ghost-docker ...` commands in the documents are the planned
-interface; the plan says which step delivers each.
+Steps N1 and N2: the stack's files and contracts, and the skeleton of the
+tooling. The launchers and the manager image exist; the only commands are
+`version`, `doctor` and `help`. Every other `./ghost-docker ...` command in the
+documents is the planned interface, exits 3 naming its step, and the plan says
+which step delivers it.
+
+- `ghost-docker` (bash) is the only host code. It checks Docker, chooses the
+  image, and `docker run`s it (plan §2.10). Add no logic to it that the
+  manager could hold. Windows is WSL2 only; there is no native launcher.
+- `manager/` is the CLI: TypeScript run directly by Node (types stripped, no
+  build step, so `erasableSyntaxOnly`), with dependencies installed by pnpm
+  (version pinned in `package.json`; `npm i -g corepack && corepack enable`
+  provides it). Commands, flags, help text and argument errors are
+  [stricli](https://bloomberg.github.io/stricli): `src/cli.ts` builds the
+  application and maps its exit codes to ours, `src/commands/` holds one
+  `buildCommand` per command, `src/context.ts` the `GD_*` environment the
+  launcher passes, `src/io.ts` the seam tests substitute. Programs are run
+  with execa, the daemon is spoken to directly (below).
+- The manager talks to the daemon over the **Engine API** on the mounted
+  socket (`src/docker/`: undici transport, zod-typed endpoints, a `runOnce`
+  for one-shot containers). It does not shell out to the `docker` CLI; the
+  CLI is in the image for Compose only, which has no API (`src/compose.ts`).
+- `manager/entrypoint.sh` drops from root to the caller's uid and gid, keeping
+  the Docker socket's group. It does not drop under rootless Docker.
+- `manager/Dockerfile` builds from the repository root and also carries the
+  stack's files under `/opt/ghost-docker/stack`.
 
 - `compose.yml` — Ghost, MySQL, Caddy, optional analytics and ActivityPub.
   Site mode is `local` or `production`, selected in `COMPOSE_PROFILES`;
@@ -64,14 +87,20 @@ interface; the plan says which step delivers each.
   membership.
 - Options for steps that have not landed exit `3` and name the step; usage
   errors exit `2`.
-- The two launchers implement one contract. Logic that could live in the
-  manager does.
+- The launcher holds no logic that could live in the manager.
 
 ## Tests
 
-Unit tests for the CLI are TypeScript. End-to-end scenarios that only run the
-real commands and check outcomes are shell scripts in `tests/e2e/`. Shell code
+Unit tests for the CLI are TypeScript, in `manager/test/`, run by Node's own
+test runner against a fake `Io`. End-to-end scenarios that only run the real
+commands and check outcomes are shell scripts in `tests/e2e/`. Shell code
 passes ShellCheck.
+
+```bash
+cd manager && pnpm install
+pnpm run format:check && pnpm run lint && pnpm run typecheck && pnpm test
+tests/e2e/launcher.sh         # stand-in docker, then the real image
+```
 
 ## Common commands
 

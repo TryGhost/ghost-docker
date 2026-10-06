@@ -1,0 +1,70 @@
+name: "Manager image"
+
+# Publishes ghcr.io/tryghost/ghost-docker.
+#
+#   push to next-docker   ->  :edge       the development image, not a release
+#   tag vX.Y.Z[-beta.N]   ->  :<tag>      a release, immutable
+#
+# The moving `stable` and `beta` tags that resolve a channel to a release are
+# added with the release flow (plan step S6a).
+on:
+  push:
+    branches:
+      - next-docker
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: manager-image-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Build for amd64 and arm64, and publish
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          if [[ $GITHUB_REF == refs/tags/* ]]; then
+            tag=$GITHUB_REF_NAME
+            version=$GITHUB_REF_NAME
+          else
+            tag=edge
+            version="edge-${GITHUB_SHA::7}"
+          fi
+
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          # arm64 is built under emulation.
+          docker run --privileged --rm tonistiigi/binfmt --install arm64 >/dev/null
+          docker buildx create --use >/dev/null
+
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --file manager/Dockerfile \
+            --build-arg "GD_VERSION=$version" \
+            --build-arg "GD_COMMIT=$GITHUB_SHA" \
+            --tag "$image:$tag" \
+            --metadata-file "$RUNNER_TEMP/image.json" \
+            --push .
+
+          digest=$(jq -r '.["containerimage.digest"]' "$RUNNER_TEMP/image.json")
+          printf 'Published `%s:%s`\n\n`%s@%s`\n' "$image" "$tag" "$image" "$digest" >>"$GITHUB_STEP_SUMMARY"
+
+      - name: The published image runs
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          tag=$([[ $GITHUB_REF == refs/tags/* ]] && printf '%s' "$GITHUB_REF_NAME" || printf 'edge')
+          site=$(mktemp -d)
+          GD_IMAGE="$image:$tag" ./ghost-docker --dir "$site" version
+          GD_IMAGE="$image:$tag" ./ghost-docker --dir "$site" doctor

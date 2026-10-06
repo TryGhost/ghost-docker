@@ -80,11 +80,13 @@ Put your own server blocks in `caddy/custom/*.caddy`. They are imported after
 the generated routes, validated together with them, and never rewritten. Ghost
 is reachable on the Compose network as `ghost-$COMPOSE_PROJECT_NAME:2368`.
 
-Global options — an ACME account email, a DNS provider, or Caddy's internal CA
-for a staging host — go in `caddy/global/*.caddy`:
+The ACME account email is a site setting: `./ghost-docker install --email`
+or `config set ACME_EMAIL`, rendered into the site file as `tls <email>` when
+set. Other global options — a DNS provider, or Caddy's internal CA for a
+staging host — go in `caddy/global/*.caddy`:
 
 ```caddyfile
-email ops@example.com
+acme_dns cloudflare {env.CLOUDFLARE_API_TOKEN}
 ```
 
 ## Optional services

@@ -1,0 +1,207 @@
+#!/usr/bin/env bash
+# ghost-docker: start the ghost-docker manager.
+#
+#   ghost-docker [--dir PATH] <command> [options]
+#   ghost-docker help
+#
+# Everything ghost-docker does happens in a container, the manager image. This
+# script is the only part that runs on the host, and it does three things:
+# check that Docker can be used, decide which image to run, and run it with the
+# site directory, the Docker socket and your identity. The manager's exit
+# status is this script's exit status.
+#
+#   --dir PATH   The site directory. Default: the current directory.
+#
+# Which image runs, first match wins:
+#
+#   GD_IMAGE           an image you name
+#   a pinned image     written into a site's own copy of this script at install
+#   a checkout         this script next to manager/Dockerfile builds from it
+#   GD_CHANNEL         a published channel (default: edge)
+#
+# Requires bash and Docker with the Compose plugin. Nothing else. On Windows,
+# run it inside WSL2. The contract this implements is
+# docs/ghost-cli-replacement.md §2.10.
+set -euo pipefail
+
+readonly GD_REGISTRY_IMAGE="ghcr.io/tryghost/ghost-docker"
+# Replaced with `repository@sha256:...` in the copy installed into a site.
+readonly GD_PINNED_IMAGE=""
+# How long Docker may take to answer before it is treated as not running. A
+# daemon that has wedged stops answering rather than returning an error.
+GD_DOCKER_TIMEOUT=${GD_DOCKER_TIMEOUT:-20}
+
+die() {
+    printf 'error: %s\n' "$1" >&2
+    exit "${2:-1}"
+}
+
+# with_deadline SECONDS COMMAND...
+# 124 when the command had to be killed. `timeout(1)` is not on macOS.
+with_deadline() {
+    local seconds=$1 pid waited=0
+    shift
+    "$@" &
+    pid=$!
+    while kill -0 "$pid" 2>/dev/null; do
+        if ((waited >= seconds)); then
+            kill -9 "$pid" 2>/dev/null
+            wait "$pid" 2>/dev/null
+            return 124
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    wait "$pid"
+}
+
+# --- Options that belong to the launcher ------------------------------------
+
+site_dir=""
+declare -a args=()
+while (($#)); do
+    case $1 in
+        --dir)
+            [[ ${2:-} ]] || die "--dir needs a path" 2
+            site_dir=$2
+            shift
+            ;;
+        --dir=*) site_dir=${1#*=} ;;
+        *) args+=("$1") ;;
+    esac
+    shift
+done
+
+# --- Can Docker be used? ----------------------------------------------------
+#
+# These are the only checks that cannot run in the manager, because without
+# them there is no manager. Each says what to do next.
+
+host_os=$(uname -s 2>/dev/null || printf 'unknown')
+case $host_os in
+    MINGW* | MSYS* | CYGWIN*)
+        die "this shell ($host_os) cannot run ghost-docker.
+  On Windows, run it inside WSL2: install Docker Desktop with the WSL2 backend,
+  open a WSL terminal, and run ./ghost-docker there."
+        ;;
+esac
+
+command -v docker >/dev/null 2>&1 ||
+    die "Docker is not installed, or is not on the PATH.
+  Install Docker Engine (Linux) or Docker Desktop: https://docs.docker.com/get-docker/"
+
+# Access is established by asking the daemon, never from group membership:
+# neither rootless Docker nor a remote DOCKER_HOST involves the docker group.
+rc=0
+security=$(with_deadline "$GD_DOCKER_TIMEOUT" docker info --format '{{.SecurityOptions}}' 2>/dev/null </dev/null) || rc=$?
+if ((rc == 124)); then
+    die "the Docker daemon did not answer within ${GD_DOCKER_TIMEOUT} seconds.
+  It may be starting, or stuck. Wait for it to report running, or restart it."
+elif ((rc != 0)); then
+    die "the Docker daemon is not reachable.
+  Start Docker and try again. If it is running, this user may not be allowed to use it:
+  check \`docker info\`."
+fi
+
+with_deadline "$GD_DOCKER_TIMEOUT" docker compose version >/dev/null 2>&1 </dev/null ||
+    die "the Docker Compose plugin is not installed.
+  ghost-docker sites are run with \`docker compose\`. See https://docs.docker.com/compose/install/"
+
+rootless=0
+case $security in *rootless*) rootless=1 ;; esac
+
+# --- The site directory -----------------------------------------------------
+
+[[ -n $site_dir ]] || site_dir=$PWD
+[[ -d $site_dir ]] || die "$site_dir is not a directory. Create it, or name another with --dir." 2
+# The daemon resolves Compose bind mounts against host paths, so the manager
+# must see the site at exactly the path the host does: resolved, and mounted
+# at itself.
+site_dir=$(CDPATH='' cd -- "$site_dir" && pwd -P)
+case $site_dir in
+    *:*) die "the site directory's path contains a colon, which Docker cannot mount: $site_dir" 2 ;;
+esac
+
+# --- The Docker socket ------------------------------------------------------
+
+# On Docker Desktop and OrbStack the daemon is in a VM, and the socket to
+# mount is the one inside it, at the default path, whatever the host-side
+# path of the context's socket is. On Linux it is the socket the client uses.
+socket=/var/run/docker.sock
+if [[ $host_os == Linux ]]; then
+    endpoint=${DOCKER_HOST:-$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null || printf '')}
+    case $endpoint in
+        unix://*) socket=${endpoint#unix://} ;;
+        '') ;;
+        *)
+            die "Docker is configured to use a remote daemon ($endpoint).
+  ghost-docker mounts the site directory into its manager, and a remote daemon
+  would look for that directory on the other machine. Use a local daemon."
+            ;;
+    esac
+    [[ -S $socket ]] || die "the Docker socket was not found at $socket."
+fi
+
+# --- Which image ------------------------------------------------------------
+
+# Empty when this script is being read from a pipe (`curl ... | bash`): there is
+# no file, so there is no checkout to find beside it.
+script_dir=""
+if [[ -n ${BASH_SOURCE[0]:-} && -f ${BASH_SOURCE[0]} ]]; then
+    script_dir=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+fi
+source_kind=image
+if [[ -n ${GD_IMAGE:-} ]]; then
+    image=$GD_IMAGE
+elif [[ -n $GD_PINNED_IMAGE ]]; then
+    image=$GD_PINNED_IMAGE
+elif [[ -n $script_dir && -f $script_dir/manager/Dockerfile && -f $script_dir/compose.yml ]]; then
+    # A checkout of the repository: build the manager from it. Docker's build
+    # cache makes this quick when nothing has changed.
+    source_kind=checkout
+    image=ghost-docker:checkout
+    commit=$(git -C "$script_dir" rev-parse HEAD 2>/dev/null || printf '')
+    # Also tagged with its commit, so the image that belongs to an earlier
+    # checkout is still here if an update has to go back to it.
+    declare -a tags=(--tag "$image")
+    [[ -z $commit ]] || tags+=(--tag "ghost-docker:checkout-${commit:0:12}")
+    if ! build_output=$(docker build --quiet \
+        --file "$script_dir/manager/Dockerfile" \
+        --build-arg "GD_VERSION=checkout" --build-arg "GD_COMMIT=$commit" \
+        "${tags[@]}" "$script_dir" 2>&1); then
+        printf '%s\n' "$build_output" >&2
+        die "the manager image could not be built from $script_dir."
+    fi
+else
+    image="$GD_REGISTRY_IMAGE:${GD_CHANNEL:-edge}"
+fi
+
+# --- Run it -----------------------------------------------------------------
+
+declare -a run=(
+    docker run --rm --init
+    --volume "$socket:/var/run/docker.sock"
+    --volume "$site_dir:$site_dir"
+    --workdir "$site_dir"
+    --env "GD_SITE_DIR=$site_dir"
+    --env "GD_UID=$(id -u)"
+    --env "GD_GID=$(id -g)"
+    --env "GD_ROOTLESS=$rootless"
+    --env "GD_HOST_OS=$host_os"
+    --env "GD_IMAGE=$image"
+    --env "GD_SOURCE=$source_kind"
+)
+[[ -z ${NO_COLOR:-} ]] || run+=(--env "NO_COLOR=$NO_COLOR")
+[[ -z ${TERM:-} ]] || run+=(--env "TERM=$TERM")
+
+# A terminal is attached when there is one, including when this script was
+# piped from curl and stdin is therefore the script itself.
+if [[ -t 0 && -t 1 ]]; then
+    run+=(--interactive --tty)
+    exec "${run[@]}" "$image" ${args[@]+"${args[@]}"}
+elif [[ -t 1 ]] && (exec </dev/tty) 2>/dev/null; then
+    run+=(--interactive --tty)
+    exec "${run[@]}" "$image" ${args[@]+"${args[@]}"} </dev/tty
+else
+    exec "${run[@]}" "$image" ${args[@]+"${args[@]}"} </dev/null
+fi

@@ -4,14 +4,36 @@ Configuration to run Ghost and its services with Docker Compose.
 
 > **This is the `next-docker` development branch.** It is being rebuilt around
 > a manager image: a small CLI in a container, started by a launcher that needs
-> only Docker. The stack's configuration and contracts are here; the tooling is
-> not yet. See [the plan](docs/ghost-cli-replacement.md) for what lands when.
-> For a working setup today, use the `main` branch.
+> only Docker. The launcher and image exist and can report on a host; they
+> cannot install a site yet. See [the plan](docs/ghost-cli-replacement.md) for
+> what lands when. For a working setup today, use the `main` branch.
+
+## The launcher
+
+```sh
+./ghost-docker doctor     # Linux, macOS, and Windows through WSL2
+```
+
+`doctor` reports what ghost-docker can see: Docker and Compose versions, the
+platform, the site directory, and who will own the files written there.
+`version` and `help` are the only other commands so far; the rest answer that
+they are not implemented yet and name the plan step that delivers them.
+
+Everything runs in a container. From a clone of this repository the launcher
+builds that image from the clone; anywhere else it uses the published one,
+`ghcr.io/tryghost/ghost-docker`. The site directory is the current directory,
+or `--dir PATH`.
+
+On Windows, run the launcher inside WSL2: install Docker Desktop with the
+WSL2 backend, open a WSL terminal, and use `./ghost-docker` there as on
+Linux. There is no native Windows launcher.
 
 ## What is here
 
 | Path | What it is |
 | --- | --- |
+| [`ghost-docker`](ghost-docker) | The launcher: the only code that runs on the host |
+| [`manager/`](manager) | The CLI, and the image it runs in |
 | [`compose.yml`](compose.yml) | The stack: Ghost, MySQL, Caddy, and optional analytics and ActivityPub services |
 | [`caddy/`](caddy) | The tracked Caddyfile and snippets, and where generated and operator routes go |
 | [`.env.example`](.env.example), [`ghost.env.example`](ghost.env.example) | Operator settings and Ghost application settings, deliberately separate |
@@ -40,7 +62,17 @@ that does not exist yet.
 
 ## Requirements
 
-Docker Engine 25.0+ with the Compose v2.24+ plugin.
+Docker Engine 25.0+ with the Compose v2.24+ plugin, and bash to start the
+launcher. Nothing else on the host. Windows is supported through WSL2.
+
+## Developing
+
+```sh
+cd manager && pnpm install     # pnpm via corepack: npm i -g corepack && corepack enable
+pnpm run format:check && pnpm run lint && pnpm run typecheck && pnpm test
+
+tests/e2e/launcher.sh        # the launcher against a stand-in docker, then the real image
+```
 
 ## IPv6 networking
 
