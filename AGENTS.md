@@ -39,6 +39,10 @@ which step delivers it.
   provides it). `src/cli.ts` is
   the dispatcher, `src/commands/` the commands, `src/context.ts` the `GD_*`
   environment the launcher passes, `src/io.ts` the seam tests substitute.
+- The manager talks to the daemon over the **Engine API** on the mounted
+  socket (`src/docker/`: undici transport, zod-typed endpoints, a `runOnce`
+  for one-shot containers). It does not shell out to the `docker` CLI; the
+  CLI is in the image for Compose only, which has no API (`src/compose.ts`).
 - `manager/entrypoint.sh` drops from root to the caller's uid and gid, keeping
   the Docker socket's group. It does not drop under rootless Docker.
 - `manager/Dockerfile` builds from the repository root and also carries the

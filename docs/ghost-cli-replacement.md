@@ -890,6 +890,9 @@ that the manager could hold.
 
 **The manager image.** A TypeScript CLI on a pinned Node image, with its npm
 dependencies, a Docker client and the Compose plugin, and the stack's files.
+The manager speaks to the daemon over the Engine API on the mounted socket,
+with each endpoint it uses typed by a zod schema; it does not parse the
+`docker` CLI's output. Compose has no API and is run as a program.
 One image, several commands; the upgrade supervisor (§2.6) is one of them, not a
 second image. Every operation that reads or changes a site lives here: install,
 configuration, Caddy rendering, import, diagnosis, update, backup and restore,

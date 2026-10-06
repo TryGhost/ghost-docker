@@ -1,8 +1,16 @@
-// A fake Io: captured output, a scripted `docker`, a temporary site directory.
+// A fake Io: captured output, a scripted daemon and `docker compose`, a
+// temporary site directory.
 import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { run } from '../src/cli.ts';
+import { frame } from '../src/docker/client.ts';
+import {
+    DaemonTimeout,
+    DaemonUnreachable,
+    type DockerRequest,
+    type DockerResponse,
+} from '../src/docker/transport.ts';
 import type { Io } from '../src/io.ts';
 import type { ExecResult } from '../src/process.ts';
 
@@ -23,6 +31,9 @@ export interface Harness {
     gid: number;
     cwd: string;
     daemon: Daemon;
+    /** Every request made to the daemon. */
+    requests: DockerRequest[];
+    /** Every program run, with its arguments. */
     calls: string[][];
     run: (...argv: string[]) => Promise<{ code: number; stdout: string; stderr: string }>;
     cleanup: () => void;
@@ -50,6 +61,7 @@ export function harness(): Harness {
         gid,
         cwd: dir,
         daemon: { info: HEALTHY, compose: '2.40.3' },
+        requests: [],
         calls: [],
         env: {
             GD_SITE_DIR: dir,
@@ -75,6 +87,10 @@ export function harness(): Harness {
                 cwd: () => state.cwd,
                 uid: () => state.uid,
                 gid: () => state.gid,
+                docker: async (request) => {
+                    state.requests.push(request);
+                    return daemon(state, request);
+                },
                 exec: async (command, args) => {
                     state.calls.push([command, ...args]);
                     if (command !== 'docker') {
@@ -84,49 +100,6 @@ export function harness(): Harness {
                             stderr: `spawn ${command} ENOENT`,
                             timedOut: false,
                         };
-                    }
-                    if (args[0] === 'info') {
-                        const info = state.daemon.info ?? HEALTHY;
-                        if ('hang' in info) {
-                            return { status: null, stdout: '', stderr: '', timedOut: true };
-                        }
-                        if ('fail' in info) {
-                            return {
-                                status: 1,
-                                stdout: '',
-                                stderr: String(info.fail),
-                                timedOut: false,
-                            };
-                        }
-                        return ok(JSON.stringify(info));
-                    }
-                    if (args[0] === 'run') {
-                        // A sibling container reading the probe file: the daemon really does
-                        // read the directory, unless the test says it resolves the path elsewhere.
-                        const mount = args[args.indexOf('--volume') + 1] ?? '';
-                        const file = args.at(-1) ?? '';
-                        const mode = state.daemon.sibling ?? 'sees';
-                        if (mode === 'hangs') {
-                            return { status: null, stdout: '', stderr: '', timedOut: true };
-                        }
-                        if (mode === 'cannot-run') {
-                            return {
-                                status: 125,
-                                stdout: '',
-                                stderr: 'docker: Error response from daemon: mounts denied',
-                                timedOut: false,
-                            };
-                        }
-                        if (mode === 'other-directory') {
-                            return {
-                                status: 1,
-                                stdout: '',
-                                stderr: `cat: can't open '${file}': No such file or directory`,
-                                timedOut: false,
-                            };
-                        }
-                        const hostDir = mount.split(':')[0] ?? '';
-                        return ok(readFileSync(join(hostDir, file.split('/').pop() ?? ''), 'utf8'));
                     }
                     if (args[0] === 'compose' && args[1] === 'version') {
                         return state.daemon.compose
@@ -153,4 +126,68 @@ export function harness(): Harness {
         },
     };
     return state;
+}
+
+const json = (status: number, body: unknown): DockerResponse => ({
+    status,
+    body: Buffer.from(JSON.stringify(body)),
+});
+const empty: DockerResponse = { status: 204, body: Buffer.alloc(0) };
+
+/** The one container the fake daemon ever runs: the sibling reading the probe file. */
+let sibling: { binds: string[]; cmd: string[] } | null = null;
+
+function daemon(state: Harness, request: DockerRequest): Promise<DockerResponse> {
+    const { method, path } = request;
+    if (method === 'GET' && path === '/info') {
+        const info = state.daemon.info ?? HEALTHY;
+        if ('hang' in info) {
+            throw new DaemonTimeout(request.timeoutMs ?? 30_000);
+        }
+        if ('fail' in info) {
+            throw new DaemonUnreachable(String(info.fail));
+        }
+        return Promise.resolve(json(200, info));
+    }
+    const mode = state.daemon.sibling ?? 'sees';
+    if (method === 'POST' && path === '/containers/create') {
+        if (mode === 'cannot-run') {
+            return Promise.resolve(json(400, { message: 'mounts denied' }));
+        }
+        const body = request.body as { Cmd: string[]; HostConfig: { Binds: string[] } };
+        sibling = { binds: body.HostConfig.Binds, cmd: body.Cmd };
+        return Promise.resolve(json(201, { Id: 'sibling' }));
+    }
+    if (method === 'POST' && path === '/containers/sibling/start') {
+        return Promise.resolve(empty);
+    }
+    if (method === 'POST' && path === '/containers/sibling/wait') {
+        if (mode === 'hangs') {
+            throw new DaemonTimeout(request.timeoutMs ?? 30_000);
+        }
+        return Promise.resolve(json(200, { StatusCode: mode === 'other-directory' ? 1 : 0 }));
+    }
+    if (method === 'POST' && path === '/containers/sibling/kill') {
+        return Promise.resolve(empty);
+    }
+    if (method === 'GET' && path === '/containers/sibling/logs') {
+        // The daemon really does read the directory, unless the test says it
+        // resolves the path elsewhere.
+        const file = sibling?.cmd.at(-1) ?? '';
+        if (mode === 'other-directory') {
+            return Promise.resolve({
+                status: 200,
+                body: frame(2, `cat: can't open '${file}': No such file or directory\n`),
+            });
+        }
+        const hostDir = sibling?.binds[0]?.split(':')[0] ?? '';
+        return Promise.resolve({
+            status: 200,
+            body: frame(1, readFileSync(join(hostDir, file.split('/').pop() ?? ''), 'utf8')),
+        });
+    }
+    if (method === 'DELETE' && path === '/containers/sibling') {
+        return Promise.resolve(empty);
+    }
+    return Promise.resolve(json(404, { message: `unexpected: ${method} ${path}` }));
 }

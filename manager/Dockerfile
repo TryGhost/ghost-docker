@@ -27,8 +27,8 @@ FROM node:26-alpine@sha256:0b36e8c136b94cd4fcf02188228e76c31ad5872eef3fec8cbd2ee
 # added, which su-exec cannot do for a uid that has no passwd entry.
 RUN apk add --no-cache setpriv
 
-# The manager runs Compose itself, with its own client, against the host's
-# daemon through the mounted socket.
+# The manager talks to the daemon over the Engine API on the mounted socket;
+# the CLI is here for Compose, which has no API and is run as a program.
 COPY --from=docker /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=docker /usr/local/libexec/docker/cli-plugins/docker-compose \
     /usr/local/libexec/docker/cli-plugins/docker-compose

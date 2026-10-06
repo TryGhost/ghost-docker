@@ -54,12 +54,14 @@ describe('a healthy host', () => {
 describe('the daemon', () => {
     test('one that cannot be reached is an error carrying its own message', async () => {
         h.daemon.info = {
-            fail: 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock.\nmore',
+            fail: 'nothing is listening on the Docker socket at /var/run/docker.sock',
         };
         const result = await h.run('doctor');
         assert.equal(result.code, 1);
-        assert.match(result.stderr, /ERROR +docker daemon +Cannot connect to the Docker daemon/);
-        assert.doesNotMatch(result.stderr, /more/);
+        assert.match(
+            result.stderr,
+            /ERROR +docker daemon +nothing is listening on the Docker socket/,
+        );
     });
 
     test('one that does not answer is reported as that, not as absent', async () => {
@@ -149,11 +151,22 @@ describe('the site directory', () => {
 describe('bind mounts', () => {
     test('a sibling container is started with the site directory at the manager\u2019s own path, read-only', async () => {
         assert.equal((await check('bind mounts'))!.status, 'ok');
-        const call = h.calls.find((argv) => argv[1] === 'run')!;
-        assert.ok(call.includes(`${h.dir}:/ghost-docker-probe:ro`), call.join(' '));
-        assert.equal(call.at(-1), `/ghost-docker-probe/${PROBE_FILE}`);
-        assert.equal(call.at(-2), 'ghost-docker:checkout');
-        assert.ok(call.includes('none'), 'the sibling was given a network');
+        const create = h.requests.find((request) => request.path === '/containers/create')!;
+        const body = create.body as {
+            Image: string;
+            Cmd: string[];
+            HostConfig: { Binds: string[]; NetworkMode: string };
+        };
+        assert.deepEqual(body.HostConfig.Binds, [`${h.dir}:/ghost-docker-probe:ro`]);
+        assert.deepEqual(body.Cmd, [`/ghost-docker-probe/${PROBE_FILE}`]);
+        assert.equal(body.Image, 'ghost-docker:checkout');
+        assert.equal(body.HostConfig.NetworkMode, 'none');
+        assert.ok(
+            h.requests.some(
+                (request) => request.method === 'DELETE' && request.path === '/containers/sibling',
+            ),
+            'the sibling was removed',
+        );
     });
 
     test('a daemon that resolves the path to another directory is an error that says what it means', async () => {

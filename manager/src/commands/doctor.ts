@@ -7,7 +7,8 @@ import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import type { Context } from '../context.ts';
-import { composeVersion, daemonInfo } from '../docker.ts';
+import { composeVersion } from '../compose.ts';
+import { daemonInfo, runOnce } from '../docker/client.ts';
 import { EXIT, UsageError } from '../errors.ts';
 import type { Io } from '../io.ts';
 import { atLeast, managerVersion, MINIMUM } from '../versions.ts';
@@ -67,7 +68,7 @@ export async function collect(context: Context, io: Io, keepProbe = false): Prom
 
     // --- The daemon ----------------------------------------------------------
 
-    const daemon = await daemonInfo(io.exec);
+    const daemon = await daemonInfo(io.docker);
     if (!daemon.ok) {
         add(
             'error',
@@ -241,22 +242,14 @@ async function bindMountCheck(context: Context, io: Io, token: string): Promise<
             detail: 'not checked: the launcher did not say which image this is, so no sibling container could be started',
         };
     }
-    const result = await io.exec(
-        'docker',
-        [
-            'run',
-            '--rm',
-            '--network',
-            'none',
-            '--volume',
-            `${context.siteDir}:/ghost-docker-probe:ro`,
-            '--entrypoint',
-            'cat',
-            context.image,
-            `/ghost-docker-probe/${PROBE_FILE}`,
-        ],
-        { timeoutMs: 120_000 },
-    );
+    const result = await runOnce(io.docker, {
+        image: context.image,
+        entrypoint: ['cat'],
+        cmd: [`/ghost-docker-probe/${PROBE_FILE}`],
+        binds: [{ source: context.siteDir, target: '/ghost-docker-probe', readOnly: true }],
+        network: 'none',
+        timeoutMs: 120_000,
+    });
     if (result.status === 0 && result.stdout.trim() === token) {
         return {
             status: 'ok',
