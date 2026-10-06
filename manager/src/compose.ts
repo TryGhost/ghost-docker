@@ -4,7 +4,7 @@ import type { Exec } from './process.ts';
 
 /** The version of the Compose client in this image. */
 export async function composeVersion(exec: Exec): Promise<string | null> {
-    const result = await exec.with({ timeoutMs: 20_000 })`docker compose version --short`;
+    const result = await exec({ timeout: 20_000 })`docker compose version --short`;
     const version = result.stdout.trim();
-    return result.status === 0 && version ? version : null;
+    return result.exitCode === 0 && version ? version : null;
 }

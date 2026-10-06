@@ -12,7 +12,7 @@ import {
     type DockerResponse,
 } from '../src/docker/transport.ts';
 import type { Io } from '../src/io.ts';
-import type { Exec, ExecResult, TemplateValue } from '../src/process.ts';
+import type { Exec } from '../src/process.ts';
 
 /** How the daemon treats a sibling container asked to read the probe file. */
 export type Sibling = 'sees' | 'other-directory' | 'cannot-run' | 'hangs';
@@ -48,7 +48,26 @@ export const HEALTHY = {
     SecurityOptions: ['name=seccomp,profile=builtin'],
 };
 
-const ok = (stdout: string): ExecResult => ({ status: 0, stdout, stderr: '', timedOut: false });
+/** What the scripted program reports; the fields of an execa result that callers read. */
+export interface ProgramResult {
+    exitCode: number | undefined;
+    stdout: string;
+    stderr: string;
+    timedOut: boolean;
+}
+
+const ok = (stdout: string): ProgramResult => ({
+    exitCode: 0,
+    stdout,
+    stderr: '',
+    timedOut: false,
+});
+const failed = (exitCode: number | undefined, stderr: string, timedOut = false): ProgramResult => ({
+    exitCode,
+    stdout: '',
+    stderr,
+    timedOut,
+});
 
 export function harness(): Harness {
     // Resolved, as the launcher resolves it: /tmp is a symlink on macOS.
@@ -94,24 +113,14 @@ export function harness(): Harness {
                 exec: fakeExec((command, args) => {
                     state.calls.push([command, ...args]);
                     if (command !== 'docker') {
-                        return {
-                            status: null,
-                            stdout: '',
-                            stderr: `spawn ${command} ENOENT`,
-                            timedOut: false,
-                        };
+                        return failed(undefined, `spawn ${command} ENOENT`);
                     }
                     if (args[0] === 'compose' && args[1] === 'version') {
                         return state.daemon.compose
                             ? ok(`${state.daemon.compose}\n`)
-                            : { status: 1, stdout: '', stderr: 'unknown command', timedOut: false };
+                            : failed(1, 'unknown command');
                     }
-                    return {
-                        status: 1,
-                        stdout: '',
-                        stderr: `unexpected: docker ${args.join(' ')}`,
-                        timedOut: false,
-                    };
+                    return failed(1, `unexpected: docker ${args.join(' ')}`);
                 }),
             };
             try {
@@ -195,20 +204,30 @@ function daemon(state: Harness, request: DockerRequest): Promise<DockerResponse>
 /**
  * An Exec whose template is parsed the way execa parses it (literal text
  * split on whitespace, each interpolated value one argument, an array
- * several) and handed to a scripted program. Options are accepted and ignored.
+ * several) and handed to a scripted program. Calling it with options, as
+ * exec({ timeout })`...` does, returns itself: options are accepted and
+ * ignored. Typed as the real thing; only the fields callers read exist.
  */
-function fakeExec(
-    program: (command: string, args: string[]) => ExecResult | Promise<ExecResult>,
-): Exec {
-    const run: Exec = async (strings, ...values) => {
-        const [command = '', ...args] = parseTemplate(strings, values);
-        return program(command, args);
+function fakeExec(program: (command: string, args: string[]) => ProgramResult): Exec {
+    const run = (first: unknown, ...values: unknown[]): unknown => {
+        if (!isTemplate(first)) {
+            return run;
+        }
+        const [command = '', ...args] = parseTemplate(first, values);
+        const result = program(command, args);
+        return Promise.resolve({
+            ...result,
+            failed: result.exitCode !== 0,
+            shortMessage: result.exitCode === undefined ? result.stderr : '',
+        });
     };
-    run.with = () => run;
-    return run;
+    return run as unknown as Exec;
 }
 
-function parseTemplate(strings: TemplateStringsArray, values: TemplateValue[]): string[] {
+const isTemplate = (value: unknown): value is TemplateStringsArray =>
+    Array.isArray(value) && 'raw' in value;
+
+function parseTemplate(strings: TemplateStringsArray, values: unknown[]): string[] {
     const args: string[] = [];
     let current: string | null = null;
     const flush = () => {
