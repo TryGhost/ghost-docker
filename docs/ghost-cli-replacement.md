@@ -743,13 +743,18 @@ separately, and none is described as more than it is:
   *serving* (a certificate exists, with its issuer and whether it is publicly
   trusted), *pending* (no certificate yet; the message names the domain, says
   that Caddy obtains one once the domain's DNS reaches this host, and that
-  `./ghost-docker check` reports the change), or *failing* (Caddy's log shows
-  issuance errors for the name, which are quoted). *Pending* is not a failure
-  of installation. Temporary internal TLS before DNS is deliberately not
-  offered: it would be a second TLS state to transition out of, and the HSTS
-  header Caddy sends would pin the browser to a certificate about to change.
-  Operators who want internal TLS for a private name put `tls internal` in
-  `caddy/custom/`, as today.
+  `./ghost-docker check` reports the change), or *failing*. Failing is
+  reserved for issuance errors in Caddy's log that pointing DNS at the host
+  will not cure: a CAA record that forbids the issuer, a rejected ACME
+  account, a rate limit. Those are quoted. The errors expected before DNS
+  exists, an unknown name or a challenge that reached another address, keep
+  the state *pending*, with the last attempt's message shown. *Pending* is not
+  a failure of installation. Temporary internal TLS before DNS is deliberately
+  not offered: it would be a second TLS state to transition out of, and a
+  self-signed certificate on a public name is a browser warning to click
+  through, which is the habit this setup should not teach. Operators who want
+  internal TLS for a private name put `tls internal` in `caddy/custom/`, as
+  today.
 
 A production site before its DNS points at the host therefore passes routing,
 has its ports either verified or reported as published, and shows HTTPS as
