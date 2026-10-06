@@ -1173,8 +1173,7 @@ pinned launcher into the site directory; in clone mode it writes neither.
 
 New in this step, not on `next`: `--email`, the ACME account email. Caddy
 needs none to issue, but Let's Encrypt sends expiry and incident notices to
-it, and it is the question people expect at setup. Production installs prompt
-for it when a terminal exists, blank meaning none; it is stored as
+it. It is a flag only, never a prompt: omitted means none. It is stored as
 `ACME_EMAIL` in `.env` and rendered into the generated site file as `tls
 {$ACME_EMAIL}` only when set, so it lives with the site that uses it and
 `caddy/global/` stays operator owned. `config set ACME_EMAIL` followed by
