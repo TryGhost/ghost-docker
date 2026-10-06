@@ -16,7 +16,8 @@ describe('exit statuses', () => {
         for (const argv of [[], ['help'], ['--help'], ['-h']]) {
             const result = await h.run(...argv);
             assert.equal(result.code, 0);
-            assert.match(result.stdout, /Usage: ghost-docker <command>/);
+            assert.match(result.stdout, /USAGE/);
+            assert.match(result.stdout, /doctor/);
             assert.equal(result.stderr, '');
         }
     });
@@ -25,7 +26,7 @@ describe('exit statuses', () => {
         const result = await h.run('frobnicate');
         assert.equal(result.code, 2);
         assert.match(result.stderr, /^error: unknown command: frobnicate/);
-        assert.match(result.stderr, /Usage: ghost-docker/);
+        assert.match(result.stderr, /--help/);
         assert.equal(result.stdout, '');
     });
 
@@ -52,7 +53,7 @@ describe('exit statuses', () => {
                 new RegExp(`ghost-docker ${command} is not implemented yet`),
             );
             assert.match(result.stderr, step);
-            assert.doesNotMatch(result.stderr, /Usage:/);
+            assert.doesNotMatch(result.stderr, /USAGE/);
         });
     }
 

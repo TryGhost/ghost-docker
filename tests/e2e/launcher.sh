@@ -291,7 +291,8 @@ expect_status 2
 expect_output 'unknown command: frobnicate'
 run "$LAUNCHER" --dir "$SITE" help
 expect_status 0
-expect_output 'Usage: ghost-docker'
+expect_output 'USAGE'
+expect_output 'ghost-docker doctor'
 ok "3 for a planned command, 2 for a usage error, 0 for help"
 
 step "The image, as a published one would be used"

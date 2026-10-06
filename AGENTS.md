@@ -36,9 +36,12 @@ which step delivers it.
 - `manager/` is the CLI: TypeScript run directly by Node (types stripped, no
   build step, so `erasableSyntaxOnly`), with dependencies installed by pnpm
   (version pinned in `package.json`; `npm i -g corepack && corepack enable`
-  provides it). `src/cli.ts` is
-  the dispatcher, `src/commands/` the commands, `src/context.ts` the `GD_*`
-  environment the launcher passes, `src/io.ts` the seam tests substitute.
+  provides it). Commands, flags, help text and argument errors are
+  [stricli](https://bloomberg.github.io/stricli): `src/cli.ts` builds the
+  application and maps its exit codes to ours, `src/commands/` holds one
+  `buildCommand` per command, `src/context.ts` the `GD_*` environment the
+  launcher passes, `src/io.ts` the seam tests substitute. Programs are run
+  with execa, the daemon is spoken to directly (below).
 - The manager talks to the daemon over the **Engine API** on the mounted
   socket (`src/docker/`: undici transport, zod-typed endpoints, a `runOnce`
   for one-shot containers). It does not shell out to the `docker` CLI; the
