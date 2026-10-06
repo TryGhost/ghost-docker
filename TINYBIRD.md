@@ -8,6 +8,13 @@ Note: Currently Traffic Analytics features are behind a feature flag. For now, y
 1. Run `docker compose run --rm tinybird-deploy` and wait for the service to exit successfully. This will create your Tinybird datasources, pipes and API endpoints. It may take a minute or two to complete the first time. You should see "Deployment #1 is live!" in your terminal before the service exits.
 1. Run `docker compose run --rm tinybird-login get-tokens`
 1. Copy and paste the values from the previous step into your `.env` file
+1. If using automations analytics, generate a shared sync secret with `openssl rand -hex 32` and add `TINYBIRD_SYNC_AUTH=<generated value>` to your `.env` file.
 1. Run `docker compose --profile=analytics up -d` to start all services in the background
 1. Add `analytics` to `COMPOSE_PROFILES=` in the top of your `.env` file to automatically include the `analytics` profile when running `docker compose` commands
 1. At this point, everything should be working. You can test it's working by visiting your site's homepage, then checking the Stats page in Ghost Admin — you should see a view recorded.
+
+## Existing installations
+
+To configure sync authentication for automation analytics, generate and add `TINYBIRD_SYNC_AUTH` to your `.env` file as described above. This is a secret that is shared by Ghost and the Traffic Analytics service.
+
+After adding or changing the secret, run `docker compose --profile=analytics up -d` to recreate the affected containers with matching credentials. A container restart alone does not apply environment changes.
