@@ -12,7 +12,7 @@ import {
     type DockerResponse,
 } from '../src/docker/transport.ts';
 import type { Io } from '../src/io.ts';
-import type { ExecResult } from '../src/process.ts';
+import type { Exec, ExecResult, TemplateValue } from '../src/process.ts';
 
 /** How the daemon treats a sibling container asked to read the probe file. */
 export type Sibling = 'sees' | 'other-directory' | 'cannot-run' | 'hangs';
@@ -91,7 +91,7 @@ export function harness(): Harness {
                     state.requests.push(request);
                     return daemon(state, request);
                 },
-                exec: async (command, args) => {
+                exec: fakeExec((command, args) => {
                     state.calls.push([command, ...args]);
                     if (command !== 'docker') {
                         return {
@@ -112,7 +112,7 @@ export function harness(): Harness {
                         stderr: `unexpected: docker ${args.join(' ')}`,
                         timedOut: false,
                     };
-                },
+                }),
             };
             try {
                 return { code: await run(argv, io), stdout, stderr };
@@ -190,4 +190,51 @@ function daemon(state: Harness, request: DockerRequest): Promise<DockerResponse>
         return Promise.resolve(empty);
     }
     return Promise.resolve(json(404, { message: `unexpected: ${method} ${path}` }));
+}
+
+/**
+ * An Exec whose template is parsed the way execa parses it (literal text
+ * split on whitespace, each interpolated value one argument, an array
+ * several) and handed to a scripted program. Options are accepted and ignored.
+ */
+function fakeExec(
+    program: (command: string, args: string[]) => ExecResult | Promise<ExecResult>,
+): Exec {
+    const run: Exec = async (strings, ...values) => {
+        const [command = '', ...args] = parseTemplate(strings, values);
+        return program(command, args);
+    };
+    run.with = () => run;
+    return run;
+}
+
+function parseTemplate(strings: TemplateStringsArray, values: TemplateValue[]): string[] {
+    const args: string[] = [];
+    let current: string | null = null;
+    const flush = () => {
+        if (current !== null) {
+            args.push(current);
+            current = null;
+        }
+    };
+    strings.forEach((text, i) => {
+        for (const part of text.split(/(\s+)/)) {
+            if (/^\s+$/.test(part)) {
+                flush();
+            } else if (part) {
+                current = (current ?? '') + part;
+            }
+        }
+        if (i < values.length) {
+            const value = values[i];
+            if (Array.isArray(value)) {
+                flush();
+                args.push(...value.map(String));
+            } else {
+                current = (current ?? '') + String(value);
+            }
+        }
+    });
+    flush();
+    return args;
 }
