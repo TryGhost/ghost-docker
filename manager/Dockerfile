@@ -5,12 +5,23 @@
 #   docker build -f manager/Dockerfile -t ghost-docker:dev .
 #
 # It holds the CLI, a Docker client with Compose, and the stack's own files.
-# The launchers (ghost-docker, ghost-docker.ps1) are the supported way to run
-# it; see docs/ghost-cli-replacement.md §2.10 for the contract between them.
+# The launcher (ghost-docker) is the supported way to run it; see
+# docs/ghost-cli-replacement.md §2.10 for the contract between them.
 
 FROM docker:28-cli@sha256:625d9431a9f54c5a2bc90f24f0e1c3d55b1349fd857dd85035f98c2c9acbdd4d AS docker
 
-FROM node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402
+# Production dependencies, installed by the pnpm version pinned in
+# package.json (`packageManager`). Node 26 no longer bundles corepack, so it
+# is installed first, pinned too. Only node_modules leaves this stage.
+FROM node:26-alpine@sha256:0b36e8c136b94cd4fcf02188228e76c31ad5872eef3fec8cbd2eee500cfd9e80 AS deps
+WORKDIR /opt/ghost-docker/manager
+COPY manager/package.json manager/pnpm-lock.yaml ./
+RUN npm install -g corepack@0.36.0 \
+    && corepack enable \
+    && corepack install \
+    && pnpm install --frozen-lockfile --prod
+
+FROM node:26-alpine@sha256:0b36e8c136b94cd4fcf02188228e76c31ad5872eef3fec8cbd2eee500cfd9e80
 
 # setpriv drops to the caller's uid and gid with the Docker socket's group
 # added, which su-exec cannot do for a uid that has no passwd entry.
@@ -23,8 +34,8 @@ COPY --from=docker /usr/local/libexec/docker/cli-plugins/docker-compose \
     /usr/local/libexec/docker/cli-plugins/docker-compose
 
 WORKDIR /opt/ghost-docker/manager
-COPY manager/package.json manager/package-lock.json ./
-RUN npm ci --omit=dev && npm cache clean --force
+COPY manager/package.json ./
+COPY --from=deps /opt/ghost-docker/manager/node_modules ./node_modules
 
 # TypeScript is run directly by Node, which strips the types: there is no
 # build step, and what is in the image is the source that was reviewed.
@@ -42,8 +53,7 @@ ARG GD_VERSION=dev
 ARG GD_COMMIT=
 RUN printf '{"version":"%s","commit":"%s"}\n' "$GD_VERSION" "$GD_COMMIT" >/opt/ghost-docker/VERSION.json
 
-ENV NODE_ENV=production \
-    NODE_OPTIONS=--disable-warning=ExperimentalWarning
+ENV NODE_ENV=production
 
 LABEL org.opencontainers.image.source="https://github.com/TryGhost/ghost-docker" \
       org.opencontainers.image.description="ghost-docker manager: the CLI and stack files for self-hosting Ghost with Docker Compose" \

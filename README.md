@@ -68,8 +68,8 @@ launcher. Nothing else on the host. Windows is supported through WSL2.
 ## Developing
 
 ```sh
-cd manager && npm ci
-npm run format:check && npm run lint && npm run typecheck && npm test
+cd manager && pnpm install     # pnpm via corepack: npm i -g corepack && corepack enable
+pnpm run format:check && pnpm run lint && pnpm run typecheck && pnpm test
 
 tests/e2e/launcher.sh        # the launcher against a stand-in docker, then the real image
 ```

@@ -17,13 +17,16 @@ jobs:
 
       - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
         with:
-          node-version: "22"
+          node-version: "26"
 
-      - run: npm ci
-      - run: npm run format:check
-      - run: npm run lint
-      - run: npm run typecheck
-      - run: npm test
+      # The pnpm version pinned in package.json, through corepack, as the
+      # image's own build does it.
+      - run: npm install -g corepack@0.36.0 && corepack enable
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run format:check
+      - run: pnpm run lint
+      - run: pnpm run typecheck
+      - run: pnpm test
 
   # The real thing on Linux, where file ownership is real: the image is built
   # from the checkout, started by the launcher, and what it writes into the

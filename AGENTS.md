@@ -34,7 +34,9 @@ which step delivers it.
   image, and `docker run`s it (plan §2.10). Add no logic to it that the
   manager could hold. Windows is WSL2 only; there is no native launcher.
 - `manager/` is the CLI: TypeScript run directly by Node (types stripped, no
-  build step, so `erasableSyntaxOnly`), with npm dependencies. `src/cli.ts` is
+  build step, so `erasableSyntaxOnly`), with dependencies installed by pnpm
+  (version pinned in `package.json`; `npm i -g corepack && corepack enable`
+  provides it). `src/cli.ts` is
   the dispatcher, `src/commands/` the commands, `src/context.ts` the `GD_*`
   environment the launcher passes, `src/io.ts` the seam tests substitute.
 - `manager/entrypoint.sh` drops from root to the caller's uid and gid, keeping
@@ -88,8 +90,8 @@ commands and check outcomes are shell scripts in `tests/e2e/`. Shell code
 passes ShellCheck.
 
 ```bash
-cd manager && npm ci
-npm run format:check && npm run lint && npm run typecheck && npm test
+cd manager && pnpm install
+pnpm run format:check && pnpm run lint && pnpm run typecheck && pnpm test
 tests/e2e/launcher.sh         # stand-in docker, then the real image
 ```
 
