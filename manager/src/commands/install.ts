@@ -43,6 +43,7 @@ import {
 } from '../payload.ts';
 import { failed, printChecks } from '../report.ts';
 import {
+    DATA_DIRS,
     ENV_FILE,
     GHOST_ENV_FILE,
     META_FILE,
@@ -380,7 +381,7 @@ export const installCommand = defineCommand({
                 );
             }
         }
-        for (const data of ['data/ghost', 'data/mysql']) {
+        for (const data of DATA_DIRS) {
             const path = join(dir, data);
             if (existsSync(path) && readdirSync(path).length > 0) {
                 throw new CliError(
@@ -513,7 +514,7 @@ export const installCommand = defineCommand({
 
             // Bind mount sources must exist before the daemon resolves them, or it
             // creates them as root. Ownership inside is the images' own business.
-            for (const data of ['data/ghost', 'data/mysql']) {
+            for (const data of DATA_DIRS) {
                 const path = join(dir, data);
                 const before = created.directories.length;
                 makeDirectories(path, created.directories);
@@ -521,7 +522,7 @@ export const installCommand = defineCommand({
                     created.data.push(path);
                 }
             }
-            ok(io, 'data', 'data/ghost and data/mysql');
+            ok(io, 'data', DATA_DIRS.join(' and '));
 
             const findings = await validate(io, dir);
             const errors = findings.filter((finding) => finding.level === 'error');

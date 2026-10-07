@@ -9,6 +9,12 @@ export const GHOST_ENV_FILE = 'ghost.env';
 export const META_FILE = '.ghost-docker.json';
 export const COMPOSE_FILE = 'compose.yml';
 
+/**
+ * The bind-mounted data directories, at compose.yml's defaults
+ * (UPLOAD_LOCATION, MYSQL_DATA_LOCATION), which install never changes.
+ */
+export const DATA_DIRS = [join('data', 'ghost'), join('data', 'mysql')] as const;
+
 /** The two files `config` reads and writes. Nothing else is an env file here. */
 export const CONFIG_FILES = [ENV_FILE, GHOST_ENV_FILE] as const;
 export type ConfigFile = (typeof CONFIG_FILES)[number];
