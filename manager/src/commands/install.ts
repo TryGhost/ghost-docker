@@ -20,7 +20,7 @@ import { existsSync, readdirSync, rmdirSync, rmSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { ACME_EMAIL, isHostname, SITE_FILE, writeRoutes } from '../caddy.ts';
 import { compose, composeError } from '../compose.ts';
-import { defineCommand } from '../command.ts';
+import { defineCommand, type Options, type Values } from '../command.ts';
 import { validate } from '../config.ts';
 import { loadContext, type Context } from '../context.ts';
 import { listContainers, runOnce } from '../docker/client.ts';
@@ -54,18 +54,6 @@ import { verifyIngress } from '../verify.ts';
 import { managerVersion } from '../versions.ts';
 import { collect } from './doctor.ts';
 
-export interface InstallFlags {
-    readonly local: boolean;
-    readonly domain?: string;
-    readonly adminDomain?: string;
-    readonly email?: string;
-    readonly port?: number;
-    readonly version?: string;
-    readonly with?: string;
-    readonly noPrompt: boolean;
-    readonly noStart: boolean;
-}
-
 /** Where a local site's port search starts, and how far it goes. */
 export const DEFAULT_PORT = 2368;
 const PORT_SEARCH = 200;
@@ -80,49 +68,37 @@ const parsePort = (input: string): number => {
     return Number(input);
 };
 
-export const installCommand = defineCommand({
-    brief: 'Install a local or production site into the site directory, start it, and verify it. See docs/install.md.',
-    options: {
-        local: { type: 'boolean', brief: 'A local site: Ghost and MySQL on 127.0.0.1:PORT.' },
-        domain: {
-            type: 'string',
-            brief: 'A production site on this domain: Ghost, MySQL and Caddy with HTTPS.',
-        },
-        'admin-domain': {
-            type: 'string',
-            brief: 'Serve Ghost Admin on a separate domain. Production only.',
-        },
-        email: {
-            type: 'string',
-            brief: 'The ACME account email Let’s Encrypt sends expiry and incident notices to. Production only.',
-        },
-        port: {
-            type: 'string',
-            brief: 'The loopback port Ghost is published on. Default: the first at or above 2368 that no container publishes.',
-        },
-        version: {
-            type: 'string',
-            brief: 'A Ghost version (6.3.1) or image tag (6-alpine). Resolved to an exact digest.',
-        },
-        with: { type: 'string', brief: 'Optional per-site services: activitypub.' },
-        'no-prompt': { type: 'boolean', brief: 'Never ask: every input must be an option.' },
-        'no-start': {
-            type: 'boolean',
-            brief: 'Write the configuration and routes; start nothing.',
-        },
+const options = {
+    local: { type: 'boolean', brief: 'A local site: Ghost and MySQL on 127.0.0.1:PORT.' },
+    domain: {
+        type: 'string',
+        brief: 'A production site on this domain: Ghost, MySQL and Caddy with HTTPS.',
     },
-    run: (values, _positionals, io) =>
-        install(
-            {
-                ...values,
-                local: values.local ?? false,
-                noPrompt: values.noPrompt ?? false,
-                noStart: values.noStart ?? false,
-                port: values.port === undefined ? undefined : parsePort(values.port),
-            },
-            io,
-        ),
-});
+    'admin-domain': {
+        type: 'string',
+        brief: 'Serve Ghost Admin on a separate domain. Production only.',
+    },
+    email: {
+        type: 'string',
+        brief: 'The ACME account email Let’s Encrypt sends expiry and incident notices to. Production only.',
+    },
+    port: {
+        type: 'string',
+        brief: 'The loopback port Ghost is published on. Default: the first at or above 2368 that no container publishes.',
+    },
+    version: {
+        type: 'string',
+        brief: 'A Ghost version (6.3.1) or image tag (6-alpine). Resolved to an exact digest.',
+    },
+    with: { type: 'string', brief: 'Optional per-site services: activitypub.' },
+    'no-prompt': { type: 'boolean', brief: 'Never ask: every input must be an option.' },
+    'no-start': {
+        type: 'boolean',
+        brief: 'Write the configuration and routes; start nothing.',
+    },
+} as const satisfies Options;
+
+type Flags = Values<typeof options>;
 
 // --- What to install ---------------------------------------------------------
 
@@ -135,7 +111,7 @@ interface Plan {
 }
 
 /** What the options ask for, and at a terminal, what they leave out. */
-async function plan(flags: InstallFlags, prompt: Prompter | null): Promise<Plan> {
+async function plan(flags: Flags, prompt: Prompter | null): Promise<Plan> {
     if (flags.local && flags.domain !== undefined) {
         throw new UsageError('choose one site mode: --local, or --domain example.com, not both');
     }
@@ -370,308 +346,327 @@ const heading = (io: Io, title: string) => io.stdout(`\n${title}\n`);
 const ok = (io: Io, label: string, detail = '') =>
     printChecks(io, [{ status: 'ok', label, detail }]);
 
-export async function install(flags: InstallFlags, io: Io): Promise<number> {
-    const context = loadContext(io.env);
-    const dir = context.siteDir;
-    if (io.cwd() !== dir) {
-        throw new CliError(
-            `working in ${io.cwd()}, but the launcher gave the site directory as ${dir}`,
-        );
-    }
-
-    for (const file of [ENV_FILE, META_FILE]) {
-        if (existsSync(join(dir, file))) {
+export const installCommand = defineCommand({
+    brief: 'Install a local or production site into the site directory, start it, and verify it. See docs/install.md.',
+    options,
+    async run(flags, _positionals, io) {
+        // Before anything is looked at: a bad port is a usage error.
+        const requestedPort = flags.port === undefined ? undefined : parsePort(flags.port);
+        const context = loadContext(io.env);
+        const dir = context.siteDir;
+        if (io.cwd() !== dir) {
             throw new CliError(
-                `${join(dir, file)} already exists, so this directory already holds a site.\n` +
-                    '  Install into a new, empty directory instead. Nothing has been changed.',
-            );
-        }
-    }
-    const clone = isCheckout(context, dir);
-    const stack = stackDir(io.env);
-    const files = clone ? [] : payloadFiles(stack);
-    if (!clone) {
-        const conflicts = payloadConflicts(dir, files);
-        if (conflicts.length > 0) {
-            throw new CliError(
-                `${dir} already has ${conflicts.slice(0, 5).join(', ')}${conflicts.length > 5 ? ', …' : ''}, which installation would write.\n` +
-                    '  Install into a new, empty directory, or move these aside. Nothing has been changed.',
-            );
-        }
-    }
-    for (const data of ['data/ghost', 'data/mysql']) {
-        const path = join(dir, data);
-        if (existsSync(path) && readdirSync(path).length > 0) {
-            throw new CliError(
-                `${path} is not empty. A new site is never installed over existing data. Nothing has been changed.`,
-            );
-        }
-    }
-
-    // Asked only now, so nobody answers questions to be told the directory is taken.
-    const intent = await plan(flags, io.prompt);
-
-    // --- Preflight ---
-    heading(io, 'Checking this host');
-    const checks = await collect(context, io);
-    printChecks(io, checks);
-    if (failed(checks)) {
-        throw new CliError('preflight failed. Nothing has been changed on this host.');
-    }
-
-    // --- Ports Docker knows are taken ---
-    const containers = await listContainers(io.docker);
-    const published = new Set(containers.flatMap((container) => container.publishedPorts));
-    const port = flags.port ?? choosePort(published);
-    const wanted = [
-        port,
-        ...(intent.mode === 'production' ? [PRODUCTION_PORTS.http, PRODUCTION_PORTS.https] : []),
-    ];
-    const holders = new Map<number, string>();
-    for (const container of containers) {
-        for (const busy of container.publishedPorts.filter((each) => wanted.includes(each))) {
-            holders.set(busy, container.name);
-        }
-    }
-    if (holders.size > 0) {
-        const lines = [...holders].map(
-            ([busy, name]) => `  port ${busy} is already in use by the Docker container ${name}`,
-        );
-        throw new CliError(
-            `${lines.join('\n').trimStart()}\n` +
-                (holders.has(port)
-                    ? `  Choose another port for Ghost with --port.`
-                    : '  A production site needs ports 80 and 443 for Caddy. Free them first.') +
-                '\n  Nothing was stopped. Nothing has been changed.',
-        );
-    }
-
-    // --- The exact Ghost image ---
-    heading(io, 'Resolving the Ghost image');
-    const ghost = await resolveGhost(io, flags.version);
-    ok(io, 'ghost', `${ghost.image}:${ghost.tag} is Ghost ${ghost.version}, ${ghost.reference}`);
-
-    const pin = clone ? null : await managerPin(io, context);
-
-    // --- From here on a failure removes what this installation created ---
-    const created = new Created(io, context, dir);
-    const { mode, domain, adminDomain, email, services } = intent;
-    const project = projectName(mode, domain, dir);
-    const profiles = [mode, ...services].join(',');
-    const production = mode === 'production';
-    const url = production ? `https://${domain}` : `http://localhost:${port}`;
-    // Writing, starting and verifying. Everything it creates is recorded in
-    // `created`, so a failure removes exactly that.
-    const createSite = async () => {
-        heading(io, 'Writing the site');
-        if (!clone) {
-            writePayload(dir, stack, files, created);
-            ok(
-                io,
-                'stack files',
-                `compose.yml, caddy/, mysql-init/, tinybird/ from the manager image`,
-            );
-            writeLauncher(dir, io.env, pin!, created);
-            ok(io, 'ghost-docker', `the launcher, pinned to ${pin!}`);
-        }
-
-        const settings: [string, string][] = [
-            ['COMPOSE_PROFILES', profiles],
-            ['SITE_MODE', mode],
-            ['COMPOSE_PROJECT_NAME', project],
-            ['PROJECT_DIR', dir],
-            ['NODE_ENV', production ? 'production' : 'development'],
-            ['URL', url],
-            ['GHOST_IMAGE', ghost.image],
-            ['GHOST_VERSION', ghost.tag],
-            ['GHOST_IMAGE_REF', ghost.reference],
-            ['GHOST_CONTENT_PATH', ghost.contentPath],
-            ['GHOST_TINYBIRD_PATH', ghost.tinybirdPath],
-            ['GHOST_PORT', String(port)],
-            ['RESTART_POLICY', production ? 'unless-stopped' : 'no'],
-            ['DATABASE_HOST', 'db'],
-            ['DATABASE_PORT', '3306'],
-            ['DATABASE_NAME', 'ghost'],
-            ['DATABASE_USER', 'ghost'],
-            ['DATABASE_PASSWORD', secret()],
-            ['DATABASE_ROOT_PASSWORD', secret()],
-        ];
-        if (production) {
-            settings.push(
-                ['HTTP_PORT', String(PRODUCTION_PORTS.http)],
-                ['HTTPS_PORT', String(PRODUCTION_PORTS.https)],
-            );
-            if (adminDomain) {
-                settings.push(['ADMIN_URL', `https://${adminDomain}`]);
-            }
-        }
-        const envPath = join(dir, ENV_FILE);
-        created.file(envPath);
-        atomicWrite(
-            envPath,
-            env.serializeAll(
-                settings,
-                '# Generated site settings. See .env.example for the optional ones.\n' +
-                    '# Write values with ./ghost-docker config set .env KEY VALUE, which encodes them for Compose.\n',
-            ),
-            PRIVATE,
-        );
-        ok(io, ENV_FILE, 'Compose and operator settings, with generated database passwords');
-
-        const ghostEnvPath = join(dir, GHOST_ENV_FILE);
-        created.file(ghostEnvPath);
-        atomicWrite(ghostEnvPath, ghostEnvTemplate(project, services.length > 0), PRIVATE);
-        ok(io, GHOST_ENV_FILE, 'Ghost application settings');
-
-        // Bind mount sources must exist before the daemon resolves them, or it
-        // creates them as root. Ownership inside is the images' own business.
-        for (const data of ['data/ghost', 'data/mysql']) {
-            const path = join(dir, data);
-            const before = created.directories.length;
-            makeDirectories(path, created.directories);
-            if (created.directories.length > before) {
-                created.data.push(path);
-            }
-        }
-        ok(io, 'data', 'data/ghost and data/mysql');
-
-        const findings = await validate(io, dir);
-        const errors = findings.filter((finding) => finding.level === 'error');
-        if (errors.length > 0) {
-            throw new CliError(
-                `the generated configuration did not validate; please report this:\n${errors.map((finding) => `  ${finding.file}: ${finding.message}`).join('\n')}`,
-            );
-        }
-        ok(io, 'configuration', `.env and ghost.env are valid for a ${mode} site`);
-
-        if (production) {
-            // Written once; from here on the file is the operator's.
-            created.file(join(dir, SITE_FILE));
-            writeRoutes(dir, {
-                project,
-                domain,
-                adminDomain,
-                email,
-                activitypub: services.includes('activitypub'),
-            });
-            ok(
-                io,
-                SITE_FILE,
-                `routes for ${[domain, adminDomain].filter(Boolean).join(' and ')}; yours to edit`,
+                `working in ${io.cwd()}, but the launcher gave the site directory as ${dir}`,
             );
         }
 
-        const commit = managerVersion().commit;
-        const version = managerVersion().version;
-        created.file(join(dir, META_FILE));
-        writeMetadata(dir, {
-            schemaVersion: SCHEMA_VERSION,
-            installedAt: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
-            mode,
-            channel: clone ? null : channelOf(version),
-            source: clone ? 'checkout' : 'image',
-            stack: {
-                version: version === 'dev' || version === 'checkout' ? null : version,
-                commit: commit || null,
-                ref: clone ? null : version === 'dev' ? null : version,
-                image: pin,
-            },
-            site: { project, dir, url, domain: domain || null, adminDomain: adminDomain || null },
-            ghost: {
-                image: ghost.image,
-                tag: ghost.tag,
-                version: ghost.version,
-                digest: ghost.digest,
-            },
-            profiles: profiles.split(','),
-            payload: created.checksums,
-            migrations: [],
-        });
-        ok(io, META_FILE, 'installation metadata');
-
-        if (flags.noStart) {
-            io.stdout('\nNot starting: --no-start was given.\n');
-        } else {
-            heading(io, 'Starting the services');
-            created.project = true;
-            const up = await compose(
-                io,
-                dir,
-                ['up', '--detach', '--wait', '--wait-timeout', String(READY_TIMEOUT_SECONDS)],
-                { timeoutMs: (READY_TIMEOUT_SECONDS + 900) * 1000 },
-            );
-            if (up.exitCode !== 0) {
-                throw startFailure(up.stderr || up.stdout, up.timedOut);
-            }
-            ok(io, 'services', 'healthy, by their own health checks');
-
-            heading(io, 'Verifying the site');
-            const verified = await verifyIngress(io, siteFacts(dir, readSettings(dir)!));
-            printChecks(io, verified);
-            if (failed(verified)) {
+        for (const file of [ENV_FILE, META_FILE]) {
+            if (existsSync(join(dir, file))) {
                 throw new CliError(
-                    'the site started, but it is not reachable through its own ingress',
+                    `${join(dir, file)} already exists, so this directory already holds a site.\n` +
+                        '  Install into a new, empty directory instead. Nothing has been changed.',
                 );
             }
         }
-    };
-
-    try {
-        await createSite();
-    } catch (error) {
-        io.stderr(`\n${describe(error)}\n`);
-        if (created.project) {
-            const logs = await compose(io, dir, ['logs', '--no-color', '--tail', '30'], {
-                timeoutMs: 60_000,
-            });
-            if (logs.stdout.trim()) {
-                io.stderr(`\nThe services' last words:\n${logs.stdout.trimEnd()}\n`);
+        const clone = isCheckout(context, dir);
+        const stack = stackDir(io.env);
+        const files = clone ? [] : payloadFiles(stack);
+        if (!clone) {
+            const conflicts = payloadConflicts(dir, files);
+            if (conflicts.length > 0) {
+                throw new CliError(
+                    `${dir} already has ${conflicts.slice(0, 5).join(', ')}${conflicts.length > 5 ? ', …' : ''}, which installation would write.\n` +
+                        '  Install into a new, empty directory, or move these aside. Nothing has been changed.',
+                );
             }
         }
-        io.stderr('\nThe installation did not complete. Removing what it created\n');
-        const leftovers = await created.remove();
-        if (leftovers.length > 0) {
-            io.stderr(
-                `Some of it could not be removed:\n${leftovers.map((item) => `  ${item}\n`).join('')}`,
+        for (const data of ['data/ghost', 'data/mysql']) {
+            const path = join(dir, data);
+            if (existsSync(path) && readdirSync(path).length > 0) {
+                throw new CliError(
+                    `${path} is not empty. A new site is never installed over existing data. Nothing has been changed.`,
+                );
+            }
+        }
+
+        // Asked only now, so nobody answers questions to be told the directory is taken.
+        const intent = await plan(flags, io.prompt);
+
+        // --- Preflight ---
+        heading(io, 'Checking this host');
+        const checks = await collect(context, io);
+        printChecks(io, checks);
+        if (failed(checks)) {
+            throw new CliError('preflight failed. Nothing has been changed on this host.');
+        }
+
+        // --- Ports Docker knows are taken ---
+        const containers = await listContainers(io.docker);
+        const published = new Set(containers.flatMap((container) => container.publishedPorts));
+        const port = requestedPort ?? choosePort(published);
+        const wanted = [
+            port,
+            ...(intent.mode === 'production'
+                ? [PRODUCTION_PORTS.http, PRODUCTION_PORTS.https]
+                : []),
+        ];
+        const holders = new Map<number, string>();
+        for (const container of containers) {
+            for (const busy of container.publishedPorts.filter((each) => wanted.includes(each))) {
+                holders.set(busy, container.name);
+            }
+        }
+        if (holders.size > 0) {
+            const lines = [...holders].map(
+                ([busy, name]) =>
+                    `  port ${busy} is already in use by the Docker container ${name}`,
             );
-        } else {
-            io.stderr(
-                `${dir} is as it was before. Nothing that was already running was stopped.\n`,
+            throw new CliError(
+                `${lines.join('\n').trimStart()}\n` +
+                    (holders.has(port)
+                        ? `  Choose another port for Ghost with --port.`
+                        : '  A production site needs ports 80 and 443 for Caddy. Free them first.') +
+                    '\n  Nothing was stopped. Nothing has been changed.',
             );
         }
-        throw new CliError(
-            'installation failed; fix the error above and run the same command again.',
-        );
-    }
 
-    const admin = adminDomain ? `https://${adminDomain}` : url;
-    const next = flags.noStart
-        ? ['Nothing is running. Start the site with: docker compose up -d']
-        : production
-          ? [
-                "Point the domain's DNS at this host; Caddy then obtains a certificate, and",
-                './ghost-docker check reports it. Configure mail (see ghost.env), then open',
-                'Ghost Admin and create the owner account.',
-            ]
-          : ['Open Ghost Admin and create the owner account.'];
-    io.stdout(
-        [
-            '',
-            'Ghost is installed.',
-            '',
-            `  Site         ${url}`,
-            `  Ghost Admin  ${admin}/ghost/`,
-            `  Project      ${project} (${profiles}), in ${dir}`,
-            `  Ghost        ${ghost.version}, ${ghost.reference}`,
-            `  Loopback     127.0.0.1:${port}`,
-            '',
-            '.env and ghost.env hold the credentials; back them up.',
-            ...next,
-            '',
-        ].join('\n'),
-    );
-    return EXIT.ok;
-}
+        // --- The exact Ghost image ---
+        heading(io, 'Resolving the Ghost image');
+        const ghost = await resolveGhost(io, flags.version);
+        ok(
+            io,
+            'ghost',
+            `${ghost.image}:${ghost.tag} is Ghost ${ghost.version}, ${ghost.reference}`,
+        );
+
+        const pin = clone ? null : await managerPin(io, context);
+
+        // --- From here on a failure removes what this installation created ---
+        const created = new Created(io, context, dir);
+        const { mode, domain, adminDomain, email, services } = intent;
+        const project = projectName(mode, domain, dir);
+        const profiles = [mode, ...services].join(',');
+        const production = mode === 'production';
+        const url = production ? `https://${domain}` : `http://localhost:${port}`;
+        // Writing, starting and verifying. Everything it creates is recorded in
+        // `created`, so a failure removes exactly that.
+        const createSite = async () => {
+            heading(io, 'Writing the site');
+            if (!clone) {
+                writePayload(dir, stack, files, created);
+                ok(
+                    io,
+                    'stack files',
+                    `compose.yml, caddy/, mysql-init/, tinybird/ from the manager image`,
+                );
+                writeLauncher(dir, io.env, pin!, created);
+                ok(io, 'ghost-docker', `the launcher, pinned to ${pin!}`);
+            }
+
+            const settings: [string, string][] = [
+                ['COMPOSE_PROFILES', profiles],
+                ['SITE_MODE', mode],
+                ['COMPOSE_PROJECT_NAME', project],
+                ['PROJECT_DIR', dir],
+                ['NODE_ENV', production ? 'production' : 'development'],
+                ['URL', url],
+                ['GHOST_IMAGE', ghost.image],
+                ['GHOST_VERSION', ghost.tag],
+                ['GHOST_IMAGE_REF', ghost.reference],
+                ['GHOST_CONTENT_PATH', ghost.contentPath],
+                ['GHOST_TINYBIRD_PATH', ghost.tinybirdPath],
+                ['GHOST_PORT', String(port)],
+                ['RESTART_POLICY', production ? 'unless-stopped' : 'no'],
+                ['DATABASE_HOST', 'db'],
+                ['DATABASE_PORT', '3306'],
+                ['DATABASE_NAME', 'ghost'],
+                ['DATABASE_USER', 'ghost'],
+                ['DATABASE_PASSWORD', secret()],
+                ['DATABASE_ROOT_PASSWORD', secret()],
+            ];
+            if (production) {
+                settings.push(
+                    ['HTTP_PORT', String(PRODUCTION_PORTS.http)],
+                    ['HTTPS_PORT', String(PRODUCTION_PORTS.https)],
+                );
+                if (adminDomain) {
+                    settings.push(['ADMIN_URL', `https://${adminDomain}`]);
+                }
+            }
+            const envPath = join(dir, ENV_FILE);
+            created.file(envPath);
+            atomicWrite(
+                envPath,
+                env.serializeAll(
+                    settings,
+                    '# Generated site settings. See .env.example for the optional ones.\n' +
+                        '# Write values with ./ghost-docker config set .env KEY VALUE, which encodes them for Compose.\n',
+                ),
+                PRIVATE,
+            );
+            ok(io, ENV_FILE, 'Compose and operator settings, with generated database passwords');
+
+            const ghostEnvPath = join(dir, GHOST_ENV_FILE);
+            created.file(ghostEnvPath);
+            atomicWrite(ghostEnvPath, ghostEnvTemplate(project, services.length > 0), PRIVATE);
+            ok(io, GHOST_ENV_FILE, 'Ghost application settings');
+
+            // Bind mount sources must exist before the daemon resolves them, or it
+            // creates them as root. Ownership inside is the images' own business.
+            for (const data of ['data/ghost', 'data/mysql']) {
+                const path = join(dir, data);
+                const before = created.directories.length;
+                makeDirectories(path, created.directories);
+                if (created.directories.length > before) {
+                    created.data.push(path);
+                }
+            }
+            ok(io, 'data', 'data/ghost and data/mysql');
+
+            const findings = await validate(io, dir);
+            const errors = findings.filter((finding) => finding.level === 'error');
+            if (errors.length > 0) {
+                throw new CliError(
+                    `the generated configuration did not validate; please report this:\n${errors.map((finding) => `  ${finding.file}: ${finding.message}`).join('\n')}`,
+                );
+            }
+            ok(io, 'configuration', `.env and ghost.env are valid for a ${mode} site`);
+
+            if (production) {
+                // Written once; from here on the file is the operator's.
+                created.file(join(dir, SITE_FILE));
+                writeRoutes(dir, {
+                    project,
+                    domain,
+                    adminDomain,
+                    email,
+                    activitypub: services.includes('activitypub'),
+                });
+                ok(
+                    io,
+                    SITE_FILE,
+                    `routes for ${[domain, adminDomain].filter(Boolean).join(' and ')}; yours to edit`,
+                );
+            }
+
+            const commit = managerVersion().commit;
+            const version = managerVersion().version;
+            created.file(join(dir, META_FILE));
+            writeMetadata(dir, {
+                schemaVersion: SCHEMA_VERSION,
+                installedAt: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+                mode,
+                channel: clone ? null : channelOf(version),
+                source: clone ? 'checkout' : 'image',
+                stack: {
+                    version: version === 'dev' || version === 'checkout' ? null : version,
+                    commit: commit || null,
+                    ref: clone ? null : version === 'dev' ? null : version,
+                    image: pin,
+                },
+                site: {
+                    project,
+                    dir,
+                    url,
+                    domain: domain || null,
+                    adminDomain: adminDomain || null,
+                },
+                ghost: {
+                    image: ghost.image,
+                    tag: ghost.tag,
+                    version: ghost.version,
+                    digest: ghost.digest,
+                },
+                profiles: profiles.split(','),
+                payload: created.checksums,
+                migrations: [],
+            });
+            ok(io, META_FILE, 'installation metadata');
+
+            if (flags.noStart) {
+                io.stdout('\nNot starting: --no-start was given.\n');
+            } else {
+                heading(io, 'Starting the services');
+                created.project = true;
+                const up = await compose(
+                    io,
+                    dir,
+                    ['up', '--detach', '--wait', '--wait-timeout', String(READY_TIMEOUT_SECONDS)],
+                    { timeoutMs: (READY_TIMEOUT_SECONDS + 900) * 1000 },
+                );
+                if (up.exitCode !== 0) {
+                    throw startFailure(up.stderr || up.stdout, up.timedOut);
+                }
+                ok(io, 'services', 'healthy, by their own health checks');
+
+                heading(io, 'Verifying the site');
+                const verified = await verifyIngress(io, siteFacts(dir, readSettings(dir)!));
+                printChecks(io, verified);
+                if (failed(verified)) {
+                    throw new CliError(
+                        'the site started, but it is not reachable through its own ingress',
+                    );
+                }
+            }
+        };
+
+        try {
+            await createSite();
+        } catch (error) {
+            io.stderr(`\n${describe(error)}\n`);
+            if (created.project) {
+                const logs = await compose(io, dir, ['logs', '--no-color', '--tail', '30'], {
+                    timeoutMs: 60_000,
+                });
+                if (logs.stdout.trim()) {
+                    io.stderr(`\nThe services' last words:\n${logs.stdout.trimEnd()}\n`);
+                }
+            }
+            io.stderr('\nThe installation did not complete. Removing what it created\n');
+            const leftovers = await created.remove();
+            if (leftovers.length > 0) {
+                io.stderr(
+                    `Some of it could not be removed:\n${leftovers.map((item) => `  ${item}\n`).join('')}`,
+                );
+            } else {
+                io.stderr(
+                    `${dir} is as it was before. Nothing that was already running was stopped.\n`,
+                );
+            }
+            throw new CliError(
+                'installation failed; fix the error above and run the same command again.',
+            );
+        }
+
+        const admin = adminDomain ? `https://${adminDomain}` : url;
+        const next = flags.noStart
+            ? ['Nothing is running. Start the site with: docker compose up -d']
+            : production
+              ? [
+                    "Point the domain's DNS at this host; Caddy then obtains a certificate, and",
+                    './ghost-docker check reports it. Configure mail (see ghost.env), then open',
+                    'Ghost Admin and create the owner account.',
+                ]
+              : ['Open Ghost Admin and create the owner account.'];
+        io.stdout(
+            [
+                '',
+                'Ghost is installed.',
+                '',
+                `  Site         ${url}`,
+                `  Ghost Admin  ${admin}/ghost/`,
+                `  Project      ${project} (${profiles}), in ${dir}`,
+                `  Ghost        ${ghost.version}, ${ghost.reference}`,
+                `  Loopback     127.0.0.1:${port}`,
+                '',
+                '.env and ghost.env hold the credentials; back them up.',
+                ...next,
+                '',
+            ].join('\n'),
+        );
+        return EXIT.ok;
+    },
+});
 
 const describe = (error: unknown) =>
     error instanceof CliError
