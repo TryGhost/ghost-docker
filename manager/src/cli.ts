@@ -5,7 +5,7 @@
 import { parseArgs } from 'node:util';
 import { defineCommand, type Command } from './command.ts';
 import { doctorCommand } from './commands/doctor.ts';
-import { versionCommand, versionLine } from './commands/version.ts';
+import { versionCommand } from './commands/version.ts';
 import { CliError, EXIT, UsageError } from './errors.ts';
 import type { Io } from './io.ts';
 
@@ -21,6 +21,14 @@ const COMMANDS: Record<string, Command> = {
     }),
 };
 
+/** The conventional flags, as the commands they stand for. */
+const ALIASES: Record<string, string> = {
+    '--help': 'help',
+    '-h': 'help',
+    '--version': 'version',
+    '-v': 'version',
+};
+
 const DESCRIPTION = `Self-hosted Ghost with Docker Compose: the manager.
 
 Day-to-day operation is plain Docker Compose, from the site directory:
@@ -29,15 +37,9 @@ Day-to-day operation is plain Docker Compose, from the site directory:
 The plan is docs/ghost-cli-replacement.md in the repository.`;
 
 export async function run(argv: readonly string[], io: Io): Promise<number> {
-    const [name = 'help', ...rest] = argv;
+    const [first = 'help', ...rest] = argv;
+    const name = ALIASES[first] ?? first;
     try {
-        if (name === '--help' || name === '-h') {
-            return await COMMANDS.help!.run({}, [], io);
-        }
-        if (name === '--version' || name === '-v') {
-            io.stdout(`${versionLine().replace(/^ghost-docker /, '')}\n`);
-            return EXIT.ok;
-        }
         const command = COMMANDS[name];
         if (!command) {
             throw new UsageError(

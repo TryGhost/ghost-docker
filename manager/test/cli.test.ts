@@ -71,7 +71,9 @@ describe('version', () => {
         );
         h.env.GD_VERSION_FILE = file;
         assert.equal((await h.run('version')).stdout, 'ghost-docker v1.2.3-beta.4 (0123456)\n');
-        assert.equal((await h.run('--version')).code, 0);
+        for (const flag of ['--version', '-v']) {
+            assert.equal((await h.run(flag)).stdout, 'ghost-docker v1.2.3-beta.4 (0123456)\n');
+        }
     });
 
     test('takes no options', async () => {
