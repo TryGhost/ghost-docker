@@ -34,31 +34,23 @@ export const doctorCommand = defineCommand({
             brief: 'Leave the probe file so its ownership can be inspected from the host.',
         },
     },
-    // A report with an error in it is not a failed command: doctor returns
-    // its own status rather than throwing.
-    run: ({ json = false, keepProbe = false }, _positionals, io) => doctor({ json, keepProbe }, io),
-});
+    // A report with an error in it is not a failed command, so it returns
+    // the status rather than throwing.
+    async run({ json, keepProbe }, _positionals, io) {
+        const checks = await collect(loadContext(io.env), io, keepProbe);
 
-export interface DoctorFlags {
-    readonly json: boolean;
-    readonly keepProbe: boolean;
-}
-
-export async function doctor({ json, keepProbe }: DoctorFlags, io: Io): Promise<number> {
-    const context = loadContext(io.env);
-    const checks = await collect(context, io, keepProbe);
-
-    if (json) {
-        io.stdout(`${JSON.stringify({ checks }, null, 2)}\n`);
-    } else {
-        for (const check of checks) {
-            const line = `  ${STATUS_LABEL[check.status]} ${check.label.padEnd(18)} ${check.detail}\n`;
-            // Problems go to stderr so they can be separated from the summary.
-            (check.status === 'ok' ? io.stdout : io.stderr)(line);
+        if (json) {
+            io.stdout(`${JSON.stringify({ checks }, null, 2)}\n`);
+        } else {
+            for (const check of checks) {
+                const line = `  ${STATUS_LABEL[check.status]} ${check.label.padEnd(18)} ${check.detail}\n`;
+                // Problems go to stderr so they can be separated from the summary.
+                (check.status === 'ok' ? io.stdout : io.stderr)(line);
+            }
         }
-    }
-    return checks.some((check) => check.status === 'error') ? EXIT.failure : EXIT.ok;
-}
+        return checks.some((check) => check.status === 'error') ? EXIT.failure : EXIT.ok;
+    },
+});
 
 const STATUS_LABEL = { ok: 'ok      ', warn: 'warning ', error: 'ERROR   ' } as const;
 
