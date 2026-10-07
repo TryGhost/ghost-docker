@@ -4,7 +4,7 @@
 #
 #   docker build -f manager/Dockerfile -t ghost-docker:dev .
 #
-# It holds the CLI, a Docker client with Compose, and the stack's own files.
+# It holds the CLI, Compose, and the stack's own files.
 # The launcher (ghost-docker) is the supported way to run it; see
 # docs/ghost-cli-replacement.md §2.10 for the contract between them.
 
@@ -12,26 +12,34 @@ FROM docker:28-cli@sha256:625d9431a9f54c5a2bc90f24f0e1c3d55b1349fd857dd85035f98c
 
 # Production dependencies, installed by the pnpm version pinned in
 # package.json (`packageManager`). Node 26 no longer bundles corepack, so it
-# is installed first, pinned too. Only node_modules leaves this stage.
+# is installed first, pinned too. Only node_modules, without
+# type declarations, source maps or docs, and the node binary leave this stage.
 FROM node:26-alpine@sha256:0b36e8c136b94cd4fcf02188228e76c31ad5872eef3fec8cbd2eee500cfd9e80 AS deps
 WORKDIR /opt/ghost-docker/manager
 COPY manager/package.json manager/pnpm-lock.yaml ./
 RUN npm install -g corepack@0.36.0 \
     && corepack enable \
     && corepack install \
-    && pnpm install --frozen-lockfile --prod
+    && pnpm install --frozen-lockfile --prod \
+    && find node_modules/.pnpm \( -name '*.d.ts' -o -name '*.d.cts' -o -name '*.d.mts' -o -name '*.map' -o -name '*.md' \) -delete
 
-FROM node:26-alpine@sha256:0b36e8c136b94cd4fcf02188228e76c31ad5872eef3fec8cbd2eee500cfd9e80
+# Plain Alpine with Node's binary copied in: the image only runs node, and the
+# Node image's npm, npx and C headers would be dead weight. Keep this Alpine on
+# the release the Node image above is built on, for its libstdc++.
+FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
+
+RUN apk add --no-cache libstdc++ libgcc
+COPY --from=deps /usr/local/bin/node /usr/local/bin/node
 
 # setpriv drops to the caller's uid and gid with the Docker socket's group
 # added, which su-exec cannot do for a uid that has no passwd entry.
 RUN apk add --no-cache setpriv
 
-# The manager talks to the daemon over the Engine API on the mounted socket;
-# the CLI is here for Compose, which has no API and is run as a program.
-COPY --from=docker /usr/local/bin/docker /usr/local/bin/docker
+# The manager talks to the daemon over the Engine API on the mounted socket.
+# Compose has no API and is run as a program: the plugin binary also runs on
+# its own as `docker-compose`, so the Docker CLI itself is not needed.
 COPY --from=docker /usr/local/libexec/docker/cli-plugins/docker-compose \
-    /usr/local/libexec/docker/cli-plugins/docker-compose
+    /usr/local/bin/docker-compose
 
 WORKDIR /opt/ghost-docker/manager
 COPY manager/package.json ./

@@ -35,7 +35,7 @@ if [ -S "$socket" ]; then
     [ "$socket_gid" = "$gid" ] || groups="$gid,$socket_gid"
 fi
 
-# The Docker client keeps its configuration under HOME, and an arbitrary uid
+# Compose keeps its Docker configuration under HOME, and an arbitrary uid
 # has no home directory in this image.
 HOME=/tmp/ghost-docker-home
 export HOME
