@@ -35,7 +35,7 @@ dependencies and the contracts in §2 before implementing it.
 | --- | --- |
 | Initial audience | Local and single-site production installations; most servers run one site. Theme developers and migration-tool authors moving local Ghost-CLI sites come first. |
 | Site model | One directory = one site. One `compose.yml`, with `local` and `production` modes selected through `COMPOSE_PROFILES`. |
-| Where tooling runs | In a **manager image** published from this repository: a TypeScript CLI with its own dependencies, a Docker client and Compose. The host runs only a **launcher** that checks Docker and starts the image. See §2.10. |
+| Where tooling runs | In a **manager image** published from this repository: a TypeScript CLI with its own dependencies and Compose. The host runs only a **launcher** that checks Docker and starts the image. See §2.10. |
 | Supported platforms | Production: Linux with Docker Engine (rootful), the counterpart of Ghost-CLI's Ubuntu with systemd. Local sites: also Docker Desktop, OrbStack and WSL2. Rootless Docker is best effort: the identity rules handle it (§2.10), but it is not in the qualification matrix. |
 | Host requirements | Docker Engine 25.0+ with the Compose v2.24+ plugin, and bash for the launcher. No `jq`, `curl`, `git` or Node on the host. `git` only when working from a clone. |
 | Distribution | The manager image carries `compose.yml`, the Caddy configuration and the CLI, and writes them into the site directory. A tagged release is an image tag. A git clone of this repository also works: the launcher builds the image from the checkout and uses the files in place. See §2.7. |
@@ -844,8 +844,8 @@ Keep it to a few hundred lines and to exactly these jobs:
 Anything that could be a manager command is one; the launcher gains no logic
 that the manager could hold.
 
-**The manager image.** A TypeScript CLI on a pinned Node image, with its npm
-dependencies, a Docker client and the Compose plugin, and the stack's files.
+**The manager image.** A TypeScript CLI on pinned Node and Alpine, with its npm
+dependencies, the Compose binary, and the stack's files.
 The manager speaks to the daemon over the Engine API on the mounted socket,
 with each endpoint it uses typed by a zod schema; it does not parse the
 `docker` CLI's output. Compose has no API and is run as a program.
