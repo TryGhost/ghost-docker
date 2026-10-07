@@ -175,6 +175,9 @@ importers:
       execa:
         specifier: 10.0.1
         version: 10.0.1
+      picospinner:
+        specifier: 3.1.2
+        version: 3.1.2
       semver:
         specifier: 7.8.5
         version: 7.8.5
@@ -707,6 +710,10 @@ packages:
     resolution: {integrity: sha512-haREypq7xkM7ErfgIyA0z+Bj4AGKlMSdlQE2jvJo6huWD1EdkKYV+G/T4nq0YEF2vgTT8kqMFKo1uHn950r4SQ==}
     engines: {node: '>=12'}
 
+  picospinner@3.1.2:
+    resolution: {integrity: sha512-0Z++uU8mvB0EvCPAEUq9BGiPcSravzJ+RPdXfjYlzXffqsogisiKRQqI6ctrSSJ6n985vxrgKtQ5n4sRINcJZg==}
+    engines: {node: '>=18.0.0'}
+
   pretty-ms@9.3.1:
     resolution: {integrity: sha512-HzMy3Geq23nVALD/M2LliU+F+M+gVNsvkQWWqeBZ8HDiCgzo6YPJ/Omrmtq24EFrIsk0a3EkQGEd7bDOo+IhGA==}
     engines: {node: '>=18'}
@@ -1078,6 +1085,8 @@ snapshots:
   parse-ms@4.0.0: {}
 
   path-key@4.0.0: {}
+
+  picospinner@3.1.2: {}
 
   pretty-ms@9.3.1:
     dependencies:

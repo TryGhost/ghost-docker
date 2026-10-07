@@ -286,6 +286,15 @@ describe('a local site, not started', () => {
         );
     });
 
+    test('each silent wait had a spinner, and nothing was started behind one', () => {
+        assert.deepEqual(h.spun, [
+            'Checking Docker and the site directory',
+            'Resolving the Ghost image',
+            'Resolving the manager image',
+            'Validating the configuration',
+        ]);
+    });
+
     test('nothing was started', () => {
         assert.ok(!compose.some((args) => args[0] === 'up' || args[0] === 'run'));
     });
@@ -330,6 +339,12 @@ describe('a failed start', () => {
             compose.some((args) => args[0] === 'down' && args.includes('--volumes')),
             'the project was not taken down',
         );
+        // The start, then the clean-up after it, each behind its own spinner.
+        assert.deepEqual(h.spun.slice(-3), [
+            'Pulling images, starting the services and waiting for them to be healthy',
+            "Reading the services' logs",
+            'Removing what the installation created',
+        ]);
     });
 
     test('a service that never becomes healthy is removed the same way', async () => {

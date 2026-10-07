@@ -2,12 +2,18 @@
 import input from '@inquirer/input';
 import select from '@inquirer/select';
 import { statfsSync } from 'node:fs';
+import { Spinner } from 'picospinner';
 import { socketTransport, type DockerTransport } from './docker/transport.ts';
 import { exec, type Exec } from './process.ts';
 
 export interface Io {
     stdout: (text: string) => void;
     stderr: (text: string) => void;
+    /**
+     * Runs `work` behind a spinner, cleared when it settles; at no terminal it
+     * simply runs. Nothing may be printed meanwhile: the spinner owns the last line.
+     */
+    busy: <T>(text: string, work: () => Promise<T>) => Promise<T>;
     env: NodeJS.ProcessEnv;
     cwd: () => string;
     uid: () => number;
@@ -42,9 +48,23 @@ const terminal: Prompter = {
         ),
 };
 
+const isTTY = process.stdin.isTTY && process.stdout.isTTY;
+
 export const processIo: Io = {
     stdout: (text) => void process.stdout.write(text),
     stderr: (text) => void process.stderr.write(text),
+    busy: async (text, work) => {
+        if (!isTTY) {
+            return work();
+        }
+        const spinner = new Spinner(text);
+        spinner.start();
+        try {
+            return await work();
+        } finally {
+            spinner.stop();
+        }
+    },
     env: process.env,
     cwd: () => process.cwd(),
     // Optional in Node's types only for Windows, which this Linux image never is.
@@ -61,5 +81,5 @@ export const processIo: Io = {
         }
     },
     // The launcher attaches a terminal when it has one, also when piped from curl.
-    prompt: process.stdin.isTTY && process.stdout.isTTY ? terminal : null,
+    prompt: isTTY ? terminal : null,
 };

@@ -41,7 +41,8 @@ export const doctorCommand = defineCommand({
     // A report with an error in it is not a failed command, so it returns
     // the status rather than throwing.
     async run({ json, keepProbe }, _positionals, io) {
-        const checks = await collect(loadContext(io.env), io, keepProbe);
+        const gather = () => collect(loadContext(io.env), io, keepProbe);
+        const checks = json ? await gather() : await io.busy('Checking this host', gather);
 
         if (json) {
             io.stdout(`${JSON.stringify({ checks }, null, 2)}\n`);

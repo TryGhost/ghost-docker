@@ -395,7 +395,9 @@ export const installCommand = defineCommand({
 
         // --- Preflight ---
         heading(io, 'Checking this host');
-        const checks = await collect(context, io);
+        const checks = await io.busy('Checking Docker and the site directory', () =>
+            collect(context, io),
+        );
         printChecks(io, checks);
         if (failed(checks)) {
             throw new CliError('preflight failed. Nothing has been changed on this host.');
@@ -433,14 +435,18 @@ export const installCommand = defineCommand({
 
         // --- The exact Ghost image ---
         heading(io, 'Resolving the Ghost image');
-        const ghost = await resolveGhost(io, flags.version);
+        const ghost = await io.busy('Resolving the Ghost image', () =>
+            resolveGhost(io, flags.version),
+        );
         ok(
             io,
             'ghost',
             `${ghost.image}:${ghost.tag} is Ghost ${ghost.version}, ${ghost.reference}`,
         );
 
-        const pin = clone ? null : await managerPin(io, context);
+        const pin = clone
+            ? null
+            : await io.busy('Resolving the manager image', () => managerPin(io, context));
 
         // --- From here on a failure removes what this installation created ---
         const created = new Created(io, context, dir);
@@ -524,7 +530,7 @@ export const installCommand = defineCommand({
             }
             ok(io, 'data', DATA_DIRS.join(' and '));
 
-            const findings = await validate(io, dir);
+            const findings = await io.busy('Validating the configuration', () => validate(io, dir));
             const errors = findings.filter((finding) => finding.level === 'error');
             if (errors.length > 0) {
                 throw new CliError(
@@ -550,8 +556,7 @@ export const installCommand = defineCommand({
                 );
             }
 
-            const commit = managerVersion().commit;
-            const version = managerVersion().version;
+            const { commit, version } = managerVersion();
             created.file(join(dir, META_FILE));
             writeMetadata(dir, {
                 schemaVersion: SCHEMA_VERSION,
@@ -589,11 +594,21 @@ export const installCommand = defineCommand({
             } else {
                 heading(io, 'Starting the services');
                 created.project = true;
-                const up = await compose(
-                    io,
-                    dir,
-                    ['up', '--detach', '--wait', '--wait-timeout', String(READY_TIMEOUT_SECONDS)],
-                    { timeoutMs: (READY_TIMEOUT_SECONDS + 900) * 1000 },
+                const up = await io.busy(
+                    'Pulling images, starting the services and waiting for them to be healthy',
+                    () =>
+                        compose(
+                            io,
+                            dir,
+                            [
+                                'up',
+                                '--detach',
+                                '--wait',
+                                '--wait-timeout',
+                                String(READY_TIMEOUT_SECONDS),
+                            ],
+                            { timeoutMs: (READY_TIMEOUT_SECONDS + 900) * 1000 },
+                        ),
                 );
                 if (up.exitCode !== 0) {
                     throw startFailure(up.stderr || up.stdout, up.timedOut);
@@ -601,7 +616,9 @@ export const installCommand = defineCommand({
                 ok(io, 'services', 'healthy, by their own health checks');
 
                 heading(io, 'Verifying the site');
-                const verified = await verifyIngress(io, siteFacts(dir, readSettings(dir)!));
+                const verified = await io.busy('Reaching the site through its ingress', () =>
+                    verifyIngress(io, siteFacts(dir, readSettings(dir)!)),
+                );
                 printChecks(io, verified);
                 if (failed(verified)) {
                     throw new CliError(
@@ -616,15 +633,19 @@ export const installCommand = defineCommand({
         } catch (error) {
             io.stderr(`\n${describe(error)}\n`);
             if (created.project) {
-                const logs = await compose(io, dir, ['logs', '--no-color', '--tail', '30'], {
-                    timeoutMs: 60_000,
-                });
+                const logs = await io.busy("Reading the services' logs", () =>
+                    compose(io, dir, ['logs', '--no-color', '--tail', '30'], {
+                        timeoutMs: 60_000,
+                    }),
+                );
                 if (logs.stdout.trim()) {
                     io.stderr(`\nThe services' last words:\n${logs.stdout.trimEnd()}\n`);
                 }
             }
             io.stderr('\nThe installation did not complete. Removing what it created\n');
-            const leftovers = await created.remove();
+            const leftovers = await io.busy('Removing what the installation created', () =>
+                created.remove(),
+            );
             if (leftovers.length > 0) {
                 io.stderr(
                     `Some of it could not be removed:\n${leftovers.map((item) => `  ${item}\n`).join('')}`,

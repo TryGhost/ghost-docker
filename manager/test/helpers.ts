@@ -65,6 +65,8 @@ export interface Harness {
     /** Every program run, with its arguments. */
     calls: string[][];
     run: (...argv: string[]) => Promise<{ code: number; stdout: string; stderr: string }>;
+    /** What each spinner said, in order; the fake terminal draws none. */
+    spun: string[];
     /** Questions asked; answers to give, in order. Null: no terminal. */
     asked: string[];
     answers: string[] | null;
@@ -118,6 +120,7 @@ export function harness(): Harness {
         daemon: { info: HEALTHY, compose: '2.40.3' },
         requests: [],
         calls: [],
+        spun: [],
         asked: [],
         answers: null,
         env: {
@@ -134,6 +137,10 @@ export function harness(): Harness {
         io: (out = { stdout: '', stderr: '' }) => ({
             stdout: (text) => void (out.stdout += text),
             stderr: (text) => void (out.stderr += text),
+            busy: (text, work) => {
+                state.spun.push(text);
+                return work();
+            },
             env: state.env,
             cwd: () => state.cwd,
             uid: () => state.uid,
