@@ -26,6 +26,7 @@ import {
     ENV_EXAMPLE_FILE,
     ENV_FILE,
     GHOST_ENV_FILE,
+    hostOf,
     OPTIONAL_PROFILES,
     SITE_MODES,
     siteMode,
@@ -47,7 +48,7 @@ export const REQUIRED_KEYS = {
         'PROJECT_DIR',
         'GHOST_VERSION',
     ],
-    production: ['DOMAIN'],
+    production: ['URL'],
 } as const;
 
 /** Modes that hold credentials and are still private. */
@@ -151,12 +152,19 @@ export async function validateEnv(io: Io, dir: string): Promise<Finding[]> {
         }
     }
 
-    // Caddy serves a certificate for DOMAIN while Ghost is configured for URL,
-    // so a mismatch is a working server serving the wrong site.
-    if (mode === 'production' && values.DOMAIN) {
-        const url = values.URL ?? '';
-        if (url !== `https://${values.DOMAIN}` && !url.startsWith(`https://${values.DOMAIN}/`)) {
-            findings.push(error(file, `URL (${url}) and DOMAIN (${values.DOMAIN}) disagree`));
+    // A production site is served by Caddy, over HTTPS, on the host its URL
+    // names; that host is the site's domain.
+    if (mode === 'production') {
+        for (const key of ['URL', 'ADMIN_URL']) {
+            const url = values[key];
+            if (url && (!url.startsWith('https://') || hostOf(url) === '')) {
+                findings.push(
+                    error(
+                        file,
+                        `${key} must be https://, with a domain, for production: got ${url}`,
+                    ),
+                );
+            }
         }
     }
 
@@ -264,7 +272,7 @@ export async function validateGhostEnv(io: Io, dir: string): Promise<Finding[]> 
 
 /**
  * The settings `.env.example` documents, commented out or not: the operator
- * settings the manager reads itself (DOMAIN, ADMIN_DOMAIN, ...) as well as the
+ * settings the manager reads itself (ADMIN_URL, ...) as well as the
  * ones Compose interpolates.
  */
 export function documentedVariables(exampleText: string): Set<string> {

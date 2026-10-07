@@ -166,7 +166,7 @@ its own containers, and each answer is reported for what it is:
 | Check | How | Reported as |
 | --- | --- | --- |
 | ghost | Its health check, which `up --wait` already required: the Admin API answers inside the container. | `ok` or `ERROR` |
-| caddy | From the ghost container, over the site's network, Caddy is asked for `http://DOMAIN` and must redirect to HTTPS, which it does only for a name it serves. Once per domain. | `ok` or `ERROR` |
+| caddy | From the ghost container, over the site's network, Caddy is asked for `http://` and the host of `URL` (and of `ADMIN_URL`), and must redirect to HTTPS, which it does only for a name it serves. | `ok` or `ERROR` |
 | https | Whether Caddy holds a certificate for the domain. **serving** names the issuer. **pending** means there is none yet: Caddy obtains one once the domain's DNS reaches this host, `./ghost-docker check` reports the change, and `docker compose logs caddy` shows each attempt and why it failed. | `ok` or `note` |
 | published ports | The ports Docker says it published. A container cannot reach the host's own loopback interface, so they are not checked from there: opening the URL is that check. | `note` |
 

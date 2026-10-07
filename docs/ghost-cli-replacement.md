@@ -115,9 +115,8 @@ DATABASE_USER=ghost
 # COMPOSE_PROFILES=production
 # NODE_ENV=production
 # URL=https://example.com
-# DOMAIN=example.com
 # RESTART_POLICY=unless-stopped
-# Optional: ADMIN_DOMAIN=admin.example.com
+# Optional: ADMIN_URL=https://admin.example.com
 # Optional profiles are added only after their configuration is validated.
 ```
 
@@ -137,7 +136,7 @@ Requirements:
 - Use `restart: ${RESTART_POLICY:-unless-stopped}` only for long-running services.
   Setup, migration, and deployment jobs retain `restart: "no"`.
 - Initially `URL` may be required because every supported mode contains Ghost. Do
-  not put `:?` guards on optional-service variables such as `PROJECT_DIR` or DOMAIN.
+  not put `:?` guards on optional-service variables such as `PROJECT_DIR`.
   Validate requirements by mode before provisioning or startup. Revisit URL's guard
   before adding infra-only mode in S13.
 - Keep the initial default network naming unchanged. Do not introduce an empty
@@ -1205,7 +1204,11 @@ commands. Decisions made while building it, which later steps rely on:
   launcher's own contract (§2.10).
 - **Operator keys** in the wrong file are derived from `compose.yml`'s
   interpolations, the settings `.env.example` documents, `COMPOSE_*` and the
-  keys `.env` holds, so `DOMAIN` in `ghost.env` is caught on a local site too.
+  keys `.env` holds, so `GHOST_PORT` in `ghost.env` is caught on a local site too.
+- **No `DOMAIN` setting.** Nothing in Compose or Caddy reads one since the
+  routes became a file, so the domain is the host of `URL` (and the admin
+  domain the host of `ADMIN_URL`); a second copy only needed a check that the
+  two agreed.
 - **Metadata** gained `source`, `stack.image` and `payload` (the checksums of
   §2.7); `schemaVersion` stays 1, since nothing has been released with it.
 - **Fewer commands than listed above.** `caddy render|apply|validate|reload`

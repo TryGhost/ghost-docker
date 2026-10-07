@@ -26,7 +26,7 @@ describe('.env', () => {
         assert.match(result.stdout, /valid for a production site/);
     });
 
-    test('a local site needs no DOMAIN', async () => {
+    test('a local site may use http', async () => {
         makeSite(h, LOCAL);
         assert.equal((await validate()).code, 0);
     });
@@ -53,18 +53,17 @@ describe('.env', () => {
     });
 
     test('required keys are by mode, and an empty one is reported as empty', async () => {
-        makeSite(h, { ...PRODUCTION, DOMAIN: undefined });
-        assert.match((await validate()).errors, /DOMAIN is required for mode production/);
+        makeSite(h, { ...PRODUCTION, URL: undefined });
+        assert.match((await validate()).errors, /URL is required for mode production/);
         makeSite(h, { ...LOCAL, GHOST_VERSION: '' });
         assert.match((await validate()).errors, /GHOST_VERSION is empty/);
     });
 
-    test('URL and DOMAIN must agree', async () => {
-        makeSite(h, { ...PRODUCTION, URL: 'https://other.example' });
-        assert.match(
-            (await validate()).errors,
-            /URL \(https:\/\/other\.example\) and DOMAIN \(example\.com\) disagree/,
-        );
+    test('a production URL is https, and its host is the domain', async () => {
+        makeSite(h, { ...PRODUCTION, URL: 'http://example.com' });
+        assert.match((await validate()).errors, /URL must be https:\/\/, with a domain/);
+        makeSite(h, { ...PRODUCTION, ADMIN_URL: 'admin.example.com' });
+        assert.match((await validate()).errors, /ADMIN_URL must be https:\/\/, with a domain/);
         makeSite(h, { ...PRODUCTION, URL: 'https://example.com/blog' });
         assert.equal((await validate()).code, 0);
     });
@@ -139,8 +138,7 @@ describe('ghost.env', () => {
         'COMPOSE_PROJECT_NAME',
         'DATABASE_ROOT_PASSWORD',
         'GHOST_PORT',
-        'DOMAIN',
-        'ADMIN_DOMAIN',
+        'ADMIN_URL',
     ]) {
         test(`the operator setting ${key} is rejected`, async () => {
             makeSite(h, LOCAL, { [key]: 'x' });
@@ -218,9 +216,12 @@ describe('get, set and unset', () => {
     });
 
     test('without a file, the key says which file it belongs in', async () => {
-        await h.run('config', 'set', 'ADMIN_DOMAIN', 'admin.example.com');
+        await h.run('config', 'set', 'ADMIN_URL', 'https://admin.example.com');
         await h.run('config', 'set', 'mail__transport', 'SMTP');
-        assert.match(readFileSync(join(h.dir, '.env'), 'utf8'), /ADMIN_DOMAIN="admin.example.com"/);
+        assert.match(
+            readFileSync(join(h.dir, '.env'), 'utf8'),
+            /ADMIN_URL="https:\/\/admin.example.com"/,
+        );
         assert.match(readFileSync(join(h.dir, 'ghost.env'), 'utf8'), /mail__transport="SMTP"/);
         assert.equal((await h.run('config', 'get', 'GHOST_PORT')).stdout, '2368\n');
     });

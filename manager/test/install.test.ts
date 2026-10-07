@@ -121,7 +121,10 @@ describe('refusals that change nothing', () => {
         h.answers = ['production', 'example.com'];
         assert.equal((await install('--no-start')).code, 0);
         assert.deepEqual(h.asked, ['What kind of site?', 'Its domain (example.com):']);
-        assert.equal(env.get(readFileSync(join(h.dir, '.env'), 'utf8'), 'DOMAIN'), 'example.com');
+        assert.equal(
+            env.get(readFileSync(join(h.dir, '.env'), 'utf8'), 'URL'),
+            'https://example.com',
+        );
     });
 
     test('--no-prompt never asks, even at a terminal', async () => {

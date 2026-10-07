@@ -43,7 +43,7 @@ The changes people make most often, inside the site's block:
 | To | Change |
 | --- | --- |
 | Set or change the ACME account email | `tls ops@example.com` (`install --email` writes this line; without it, the line is there commented out) |
-| Serve Ghost Admin on its own domain | add it to the block's addresses (`example.com, admin.example.com {`) and give `SecurityHeaders` the admin domain: `import /etc/caddy/snippets/SecurityHeaders "admin.example.com"`. Set `ADMIN_DOMAIN` and `ADMIN_URL` in `.env` too, then `docker compose up -d` |
+| Serve Ghost Admin on its own domain | add it to the block's addresses (`example.com, admin.example.com {`) and give `SecurityHeaders` the admin domain: `import /etc/caddy/snippets/SecurityHeaders "admin.example.com"`. Set `ADMIN_URL` in `.env` too, then `docker compose up -d` |
 | Route analytics, after adding the `analytics` profile | `import /etc/caddy/snippets/TrafficAnalytics traffic-analytics-<project>:3000` (see [TINYBIRD.md](../TINYBIRD.md)) |
 | Use this site's own ActivityPub, after adding the `activitypub` profile | change the ActivityPub import to `activitypub-<project>:8080` |
 | Redirect `www.` | a block of its own: `www.example.com { redir https://example.com{uri} }` |

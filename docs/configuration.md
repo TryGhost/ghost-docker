@@ -27,8 +27,12 @@ An entry added to `compose.yml` is therefore caught the moment it is added,
 with nothing to keep in sync. The same applies to operator settings in the
 wrong file: the set of keys that belong in `.env` is derived from the variables
 `compose.yml` interpolates, the settings `.env.example` documents (commented
-out or not, which covers the ones the manager reads itself, such as `DOMAIN`
-and `ADMIN_DOMAIN`), `COMPOSE_*`, and whatever `.env` already defines.
+out or not), `COMPOSE_*`, and whatever `.env` already defines.
+
+A site's domain is not a setting of its own: it is the host of `URL`, and an
+admin domain the host of `ADMIN_URL`. A production `URL` must be `https://`.
+Caddy serves the addresses in `caddy/sites/site.caddy`; `check` asks it for
+each host, so a change to one that is not made to the other is reported.
 
 Both files hold credentials and should be mode `0600`. The helpers write them
 atomically with a restrictive umask and preserve the mode of an existing file.

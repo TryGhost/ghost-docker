@@ -94,7 +94,7 @@ export const setCommand = defineCommand({
         if (file === ENV_FILE) {
             io.stderr(
                 'Compose reads .env when services are created: apply it with docker compose up -d' +
-                    (key.endsWith('DOMAIN') ? '; the routes are in caddy/sites/site.caddy' : '') +
+                    (key.endsWith('URL') ? '; the routes are in caddy/sites/site.caddy' : '') +
                     '.\n',
             );
         } else {

@@ -332,7 +332,7 @@ step "The image holds everything compose.yml refers to"
 # be in the image. Data directories are created at install and are exempt.
 # shellcheck disable=SC2016  # a Node program, not shell
 run docker run --rm --entrypoint sh \
-    -e URL=https://example.com -e DOMAIN=example.com -e DATABASE_PASSWORD=x -e DATABASE_ROOT_PASSWORD=y \
+    -e URL=https://example.com -e DATABASE_PASSWORD=x -e DATABASE_ROOT_PASSWORD=y \
     -e COMPOSE_PROFILES=production,analytics,activitypub \
     ghost-docker:checkout -c 'cd /opt/ghost-docker/stack && docker compose -f compose.yml config --format json | node -e "
 const fs = require(\"fs\");

@@ -62,10 +62,20 @@ export function readSettings(dir: string): SiteSettings | null {
     return { get: (key) => values[key] };
 }
 
+/** The hostname a URL names, or '' when it is not a URL. */
+export const hostOf = (url: string): string => {
+    try {
+        return new URL(url).hostname;
+    } catch {
+        return '';
+    }
+};
+
 /** Everything a command needs to know about a site, from `.env`. */
 export interface SiteFacts {
     readonly dir: string;
     readonly mode: SiteMode | null;
+    /** The hosts of URL and ADMIN_URL: what Caddy should serve, in production. */
     readonly domain: string;
     readonly adminDomain: string;
     readonly settings: SiteSettings;
@@ -77,7 +87,7 @@ export function siteFacts(dir: string, settings: SiteSettings): SiteFacts {
         dir,
         settings,
         mode: siteMode(value('COMPOSE_PROFILES')),
-        domain: value('DOMAIN'),
-        adminDomain: value('ADMIN_DOMAIN'),
+        domain: hostOf(value('URL')),
+        adminDomain: hostOf(value('ADMIN_URL')),
     };
 }

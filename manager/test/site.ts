@@ -41,7 +41,6 @@ export const PRODUCTION: Record<string, string> = {
     COMPOSE_PROJECT_NAME: 'ghost-example-com',
     NODE_ENV: 'production',
     URL: 'https://example.com',
-    DOMAIN: 'example.com',
 };
 
 export function writeEnvFile(path: string, values: Record<string, string | undefined>): void {

@@ -498,15 +498,11 @@ export async function install(flags: InstallFlags, io: Io): Promise<number> {
         ];
         if (production) {
             settings.push(
-                ['DOMAIN', domain],
                 ['HTTP_PORT', String(PRODUCTION_PORTS.http)],
                 ['HTTPS_PORT', String(PRODUCTION_PORTS.https)],
             );
             if (adminDomain) {
-                settings.push(
-                    ['ADMIN_DOMAIN', adminDomain],
-                    ['ADMIN_URL', `https://${adminDomain}`],
-                );
+                settings.push(['ADMIN_URL', `https://${adminDomain}`]);
             }
         }
         const envPath = join(dir, ENV_FILE);
