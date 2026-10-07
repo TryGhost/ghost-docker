@@ -39,10 +39,12 @@ export async function check(io: Io): Promise<number> {
         all.push({ status: 'error', label: 'metadata', detail: metadata.reason });
     }
 
-    const host = await collect(context, io);
+    const host = await io.busy('Checking Docker and the site directory', () =>
+        collect(context, io),
+    );
     section('Host', host);
 
-    const findings = await validate(io, site.dir);
+    const findings = await io.busy('Validating the configuration', () => validate(io, site.dir));
     section(
         'Configuration',
         findings.length === 0
@@ -66,7 +68,7 @@ export async function check(io: Io): Promise<number> {
         return EXIT.failure;
     }
 
-    const services = await composePs(io, site.dir);
+    const services = await io.busy('Reading the services', () => composePs(io, site.dir));
     // Every container the project has, judged by its own state: a service is
     // running and healthy (or has no health check), a one-shot job exited 0.
     const serviceChecks: Check[] = (services ?? []).map((state) => {
@@ -101,12 +103,18 @@ export async function check(io: Io): Promise<number> {
             detail: 'docker compose ps failed',
         });
     }
-    serviceChecks.push(await database(io, site.dir, site.settings.get));
+    serviceChecks.push(
+        await io.busy('Connecting to the database', () =>
+            database(io, site.dir, site.settings.get),
+        ),
+    );
     section('Services', serviceChecks);
 
     const running = serviceChecks.find((entry) => entry.label === 'ghost')?.status === 'ok';
     if (running) {
-        const ingress = await verifyIngress(io, site, services);
+        const ingress = await io.busy('Reaching the site through its ingress', () =>
+            verifyIngress(io, site, services),
+        );
         section('Ingress', ingress);
     } else {
         io.stdout('\nIngress\n  skipped: Ghost is not running.\n');
@@ -187,10 +195,9 @@ export const infoCommand = defineCommand({
 export const listCommand = defineCommand({
     brief: 'Every ghost-docker container on this host, stopped ones included.',
     run: async (_values, _positionals, io) => {
-        const containers = await listContainers(io.docker, {
-            all: true,
-            labels: [MANAGED_LABEL],
-        });
+        const containers = await io.busy('Listing containers', () =>
+            listContainers(io.docker, { all: true, labels: [MANAGED_LABEL] }),
+        );
         if (containers.length === 0) {
             io.stdout('No ghost-docker containers exist on this host.\n');
         } else {

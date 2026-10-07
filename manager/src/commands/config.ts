@@ -108,7 +108,7 @@ export const setCommand = defineCommand({
 
 export async function validateSite(io: Io): Promise<number> {
     const { site } = installedSite(io);
-    const findings = await validate(io, site.dir);
+    const findings = await io.busy('Validating the configuration', () => validate(io, site.dir));
     printChecks(
         io,
         findings.map((finding) => ({

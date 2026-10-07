@@ -39,6 +39,13 @@ describe('a healthy host', () => {
         assert.ok(!existsSync(join(h.dir, PROBE_FILE)), 'left the probe file behind');
     });
 
+    test('a spinner covers the checks, except when the output is JSON', async () => {
+        await h.run('doctor');
+        assert.deepEqual(h.spun, ['Checking this host']);
+        await h.run('doctor', '--json');
+        assert.deepEqual(h.spun, ['Checking this host']);
+    });
+
     test('--keep-probe leaves a private file owned by the caller', async () => {
         assert.equal((await h.run('doctor', '--keep-probe')).code, 0);
         const info = statSync(join(h.dir, PROBE_FILE));
