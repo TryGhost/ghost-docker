@@ -4,19 +4,37 @@
 // out. main.ts is the only caller that touches the real process.
 import { parseArgs } from 'node:util';
 import { defineCommand, type Command } from './command.ts';
+import { getCommand, setCommand, validateCommand } from './commands/config.ts';
 import { doctorCommand } from './commands/doctor.ts';
+import { installCommand } from './commands/install.ts';
+import { checkCommand, infoCommand, listCommand } from './commands/site.ts';
 import { versionCommand } from './commands/version.ts';
 import { CliError, EXIT, UsageError } from './errors.ts';
 import type { Io } from './io.ts';
 
+/** A command of two words, such as `config get`, is keyed by both. */
 const COMMANDS: Record<string, Command> = {
+    install: installCommand,
+    'config get': getCommand,
+    'config set': setCommand,
+    'config validate': validateCommand,
+    check: checkCommand,
+    info: infoCommand,
+    list: listCommand,
     version: versionCommand,
     doctor: doctorCommand,
     help: defineCommand({
         brief: 'Print this, or with a command, its help.',
-        positionals: ['command'],
-        run: async (_values, [topic], io) => {
-            io.stdout(topic === undefined ? rootHelp() : commandHelp(topic, lookup(topic)));
+        positionals: ['command', 'subcommand'],
+        run: async (_values, topic, io) => {
+            const name = topic.join(' ');
+            io.stdout(
+                name === ''
+                    ? rootHelp()
+                    : subcommands(name).length > 0
+                      ? groupHelp(name)
+                      : commandHelp(name, lookup(name)),
+            );
             return EXIT.ok;
         },
     }),
@@ -38,16 +56,23 @@ Day-to-day operation is plain Docker Compose, from the site directory:
 The plan is docs/ghost-cli-replacement.md in the repository.`;
 
 export async function run(argv: readonly string[], io: Io): Promise<number> {
-    const [first = 'help', ...rest] = argv;
-    const name = ALIASES[first] ?? first;
+    const [first = 'help', ...others] = argv;
+    const grouped = `${first} ${others[0]}`;
+    const [name, rest] =
+        grouped in COMMANDS ? [grouped, others.slice(1)] : [ALIASES[first] ?? first, others];
+    // Asking for help wins over whatever else is wrong with the line.
+    // After `--` it is an argument like any other.
+    const end = rest.indexOf('--');
+    const helping = (end === -1 ? rest : rest.slice(0, end)).some(
+        (arg) => arg === '--help' || arg === '-h',
+    );
     try {
+        if (helping && subcommands(name).length > 0) {
+            io.stdout(groupHelp(name));
+            return EXIT.ok;
+        }
         const command = lookup(name);
-        // Asking for help wins over whatever else is wrong with the line.
-        // After `--` it is an argument like any other.
-        const end = rest.indexOf('--');
-        if (
-            (end === -1 ? rest : rest.slice(0, end)).some((arg) => arg === '--help' || arg === '-h')
-        ) {
+        if (helping) {
             io.stdout(commandHelp(name, command));
             return EXIT.ok;
         }
@@ -62,10 +87,19 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
 function lookup(name: string): Command {
     const command = COMMANDS[name];
     if (!command) {
-        throw new UsageError(`unknown command: ${name}\nRun ghost-docker --help for the commands.`);
+        const group = subcommands(name);
+        throw new UsageError(
+            group.length > 0
+                ? `${name} takes a subcommand: ${group.map((key) => key.split(' ')[1]).join(', ')}\nRun ghost-docker ${name} --help for them.`
+                : `unknown command: ${name}\nRun ghost-docker --help for the commands.`,
+        );
     }
     return command;
 }
+
+/** `config` → `config get`, `config set`, …; nothing for a one-word command. */
+const subcommands = (name: string): string[] =>
+    Object.keys(COMMANDS).filter((key) => key.startsWith(`${name} `));
 
 function parse(name: string, command: Command, args: string[]) {
     const usage = (message: string) =>
@@ -135,6 +169,16 @@ function rootHelp(): string {
         ]) +
         '\nCOMMANDS\n' +
         columns(commands)
+    );
+}
+
+function groupHelp(name: string): string {
+    const group = subcommands(name);
+    return (
+        'USAGE\n' +
+        group.map((key) => `  ghost-docker ${usageLine(key)}\n`).join('') +
+        '\nCOMMANDS\n' +
+        columns(group.map((key): [string, string] => [key, COMMANDS[key]!.brief]))
     );
 }
 

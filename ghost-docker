@@ -192,6 +192,8 @@ declare -a run=(
     --env "GD_SOURCE=$source_kind"
 )
 [[ -z ${NO_COLOR:-} ]] || run+=(--env "NO_COLOR=$NO_COLOR")
+# Extra Compose files for the manager's own Compose runs (docs/configuration.md).
+[[ -z ${GD_COMPOSE_OVERRIDES:-} ]] || run+=(--env "GD_COMPOSE_OVERRIDES=$GD_COMPOSE_OVERRIDES")
 [[ -z ${TERM:-} ]] || run+=(--env "TERM=$TERM")
 
 # A terminal is attached when there is one, including when this script was

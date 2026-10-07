@@ -1,0 +1,28 @@
+# Routes for {{project}}, written by ./ghost-docker install. This file is
+# yours: edit it, then reload Caddy:
+#
+#   docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile
+#
+# docs/caddy.md lists the snippets and the arguments each one takes.
+
+{{addresses}} {
+	import /etc/caddy/snippets/Logging
+
+	# The ACME account Caddy registers with, which receives Let's Encrypt's
+	# expiry notices.
+	{{tls}}
+
+	# ActivityPub: this site’s own service, or the hosted one.
+	import /etc/caddy/snippets/ActivityPub {{activitypub}}
+
+	# Everything else goes to Ghost.
+	handle {
+		reverse_proxy ghost-{{project}}:2368
+	}
+
+	encode gzip
+
+	# Security headers. The argument is the admin domain allowed to frame the
+	# site, or "" for none; it is mandatory.
+	import /etc/caddy/snippets/SecurityHeaders "{{adminDomain}}"
+}

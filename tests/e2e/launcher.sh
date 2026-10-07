@@ -194,6 +194,15 @@ expect_run_arg "$SITE:$SITE"
     "$BASH_BIN" "$LAUNCHER" version && expect_run_arg "$SITE:$SITE")
 ok "a symlinked path is mounted as the real one"
 
+step "Compose overrides reach the manager"
+with_fake ok env ${fake_socket_env[@]+"${fake_socket_env[@]}"} GD_IMAGE=example/manager:1 \
+    GD_COMPOSE_OVERRIDES=compose.ipv6.yml "$BASH_BIN" "$LAUNCHER" --dir "$SITE" version
+expect_run_arg "GD_COMPOSE_OVERRIDES=compose.ipv6.yml"
+with_fake ok env ${fake_socket_env[@]+"${fake_socket_env[@]}"} GD_IMAGE=example/manager:1 \
+    "$BASH_BIN" "$LAUNCHER" --dir "$SITE" version
+run_args | grep -q '^GD_COMPOSE_OVERRIDES=' && fail "an unset GD_COMPOSE_OVERRIDES was passed" "$(run_args)"
+ok "GD_COMPOSE_OVERRIDES is passed when set, and only then"
+
 step "Rootless Docker"
 with_fake rootless env ${fake_socket_env[@]+"${fake_socket_env[@]}"} GD_IMAGE=example/manager:1 \
     "$BASH_BIN" "$LAUNCHER" --dir "$SITE" version

@@ -82,7 +82,7 @@ ghost.env
 # A bundle import in progress: its marker and its private staging copy
 .ghost-docker-import
 .import/
-# Generated and operator-managed Caddy routes, and the validation staging tree
+# The site's Caddy routes, and operator Caddy files
 caddy/sites/*
 !caddy/sites/.gitignore
 caddy/custom/*
@@ -91,7 +91,6 @@ caddy/custom/*
 caddy/global/*
 !caddy/global/.gitignore
 !caddy/global/README.md
-caddy/.staging/
 # Operator's own Caddyfile from pre-1.0 installations (see the S6 migration)
 caddy/Caddyfile.local
 # Backups written by the helpers

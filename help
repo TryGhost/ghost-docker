@@ -5,16 +5,14 @@ cat << 'HELPEOF'
                     GHOST DOCKER HELP & COMMANDS
 ════════════════════════════════════════════════════════════════════
 
-INSTALLATION:
-  The ghost-docker launcher and its commands are being built on this branch;
-  see docs/ghost-cli-replacement.md. Planned:
-
-  ./ghost-docker install --domain example.com
+INSTALLATION (see docs/install.md):
+  ./ghost-docker install --domain example.com [--email ops@example.com]
   ./ghost-docker install --local
-  ./ghost-docker install --import BUNDLE   # a local Ghost-CLI site
   ./ghost-docker check                     # diagnose this site
   ./ghost-docker list                      # every ghost-docker container on this host
   ./ghost-docker info                      # recorded installation metadata
+
+  Planned: install --import BUNDLE (a local Ghost-CLI site), update, backup.
 
 SITE MODES (exactly one, selected in COMPOSE_PROFILES in .env):
   local       ghost + db, published on 127.0.0.1:${GHOST_PORT}
@@ -37,18 +35,15 @@ CONFIGURATION:
 
   ./ghost-docker config validate                    # Check both files by mode
   ./ghost-docker config set ghost.env KEY VALUE     # Write safely and atomically
-  ./ghost-docker config unset ghost.env KEY         # Remove a setting
 
   Restart Ghost after changes: docker compose up -d
 
 ROUTING (production):
-  ./ghost-docker caddy apply       # Render, validate, install, reload, verify
-  ./ghost-docker caddy render      # Render the candidate without installing it
-  ./ghost-docker caddy validate    # Validate the installed configuration
+  This site's routes: caddy/sites/site.caddy   (written by install; yours to edit)
+  Other sites:        caddy/custom/*.caddy
+  Global options:     caddy/global/*.caddy
 
-  Generated routes:  caddy/sites/*.caddy   (do not edit)
-  Your own routes:   caddy/custom/*.caddy
-  Global options:    caddy/global/*.caddy
+  After editing: docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile
 
 TROUBLESHOOTING:
   docker compose exec ghost sh      # Access Ghost container shell
@@ -60,9 +55,9 @@ DATABASE ACCESS:
   # Use the DATABASE_ROOT_PASSWORD from your .env file
 
 UPGRADES:
-  git pull                          # Pull latest updates
-  docker compose pull               # Get latest container images
-  docker compose up -d              # Upgrade to the latest version
+  Ghost is pinned to an exact image (GHOST_IMAGE_REF in .env), so
+  docker compose pull does not change it. Scripted upgrades land in S7;
+  until then, back up, change the pin, and run docker compose up -d.
 
   For major upgrades, always:
   1. Backup your data first
@@ -78,7 +73,7 @@ USEFUL PATHS:
 DOCUMENTATION:
   docs/install.md         Installation, ports, optional services, doctor
   docs/configuration.md   Configuration split, profiles, lifecycle, metadata
-  docs/caddy.md           Route generation, custom routes, validation
+  docs/caddy.md           The site's routes, and how to change them
   docs/bundle-v1.md       Migration bundle contract
 
 MORE HELP:

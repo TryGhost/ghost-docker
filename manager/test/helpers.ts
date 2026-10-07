@@ -22,6 +22,35 @@ export interface Daemon {
     /** `docker info` as the daemon would answer, or a failure. */
     info?: Record<string, unknown> | { fail: string } | { hang: true };
     compose?: string | null;
+    /** Free bytes on the site's filesystem; 50 GB when unset. */
+    freeBytes?: number | null;
+    /** What GET /containers/json answers, as the Engine API spells it. */
+    containers?: unknown[];
+    /**
+     * `docker compose ...` after the --project-directory and -f options, with
+     * the environment it was given. Undefined falls through to "unexpected".
+     */
+    composeRun?: (args: string[], env: Record<string, string>) => ProgramResult | undefined;
+    /**
+     * Any other request, answered before the defaults: return undefined to
+     * fall through. A one-shot container is a `POST /containers/create`
+     * whose answer here decides what it prints and exits with (see `ran`).
+     */
+    api?: (request: DockerRequest) => DockerResponse | undefined;
+    /** What a one-shot container other than the doctor's probe does. */
+    run?: (
+        spec: CreatedContainer,
+    ) => { status: number; stdout?: string; stderr?: string } | undefined;
+}
+
+/** A container the manager asked the fake daemon to create. */
+export interface CreatedContainer {
+    image: string;
+    cmd: string[];
+    entrypoint: string[];
+    binds: string[];
+    network: string;
+    user: string;
 }
 
 export interface Harness {
@@ -36,8 +65,15 @@ export interface Harness {
     /** Every program run, with its arguments. */
     calls: string[][];
     run: (...argv: string[]) => Promise<{ code: number; stdout: string; stderr: string }>;
+    /** Questions asked; answers to give, in order. Null: no terminal. */
+    asked: string[];
+    answers: string[] | null;
+    /** The Io `run` uses, for calling a function directly; output goes into `out`. */
+    io: (out?: { stdout: string; stderr: string }) => Io;
     cleanup: () => void;
 }
+
+export { ok, failed, json };
 
 export const HEALTHY = {
     ServerVersion: '28.5.2',
@@ -82,6 +118,8 @@ export function harness(): Harness {
         daemon: { info: HEALTHY, compose: '2.40.3' },
         requests: [],
         calls: [],
+        asked: [],
+        answers: null,
         env: {
             GD_SITE_DIR: dir,
             GD_UID: String(uid),
@@ -93,38 +131,68 @@ export function harness(): Harness {
             GD_VERSION_FILE: join(dir, 'no-such-version-file'),
         },
         cleanup: () => rmSync(dir, { recursive: true, force: true }),
+        io: (out = { stdout: '', stderr: '' }) => ({
+            stdout: (text) => void (out.stdout += text),
+            stderr: (text) => void (out.stderr += text),
+            env: state.env,
+            cwd: () => state.cwd,
+            uid: () => state.uid,
+            gid: () => state.gid,
+            docker: async (request) => {
+                state.requests.push(request);
+                return daemon(state, request);
+            },
+            prompt:
+                state.answers === null
+                    ? null
+                    : {
+                          choose: async (message) => {
+                              state.asked.push(message);
+                              return state.answers!.shift() as never;
+                          },
+                          text: async (message, check) => {
+                              state.asked.push(message);
+                              const answer = state.answers!.shift() ?? '';
+                              const refused = check?.(answer);
+                              if (refused) {
+                                  throw new Error(`the fake terminal was refused: ${refused}`);
+                              }
+                              return answer;
+                          },
+                      },
+            freeBytes: () => state.daemon.freeBytes ?? 50 * 1024 ** 3,
+            exec: fakeExec((command, args, options) => {
+                state.calls.push([command, ...args]);
+                if (command !== 'docker') {
+                    return failed(undefined, `spawn ${command} ENOENT`);
+                }
+                if (args[0] === 'compose' && args[1] === 'version') {
+                    return state.daemon.compose
+                        ? ok(`${state.daemon.compose}\n`)
+                        : failed(1, 'unknown command');
+                }
+                if (args[0] === 'compose' && args[1] === '--project-directory') {
+                    // Past --project-directory DIR and each -f FILE.
+                    let rest = args.slice(3);
+                    while (rest[0] === '-f') {
+                        rest = rest.slice(2);
+                    }
+                    const answer = state.daemon.composeRun?.(rest, options.env ?? {});
+                    if (answer) {
+                        return answer;
+                    }
+                }
+                return failed(1, `unexpected: docker ${args.join(' ')}`);
+            }),
+        }),
         run: async (...argv) => {
-            let stdout = '';
-            let stderr = '';
+            const out = { stdout: '', stderr: '' };
             // managerVersion() reads the real environment.
             const previous = process.env.GD_VERSION_FILE;
             process.env.GD_VERSION_FILE = state.env.GD_VERSION_FILE;
-            const io: Io = {
-                stdout: (text) => void (stdout += text),
-                stderr: (text) => void (stderr += text),
-                env: state.env,
-                cwd: () => state.cwd,
-                uid: () => state.uid,
-                gid: () => state.gid,
-                docker: async (request) => {
-                    state.requests.push(request);
-                    return daemon(state, request);
-                },
-                exec: fakeExec((command, args) => {
-                    state.calls.push([command, ...args]);
-                    if (command !== 'docker') {
-                        return failed(undefined, `spawn ${command} ENOENT`);
-                    }
-                    if (args[0] === 'compose' && args[1] === 'version') {
-                        return state.daemon.compose
-                            ? ok(`${state.daemon.compose}\n`)
-                            : failed(1, 'unknown command');
-                    }
-                    return failed(1, `unexpected: docker ${args.join(' ')}`);
-                }),
-            };
+            const io = state.io(out);
             try {
-                return { code: await run(argv, io), stdout, stderr };
+                return { code: await run(argv, io), stdout: out.stdout, stderr: out.stderr };
             } finally {
                 if (previous === undefined) {
                     delete process.env.GD_VERSION_FILE;
@@ -143,8 +211,10 @@ const json = (status: number, body: unknown): DockerResponse => ({
 });
 const empty: DockerResponse = { status: 204, body: Buffer.alloc(0) };
 
-/** The one container the fake daemon ever runs: the sibling reading the probe file. */
+/** The doctor's sibling, reading the probe file back. */
 let sibling: { binds: string[]; cmd: string[] } | null = null;
+/** Other one-shot containers, by the index in their ID. */
+const ran: { status: number; stdout?: string; stderr?: string }[] = [];
 
 function daemon(state: Harness, request: DockerRequest): Promise<DockerResponse> {
     const { method, path } = request;
@@ -157,6 +227,53 @@ function daemon(state: Harness, request: DockerRequest): Promise<DockerResponse>
             throw new DaemonUnreachable(String(info.fail));
         }
         return Promise.resolve(json(200, info));
+    }
+    const answered = state.daemon.api?.(request);
+    if (answered) {
+        return Promise.resolve(answered);
+    }
+    if (method === 'GET' && path === '/containers/json') {
+        return Promise.resolve(json(200, state.daemon.containers ?? []));
+    }
+    if (method === 'POST' && path === '/containers/create' && state.daemon.run) {
+        const body = request.body as {
+            Image: string;
+            Cmd: string[];
+            Entrypoint?: string[];
+            User?: string;
+            HostConfig: { Binds: string[]; NetworkMode: string };
+        };
+        const outcome = state.daemon.run({
+            image: body.Image,
+            cmd: body.Cmd,
+            entrypoint: body.Entrypoint ?? [],
+            binds: body.HostConfig.Binds,
+            network: body.HostConfig.NetworkMode,
+            user: body.User ?? '',
+        });
+        if (outcome) {
+            const id = `ran-${ran.length}`;
+            ran.push(outcome);
+            return Promise.resolve(json(201, { Id: id }));
+        }
+    }
+    const one = /^\/containers\/ran-(\d+)(\/\w+)?$/.exec(path);
+    if (one) {
+        const outcome = ran[Number(one[1])]!;
+        switch (one[2]) {
+            case '/wait':
+                return Promise.resolve(json(200, { StatusCode: outcome.status }));
+            case '/logs':
+                return Promise.resolve({
+                    status: 200,
+                    body: Buffer.concat([
+                        frame(1, outcome.stdout ?? ''),
+                        frame(2, outcome.stderr ?? ''),
+                    ]),
+                });
+            default:
+                return Promise.resolve(empty);
+        }
     }
     const mode = state.daemon.sibling ?? 'sees';
     if (method === 'POST' && path === '/containers/create') {
@@ -205,23 +322,33 @@ function daemon(state: Harness, request: DockerRequest): Promise<DockerResponse>
  * An Exec whose template is parsed the way execa parses it (literal text
  * split on whitespace, each interpolated value one argument, an array
  * several) and handed to a scripted program. Calling it with options, as
- * exec({ timeout })`...` does, returns itself: options are accepted and
- * ignored. Typed as the real thing; only the fields callers read exist.
+ * exec({ timeout })`...` does, returns an instance carrying them; the program
+ * sees the environment. Typed as the real thing; only the fields callers
+ * read exist.
  */
-function fakeExec(program: (command: string, args: string[]) => ProgramResult): Exec {
-    const run = (first: unknown, ...values: unknown[]): unknown => {
-        if (!isTemplate(first)) {
-            return run;
-        }
-        const [command = '', ...args] = parseTemplate(first, values);
-        const result = program(command, args);
-        return Promise.resolve({
-            ...result,
-            failed: result.exitCode !== 0,
-            shortMessage: result.exitCode === undefined ? result.stderr : '',
-        });
+interface ExecOptions {
+    env?: Record<string, string>;
+}
+
+function fakeExec(
+    program: (command: string, args: string[], options: ExecOptions) => ProgramResult,
+): Exec {
+    const make = (options: ExecOptions) => {
+        const run = (first: unknown, ...values: unknown[]): unknown => {
+            if (!isTemplate(first)) {
+                return make({ ...options, ...(first as ExecOptions) });
+            }
+            const [command = '', ...args] = parseTemplate(first, values);
+            const result = program(command, args, options);
+            return Promise.resolve({
+                ...result,
+                failed: result.exitCode !== 0,
+                shortMessage: result.exitCode === undefined ? result.stderr : '',
+            });
+        };
+        return run;
     };
-    return run as unknown as Exec;
+    return make({}) as unknown as Exec;
 }
 
 const isTemplate = (value: unknown): value is TemplateStringsArray =>
