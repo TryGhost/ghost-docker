@@ -13,9 +13,10 @@ const COMMANDS: Record<string, Command> = {
     version: versionCommand,
     doctor: doctorCommand,
     help: defineCommand({
-        brief: 'Print this.',
-        run: async (_values, _positionals, io) => {
-            io.stdout(rootHelp());
+        brief: 'Print this, or with a command, its help.',
+        positionals: ['command'],
+        run: async (_values, [topic], io) => {
+            io.stdout(topic === undefined ? rootHelp() : commandHelp(topic, lookup(topic)));
             return EXIT.ok;
         },
     }),
@@ -40,22 +41,30 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
     const [first = 'help', ...rest] = argv;
     const name = ALIASES[first] ?? first;
     try {
-        const command = COMMANDS[name];
-        if (!command) {
-            throw new UsageError(
-                `unknown command: ${name}\nRun ghost-docker --help for the commands.`,
-            );
-        }
-        const { values, positionals } = parse(name, command, rest);
-        if (values.help === true) {
+        const command = lookup(name);
+        // Asking for help wins over whatever else is wrong with the line.
+        // After `--` it is an argument like any other.
+        const end = rest.indexOf('--');
+        if (
+            (end === -1 ? rest : rest.slice(0, end)).some((arg) => arg === '--help' || arg === '-h')
+        ) {
             io.stdout(commandHelp(name, command));
             return EXIT.ok;
         }
+        const { values, positionals } = parse(name, command, rest);
         return await command.run(camelKeys(values), positionals, io);
     } catch (error) {
         io.stderr(`${describe(error)}\n`);
         return error instanceof CliError ? error.exitCode : EXIT.failure;
     }
+}
+
+function lookup(name: string): Command {
+    const command = COMMANDS[name];
+    if (!command) {
+        throw new UsageError(`unknown command: ${name}\nRun ghost-docker --help for the commands.`);
+    }
+    return command;
 }
 
 function parse(name: string, command: Command, args: string[]) {
@@ -66,7 +75,7 @@ function parse(name: string, command: Command, args: string[]) {
         parsed = parseArgs({
             args,
             // parseArgs ignores the `brief` each option carries.
-            options: { ...command.options, help: { type: 'boolean', short: 'h' } },
+            options: command.options ?? {},
             strict: true,
             allowPositionals: true,
         });
@@ -77,7 +86,7 @@ function parse(name: string, command: Command, args: string[]) {
         }
         throw error;
     }
-    const most = command.positionals ?? 0;
+    const most = command.positionals?.length ?? 0;
     if (parsed.positionals.length > most) {
         throw usage(
             `too many arguments: expected at most ${most}, got ${parsed.positionals.join(' ')}`,
@@ -130,10 +139,12 @@ function rootHelp(): string {
 }
 
 function usageLine(name: string): string {
-    const flags = Object.entries(COMMANDS[name]?.options ?? {}).map(([flag, option]) =>
+    const command = COMMANDS[name];
+    const parts = Object.entries(command?.options ?? {}).map(([flag, option]) =>
         option.type === 'string' ? `(--${flag} <value>)` : `(--${flag})`,
     );
-    return [name, ...flags].join(' ');
+    parts.push(...(command?.positionals ?? []).map((positional) => `[<${positional}>]`));
+    return [name, ...parts].join(' ');
 }
 
 function commandHelp(name: string, command: Command): string {

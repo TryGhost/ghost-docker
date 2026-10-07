@@ -27,8 +27,8 @@ export interface Command<O extends Options = Options> {
     brief: string;
     /** Options as typed on the command line, kebab-case. */
     options?: O;
-    /** The most positional arguments the command takes. */
-    positionals?: number;
+    /** The names of the positional arguments it takes, as help shows them; none if absent. */
+    positionals?: string[];
     // A method, so a command with its own options still fits the table.
     run(values: Values<O>, positionals: string[], io: Io): Promise<number>;
 }

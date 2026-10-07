@@ -39,7 +39,7 @@ documents is the planned interface: it does not exist until its step lands
   provides it). Arguments are parsed by Node's own `util.parseArgs`
   (strict; zod only where a value needs validating): `src/cli.ts` holds the
   dispatch table (each command's kebab-case options with their briefs, its
-  positional count and its handler), renders help from it and maps errors to
+  positional arguments and its handler), renders help from it and maps errors to
   exit codes. Handlers get option values camelCased and return the exit
   status. `src/commands/` holds what each command does, `src/context.ts` the
   `GD_*` environment the launcher passes, `src/io.ts` the seam tests

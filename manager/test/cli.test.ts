@@ -39,6 +39,26 @@ describe('exit statuses', () => {
         }
     });
 
+    test('asking for help anywhere on the line wins over what else is wrong with it', async () => {
+        for (const argv of [
+            ['help', 'doctor'],
+            ['--help', 'doctor'],
+            ['doctor', '--bogus', '--help'],
+            ['doctor', 'extra', '-h'],
+        ]) {
+            const result = await h.run(...argv);
+            assert.equal(result.code, 0, argv.join(' '));
+            assert.match(result.stdout, /ghost-docker doctor \(--json\)/);
+            assert.equal(result.stderr, '');
+        }
+    });
+
+    test('help for a command that does not exist, or --help after --, is a usage error', async () => {
+        assert.match((await h.run('help', 'frobnicate')).stderr, /unknown command: frobnicate/);
+        assert.equal((await h.run('help', 'frobnicate')).code, 2);
+        assert.equal((await h.run('doctor', '--', '--help')).code, 2);
+    });
+
     test('an unknown option, an option value or a stray argument is a usage error', async () => {
         for (const argv of [
             ['doctor', '--bogus'],
