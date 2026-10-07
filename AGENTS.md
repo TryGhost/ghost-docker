@@ -27,8 +27,8 @@ Branches:
 Steps N1 and N2: the stack's files and contracts, and the skeleton of the
 tooling. The launchers and the manager image exist; the only commands are
 `version`, `doctor` and `help`. Every other `./ghost-docker ...` command in the
-documents is the planned interface, exits 3 naming its step, and the plan says
-which step delivers it.
+documents is the planned interface: it does not exist until its step lands
+(an unknown command exits 2), and the plan says which step delivers it.
 
 - `ghost-docker` (bash) is the only host code. It checks Docker, chooses the
   image, and `docker run`s it (plan §2.10). Add no logic to it that the
@@ -36,12 +36,14 @@ which step delivers it.
 - `manager/` is the CLI: TypeScript run directly by Node (types stripped, no
   build step, so `erasableSyntaxOnly`), with dependencies installed by pnpm
   (version pinned in `package.json`; `npm i -g corepack && corepack enable`
-  provides it). Commands, flags, help text and argument errors are
-  [stricli](https://bloomberg.github.io/stricli): `src/cli.ts` builds the
-  application and maps its exit codes to ours, `src/commands/` holds one
-  `buildCommand` per command, `src/context.ts` the `GD_*` environment the
-  launcher passes, `src/io.ts` the seam tests substitute. Programs are run
-  with execa, the daemon is spoken to directly (below).
+  provides it). Arguments are parsed by Node's own `util.parseArgs`
+  (strict; zod only where a value needs validating): `src/cli.ts` holds the
+  dispatch table (each command's kebab-case options with their briefs, its
+  positional arguments and its handler), renders help from it and maps errors to
+  exit codes. Handlers get option values camelCased and return the exit
+  status. `src/commands/` holds what each command does, `src/context.ts` the
+  `GD_*` environment the launcher passes, `src/io.ts` the seam tests
+  substitute. Programs are run with execa, the daemon is spoken to directly (below).
 - The manager talks to the daemon over the **Engine API** on the mounted
   socket (`src/docker/`: undici transport, zod-typed endpoints, a `runOnce`
   for one-shot containers). It does not shell out to the `docker` CLI; the
@@ -85,8 +87,8 @@ which step delivers it.
   site's own ingress. A running container is not readiness.
 - Docker access is established by asking the daemon, never from group
   membership.
-- Options for steps that have not landed exit `3` and name the step; usage
-  errors exit `2`.
+- Commands and options are added when their step lands, not stubbed ahead of
+  it; usage errors exit `2`.
 - The launcher holds no logic that could live in the manager.
 
 ## Tests

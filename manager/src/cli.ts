@@ -2,89 +2,106 @@
 //
 // `run` is the whole CLI as a function: arguments and an Io in, an exit status
 // out. main.ts is the only caller that touches the real process.
-import {
-    buildApplication,
-    buildCommand,
-    buildRouteMap,
-    run as runApplication,
-    text_en,
-    type ApplicationText,
-} from '@stricli/core';
+import { parseArgs } from 'node:util';
+import { defineCommand, type Command } from './command.ts';
 import { doctorCommand } from './commands/doctor.ts';
-import { versionCommand, versionLine } from './commands/version.ts';
-import { contextFor, type ManagerContext } from './context-stricli.ts';
-import { CliError, EXIT, UnimplementedError } from './errors.ts';
+import { versionCommand } from './commands/version.ts';
+import { CliError, EXIT, UsageError } from './errors.ts';
 import type { Io } from './io.ts';
 
-/** Documented commands whose step has not landed, and the step that delivers each. */
-const PLANNED: Record<string, { step: string; hint?: string }> = {
-    install: { step: 'N3' },
-    config: { step: 'N3' },
-    caddy: { step: 'N3' },
-    check: { step: 'N3', hint: '`doctor` reports what the manager can see today' },
-    info: { step: 'N3' },
-    list: { step: 'N3' },
-    update: { step: 'S6a' },
-    backup: { step: 'S4' },
-    restore: { step: 'S4' },
-    upgrade: {
-        step: 'S7',
-        hint: 'until then, change the Ghost version pin and run `docker compose up -d` after a backup',
-    },
+const COMMANDS: Record<string, Command> = {
+    version: versionCommand,
+    doctor: doctorCommand,
+    help: defineCommand({
+        brief: 'Print this, or with a command, its help.',
+        positionals: ['command'],
+        run: async (_values, [topic], io) => {
+            io.stdout(topic === undefined ? rootHelp() : commandHelp(topic, lookup(topic)));
+            return EXIT.ok;
+        },
+    }),
 };
 
-const plannedCommand = (name: string, step: string) =>
-    buildCommand<Record<string, never>, [], ManagerContext>({
-        func() {
-            throw unimplemented(name);
-        },
-        parameters: { flags: {} },
-        docs: { brief: `Not implemented yet; lands in plan step ${step}.` },
-    });
-
-const unimplemented = (name: string) => {
-    const planned = PLANNED[name]!;
-    return new UnimplementedError(`ghost-docker ${name}`, planned.step, planned.hint);
+/** The conventional flags, as the commands they stand for. */
+const ALIASES: Record<string, string> = {
+    '--help': 'help',
+    '-h': 'help',
+    '--version': 'version',
+    '-v': 'version',
 };
 
-function buildApp() {
-    const routes = buildRouteMap<string, ManagerContext>({
-        routes: {
-            version: versionCommand,
-            doctor: doctorCommand,
-            help: buildCommand<Record<string, never>, [], ManagerContext>({
-                async func() {
-                    await runApplication(app, ['--help'], this);
-                },
-                parameters: { flags: {} },
-                docs: { brief: 'Print this.' },
-            }),
-            ...Object.fromEntries(
-                Object.entries(PLANNED).map(([name, { step }]) => [
-                    name,
-                    plannedCommand(name, step),
-                ]),
-            ),
-        },
-        docs: {
-            brief: 'Self-hosted Ghost with Docker Compose: the manager.',
-            fullDescription: `Self-hosted Ghost with Docker Compose: the manager.
+const DESCRIPTION = `Self-hosted Ghost with Docker Compose: the manager.
 
 Day-to-day operation is plain Docker Compose, from the site directory:
   docker compose ps | logs -f ghost | up -d | down
 
-The plan is docs/ghost-cli-replacement.md in the repository.`,
-        },
-    });
-    const app = buildApplication(routes, {
-        name: 'ghost-docker',
-        versionInfo: { currentVersion: versionLine().replace(/^ghost-docker /, '') },
-        scanner: { caseStyle: 'allow-kebab-for-camel' },
-        localization: { loadText: () => text },
-        determineExitCode: (error) => (error instanceof CliError ? error.exitCode : EXIT.failure),
-    });
-    return app;
+The plan is docs/ghost-cli-replacement.md in the repository.`;
+
+export async function run(argv: readonly string[], io: Io): Promise<number> {
+    const [first = 'help', ...rest] = argv;
+    const name = ALIASES[first] ?? first;
+    try {
+        const command = lookup(name);
+        // Asking for help wins over whatever else is wrong with the line.
+        // After `--` it is an argument like any other.
+        const end = rest.indexOf('--');
+        if (
+            (end === -1 ? rest : rest.slice(0, end)).some((arg) => arg === '--help' || arg === '-h')
+        ) {
+            io.stdout(commandHelp(name, command));
+            return EXIT.ok;
+        }
+        const { values, positionals } = parse(name, command, rest);
+        return await command.run(camelKeys(values), positionals, io);
+    } catch (error) {
+        io.stderr(`${describe(error)}\n`);
+        return error instanceof CliError ? error.exitCode : EXIT.failure;
+    }
 }
+
+function lookup(name: string): Command {
+    const command = COMMANDS[name];
+    if (!command) {
+        throw new UsageError(`unknown command: ${name}\nRun ghost-docker --help for the commands.`);
+    }
+    return command;
+}
+
+function parse(name: string, command: Command, args: string[]) {
+    const usage = (message: string) =>
+        new UsageError(`${message}\nRun ghost-docker ${name} --help for its options.`);
+    let parsed;
+    try {
+        parsed = parseArgs({
+            args,
+            // parseArgs ignores the `brief` each option carries.
+            options: command.options ?? {},
+            strict: true,
+            allowPositionals: true,
+        });
+    } catch (error) {
+        const code = (error as { code?: unknown }).code;
+        if (typeof code === 'string' && code.startsWith('ERR_PARSE_ARGS_')) {
+            throw usage((error as Error).message);
+        }
+        throw error;
+    }
+    const most = command.positionals?.length ?? 0;
+    if (parsed.positionals.length > most) {
+        throw usage(
+            `too many arguments: expected at most ${most}, got ${parsed.positionals.join(' ')}`,
+        );
+    }
+    return parsed;
+}
+
+const camelKeys = <T>(values: Record<string, T>): Record<string, T> =>
+    Object.fromEntries(
+        Object.entries(values).map(([key, value]) => [
+            key.replace(/-(\w)/g, (_, letter: string) => letter.toUpperCase()),
+            value,
+        ]),
+    );
 
 /** How errors read: ours by their message, anything else as a bug to report. */
 const describe = (error: unknown): string => {
@@ -95,42 +112,52 @@ const describe = (error: unknown): string => {
     return `error: ghost-docker failed unexpectedly. Please report this:\n${detail}`;
 };
 
-const text: ApplicationText = {
-    ...text_en,
-    noCommandRegisteredForInput: ({ input, corrections }) =>
-        `error: unknown command: ${input}` +
-        (corrections.length > 0 ? ` (did you mean ${corrections.join(', ')}?)` : '') +
-        '\nRun ghost-docker --help for the commands.',
-    exceptionWhileParsingArguments(error, ansiColor) {
-        return `error: ${text_en.exceptionWhileParsingArguments.call(this, error, ansiColor)}`;
-    },
-    exceptionWhileRunningCommand: (error) => describe(error),
-    commandErrorResult: (error) => describe(error),
+/** Two columns, the first padded to its widest entry. */
+const columns = (rows: [string, string][]) => {
+    const width = Math.max(...rows.map(([left]) => left.length));
+    return rows.map(([left, right]) => `  ${left.padEnd(width)}  ${right}\n`).join('');
 };
 
-export async function run(argv: readonly string[], io: Io): Promise<number> {
-    // A planned command is refused whatever follows it, and before anything
-    // else is checked: a script written against the documented interface gets
-    // an answer it can act on. stricli would reject the options first.
-    const first = argv[0];
-    if (first !== undefined && first in PLANNED) {
-        io.stderr(`${describe(unimplemented(first))}\n`);
-        return EXIT.unimplemented;
-    }
-
-    const context = contextFor(io);
-    await runApplication(buildApp(), argv, context);
-    return exitStatus(context.process.exitCode);
+function rootHelp(): string {
+    const commands = Object.entries(COMMANDS).map(([name, { brief }]): [string, string] => [
+        name,
+        brief,
+    ]);
+    return (
+        'USAGE\n' +
+        commands.map(([name]) => `  ghost-docker ${usageLine(name)}\n`).join('') +
+        '  ghost-docker --help\n  ghost-docker --version\n\n' +
+        `${DESCRIPTION}\n\n` +
+        'FLAGS\n' +
+        columns([
+            ['-h --help', 'Print help information and exit'],
+            ['-v --version', 'Print version information and exit'],
+        ]) +
+        '\nCOMMANDS\n' +
+        columns(commands)
+    );
 }
 
-/** stricli's own negative codes for a bad command line become the usage status. */
-function exitStatus(code: number | string | null | undefined): number {
-    if (typeof code !== 'number') {
-        return EXIT.ok;
-    }
-    if (code >= 0) {
-        return code;
-    }
-    // -4 InvalidArgument, -5 UnknownCommand; the rest are internal failures.
-    return code === -4 || code === -5 ? EXIT.usage : EXIT.failure;
+function usageLine(name: string): string {
+    const command = COMMANDS[name];
+    const parts = Object.entries(command?.options ?? {}).map(([flag, option]) =>
+        option.type === 'string' ? `(--${flag} <value>)` : `(--${flag})`,
+    );
+    parts.push(...(command?.positionals ?? []).map((positional) => `[<${positional}>]`));
+    return [name, ...parts].join(' ');
+}
+
+function commandHelp(name: string, command: Command): string {
+    const flags = Object.entries(command.options ?? {}).map(([flag, option]): [string, string] => [
+        `${option.short ? `-${option.short}` : '  '} --${flag}${option.type === 'string' ? ' <value>' : ''}`,
+        option.brief,
+    ]);
+    return (
+        'USAGE\n' +
+        `  ghost-docker ${usageLine(name)}\n` +
+        `  ghost-docker ${name} --help\n\n` +
+        `${command.brief}\n\n` +
+        'FLAGS\n' +
+        columns([...flags, ['-h --help', 'Print help information and exit']])
+    );
 }

@@ -6,11 +6,10 @@
 import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
+import { defineCommand } from '../command.ts';
 import { loadContext, type Context } from '../context.ts';
 import { composeVersion } from '../compose.ts';
 import { daemonInfo, runOnce, type DaemonResult } from '../docker/client.ts';
-import { buildCommand } from '@stricli/core';
-import type { ManagerContext } from '../context-stricli.ts';
 import { EXIT } from '../errors.ts';
 import type { Io } from '../io.ts';
 import { atLeast, managerVersion, MINIMUM } from '../versions.ts';
@@ -26,47 +25,32 @@ export const PROBE_FILE = '.ghost-docker-probe';
 
 const SUPPORTED_ARCHITECTURES = ['x86_64', 'amd64', 'aarch64', 'arm64'];
 
-export interface DoctorFlags {
-    readonly json: boolean;
-    readonly keepProbe: boolean;
-}
-
-export const doctorCommand = buildCommand<DoctorFlags, [], ManagerContext>({
-    async func(flags) {
-        // stricli keeps an exit code the command sets itself; a report with an
-        // error in it is not a failed command, so it is not thrown.
-        this.process.exitCode = await doctor(flags, this.io);
-    },
-    parameters: {
-        flags: {
-            json: { kind: 'boolean', brief: 'Machine-readable output.', withNegated: false },
-            keepProbe: {
-                kind: 'boolean',
-                brief: 'Leave the probe file so its ownership can be inspected from the host.',
-                withNegated: false,
-            },
+export const doctorCommand = defineCommand({
+    brief: 'Report what the manager can see: Docker, the platform, the site directory and who owns what is written there.',
+    options: {
+        json: { type: 'boolean', brief: 'Machine-readable output.' },
+        'keep-probe': {
+            type: 'boolean',
+            brief: 'Leave the probe file so its ownership can be inspected from the host.',
         },
     },
-    docs: {
-        brief: 'Report what the manager can see: Docker, the platform, the site directory and who owns what is written there.',
+    // A report with an error in it is not a failed command, so it returns
+    // the status rather than throwing.
+    async run({ json, keepProbe }, _positionals, io) {
+        const checks = await collect(loadContext(io.env), io, keepProbe);
+
+        if (json) {
+            io.stdout(`${JSON.stringify({ checks }, null, 2)}\n`);
+        } else {
+            for (const check of checks) {
+                const line = `  ${STATUS_LABEL[check.status]} ${check.label.padEnd(18)} ${check.detail}\n`;
+                // Problems go to stderr so they can be separated from the summary.
+                (check.status === 'ok' ? io.stdout : io.stderr)(line);
+            }
+        }
+        return checks.some((check) => check.status === 'error') ? EXIT.failure : EXIT.ok;
     },
 });
-
-export async function doctor({ json, keepProbe }: DoctorFlags, io: Io): Promise<number> {
-    const context = loadContext(io.env);
-    const checks = await collect(context, io, keepProbe);
-
-    if (json) {
-        io.stdout(`${JSON.stringify({ checks }, null, 2)}\n`);
-    } else {
-        for (const check of checks) {
-            const line = `  ${STATUS_LABEL[check.status]} ${check.label.padEnd(18)} ${check.detail}\n`;
-            // Problems go to stderr so they can be separated from the summary.
-            (check.status === 'ok' ? io.stdout : io.stderr)(line);
-        }
-    }
-    return checks.some((check) => check.status === 'error') ? EXIT.failure : EXIT.ok;
-}
 
 const STATUS_LABEL = { ok: 'ok      ', warn: 'warning ', error: 'ERROR   ' } as const;
 

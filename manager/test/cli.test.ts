@@ -30,36 +30,49 @@ describe('exit statuses', () => {
         assert.equal(result.stdout, '');
     });
 
-    // A script written against the documented interface gets an answer it can
-    // act on, and nothing advertises support that does not exist.
-    const planned: [string, RegExp][] = [
-        ['install', /N3/],
-        ['config', /N3/],
-        ['caddy', /N3/],
-        ['check', /N3/],
-        ['info', /N3/],
-        ['list', /N3/],
-        ['update', /S6a/],
-        ['backup', /S4/],
-        ['restore', /S4/],
-        ['upgrade', /S7/],
-    ];
-    for (const [command, step] of planned) {
-        test(`${command} exits 3 and names the step it lands in`, async () => {
-            const result = await h.run(command, '--anything');
-            assert.equal(result.code, 3);
-            assert.match(
-                result.stderr,
-                new RegExp(`ghost-docker ${command} is not implemented yet`),
-            );
-            assert.match(result.stderr, step);
-            assert.doesNotMatch(result.stderr, /USAGE/);
-        });
-    }
+    test('a command prints its own help, with its flags', async () => {
+        for (const flag of ['--help', '-h']) {
+            const result = await h.run('doctor', flag);
+            assert.equal(result.code, 0);
+            assert.match(result.stdout, /ghost-docker doctor \(--json\) \(--keep-probe\)/);
+            assert.match(result.stdout, /--keep-probe +Leave the probe file/);
+        }
+    });
 
-    test('a planned command is refused before the launcher contract is even checked', async () => {
-        h.env = {};
-        assert.equal((await h.run('install')).code, 3);
+    test('asking for help anywhere on the line wins over what else is wrong with it', async () => {
+        for (const argv of [
+            ['help', 'doctor'],
+            ['--help', 'doctor'],
+            ['doctor', '--bogus', '--help'],
+            ['doctor', 'extra', '-h'],
+        ]) {
+            const result = await h.run(...argv);
+            assert.equal(result.code, 0, argv.join(' '));
+            assert.match(result.stdout, /ghost-docker doctor \(--json\)/);
+            assert.equal(result.stderr, '');
+        }
+    });
+
+    test('help for a command that does not exist, or --help after --, is a usage error', async () => {
+        assert.match((await h.run('help', 'frobnicate')).stderr, /unknown command: frobnicate/);
+        assert.equal((await h.run('help', 'frobnicate')).code, 2);
+        assert.equal((await h.run('doctor', '--', '--help')).code, 2);
+    });
+
+    test('an unknown option, an option value or a stray argument is a usage error', async () => {
+        for (const argv of [
+            ['doctor', '--bogus'],
+            ['doctor', '--json=yes'],
+            ['doctor', 'extra'],
+            // `--` ends the options: what follows is an argument, not --json.
+            ['doctor', '--', '--json'],
+        ]) {
+            const result = await h.run(...argv);
+            assert.equal(result.code, 2, argv.join(' '));
+            assert.match(result.stderr, /^error: /);
+            assert.match(result.stderr, /ghost-docker doctor --help/);
+            assert.equal(result.stdout, '');
+        }
     });
 });
 
@@ -78,7 +91,9 @@ describe('version', () => {
         );
         h.env.GD_VERSION_FILE = file;
         assert.equal((await h.run('version')).stdout, 'ghost-docker v1.2.3-beta.4 (0123456)\n');
-        assert.equal((await h.run('--version')).code, 0);
+        for (const flag of ['--version', '-v']) {
+            assert.equal((await h.run(flag)).stdout, 'ghost-docker v1.2.3-beta.4 (0123456)\n');
+        }
     });
 
     test('takes no options', async () => {
