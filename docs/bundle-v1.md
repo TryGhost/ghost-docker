@@ -25,8 +25,10 @@ Status of the work:
 - Importer for local `mysql-dump` and `mysql-data` bundles: **S5b**. A bash
   implementation exists on the frozen `next` branch (`install.sh --import`)
   and is the behaviour reference; it is being ported to the manager CLI.
-- **S5c** (local `--migrate`), **S5d** (`portable`), **S5e** (production
-  import and cutover): not yet implemented.
+- **S5c** (local `--migrate`) and **S5e** (production import and cutover):
+  not yet implemented. `portable` bundles are not imported by the manager;
+  their content JSON and members CSV are imported through Ghost Admin (plan
+  §2.4).
 - Updating existing ghost-docker installations from the pre-S1 layout: **S6b**.
 
 The importer's target is `ghost.env`. Replacing it with a mounted Ghost JSON
@@ -158,8 +160,8 @@ overridden:
 - `process`, `logging__transports`, `logging__path`
 - upgrade-adapter controls
 
-Public and admin URLs are mapped deliberately into `.env` (`URL`, `DOMAIN`,
-`ADMIN_DOMAIN`, `ADMIN_URL`), preserving supported path and port semantics or
+Public and admin URLs are mapped deliberately into `.env` (`URL`,
+`ADMIN_URL`; the domains are their hosts), preserving supported path and port semantics or
 rejecting an unsupported URL with a clear message. Operator overrides of
 URL and mode given at import time are retained.
 
@@ -289,16 +291,16 @@ separate configuration.
 See the exporter's [fidelity and recovery documentation](https://github.com/TryGhost/Ghost-CLI/blob/v1.33.0/docs/migration-bundle.md).
 S3 verifies schema, source lifecycle, private output, system-tar extraction,
 real Compose value transport, and a `mysql-data` load into a MySQL schema
-created by the Ghost image. S5d must qualify destination owner setup, ID
-mapping, member imports and subscription reconciliation end to end before
-promising portable fidelity. S3 does not implement the Docker importer.
+created by the Ghost image. The manager does not import `portable` bundles,
+so their fidelity is that of Ghost Admin's own import. S3 does not implement
+the Docker importer.
 
 ## Remaining S5 work
 
 Local `mysql-dump` and `mysql-data` bundles import into a fresh site
 directory (S5b). Still to come: S5c adds `--migrate`, which runs the export
-and the import in one command; S5d adds the isolated portable import; S5e adds
-production import, verification, and ingress cutover. See §2.4 and S5 of
+and the import in one command; S5e adds production import and the documented
+cutover. See §2.4 and S5 of
 [the plan](ghost-cli-replacement.md).
 
 Keep the final source stopped and intact until the destination is accepted;

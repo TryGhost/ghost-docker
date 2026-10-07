@@ -40,6 +40,7 @@ COPY --from=deps /opt/ghost-docker/manager/node_modules ./node_modules
 # TypeScript is run directly by Node, which strips the types: there is no
 # build step, and what is in the image is the source that was reviewed.
 COPY manager/src ./src
+COPY manager/templates ./templates
 COPY --chmod=0755 manager/entrypoint.sh /usr/local/bin/ghost-docker-entrypoint
 
 # The stack. `install` writes these into a site directory; a release of the
@@ -48,6 +49,9 @@ COPY compose.yml compose.ipv6.yml .env.example ghost.env.example /opt/ghost-dock
 COPY caddy /opt/ghost-docker/stack/caddy
 COPY mysql-init /opt/ghost-docker/stack/mysql-init
 COPY tinybird /opt/ghost-docker/stack/tinybird
+# The launcher, which install copies into an image-mode site pinned to this
+# image's digest.
+COPY --chmod=0755 ghost-docker /opt/ghost-docker/launcher/ghost-docker
 
 ARG GD_VERSION=dev
 ARG GD_COMMIT=

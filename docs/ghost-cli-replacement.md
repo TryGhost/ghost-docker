@@ -36,6 +36,7 @@ dependencies and the contracts in §2 before implementing it.
 | Initial audience | Local and single-site production installations; most servers run one site. Theme developers and migration-tool authors moving local Ghost-CLI sites come first. |
 | Site model | One directory = one site. One `compose.yml`, with `local` and `production` modes selected through `COMPOSE_PROFILES`. |
 | Where tooling runs | In a **manager image** published from this repository: a TypeScript CLI with its own dependencies, a Docker client and Compose. The host runs only a **launcher** that checks Docker and starts the image. See §2.10. |
+| Supported platforms | Production: Linux with Docker Engine (rootful), the counterpart of Ghost-CLI's Ubuntu with systemd. Local sites: also Docker Desktop, OrbStack and WSL2. Rootless Docker is best effort: the identity rules handle it (§2.10), but it is not in the qualification matrix. |
 | Host requirements | Docker Engine 25.0+ with the Compose v2.24+ plugin, and bash for the launcher. No `jq`, `curl`, `git` or Node on the host. `git` only when working from a clone. |
 | Distribution | The manager image carries `compose.yml`, the Caddy configuration and the CLI, and writes them into the site directory. A tagged release is an image tag. A git clone of this repository also works: the launcher builds the image from the checkout and uses the files in place. See §2.7. |
 | Docker socket | The manager is given the Docker socket for every command, including install. That is host-privileged, and it is accepted: whoever runs the launcher already has that access. |
@@ -43,12 +44,12 @@ dependencies and the contracts in §2 before implementing it.
 | Windows | Through WSL2 only, which is Linux: Docker Desktop's WSL2 backend puts `docker` and its socket inside the distro, and the launcher runs there unchanged. No native launcher; §2.10 records the design to use if one is ever wanted. |
 | Versions | Resolve and persist an exact Ghost image version on installation. Ghost upgrades and stack updates are separate operations. Record resolved image digests for recovery. |
 | Installation | Scriptable `install`, with a flag for every prompt. Local mode uses MySQL too. |
-| Migration | Ghost-CLI exports a bundle (`ghost migrate-export`, Ghost-CLI 1.33.0+); the manager imports it. Three kinds: `mysql-dump` (MySQL sources), `mysql-data` (default for local SQLite sources: data-only MySQL inserts loaded into a schema Ghost creates), and `portable` (explicit SQLite fallback through the Admin API, with documented losses). `--migrate` runs the export and the import in one command. The legacy `scripts/migrate.sh` stays on `main`, where it works, and is not carried onto this branch, whose layout it does not understand; it disappears from `main` when this branch merges, which S12 allows only after production import (S5e) has passed its fidelity and recovery tests. |
+| Migration | Ghost-CLI exports a bundle (`ghost migrate-export`, Ghost-CLI 1.33.0+); the manager imports it. Three kinds: `mysql-dump` (MySQL sources), `mysql-data` (default for local SQLite sources: data-only MySQL inserts loaded into a schema Ghost creates), and `portable` (an explicit SQLite fallback through the Admin API). The manager does not import `portable` bundles: their content JSON and members CSV are imported through Ghost Admin on the new site, as anyone moving a Ghost site by hand does today. `--migrate` runs the export and the import in one command. The legacy `scripts/migrate.sh` stays on `main`, where it works, and is not carried onto this branch, whose layout it does not understand; it disappears from `main` when this branch merges, which S12 allows only after production import (S5e) has passed its tests. |
 | Upgrades | Optional supervisor using a file exchange and the Docker socket. Ship a tested host-driven upgrade first, then reuse its recovery contract in the supervisor. Both are commands of the manager. |
 | UX | Standard Compose commands for daily operation; `./ghost-docker` for installation, diagnosis, configuration, migration, backup/restore, and upgrades. No wrapper binary named `ghost`. |
 | Configuration | `.env` contains Compose/operator settings; `ghost.env` contains only Ghost application settings. Do not pass the whole `.env` into Ghost. A mounted Ghost JSON config file was evaluated as a replacement for `ghost.env` and rejected; see §2.1. |
-| Recovery rigor | §2.5 and the update flow in §2.7 describe a ceiling. The floor for the first stable release is: back up before changing, restore on failure, report truthfully, one operation at a time. See the note at the top of §2.5. |
-| Shared infrastructure | S13. Not a dependency of local or single-site production installations. Scheduled after tagged single-site production and before Admin-driven upgrades, so the upgrade supervisor is built once against per-site projects. |
+| Recovery rigor | Ghost-CLI's level, made reliable: back up before changing, restore on failure, report truthfully, one operation at a time on a site (§2.5). No journals, maintenance ingress or crash-resume; more is built only when a real failure shows it is needed. |
+| Shared infrastructure | S13: one Caddy shared by several sites on a server, each site keeping its own MySQL. Not a dependency of local or single-site production installations. Scheduled after tagged single-site production and before Admin-driven upgrades, so the upgrade supervisor is built once against per-site projects. |
 | ActivityPub and analytics | Per-site, including for future members of shared infrastructure. Each site owns its ActivityPub database/storage and Tinybird configuration/deployment lifecycle. |
 | Ghost nightly channel | Future explicit opt-in via `--ghost-channel nightly`; published to GHCR, independently of the stack release channel. Stable remains the default. |
 | Service image registry | Future `--image-registry dockerhub|ghcr` selects dual-published traffic-analytics and ActivityPub images, including migrations. |
@@ -56,8 +57,8 @@ dependencies and the contracts in §2 before implementing it.
 | Tests | Unit tests for the CLI in TypeScript. End-to-end scenarios that only run the real commands and check outcomes are shell scripts in `tests/e2e/`, so they do not depend on how the commands are implemented. |
 
 Explicitly document initial limitations: no shared-infra provisioning, no automatic
-major Ghost/MySQL upgrades, no arbitrary downgrade support, and no claim of lossless
-SQLite-to-MySQL migration through the portable API export.
+major Ghost/MySQL upgrades, no arbitrary downgrade support, and no import of
+`portable` bundles (they go through Ghost Admin).
 
 ## 2. Architecture and contracts
 
@@ -114,9 +115,8 @@ DATABASE_USER=ghost
 # COMPOSE_PROFILES=production
 # NODE_ENV=production
 # URL=https://example.com
-# DOMAIN=example.com
 # RESTART_POLICY=unless-stopped
-# Optional: ADMIN_DOMAIN=admin.example.com
+# Optional: ADMIN_URL=https://admin.example.com
 # Optional profiles are added only after their configuration is validated.
 ```
 
@@ -136,7 +136,7 @@ Requirements:
 - Use `restart: ${RESTART_POLICY:-unless-stopped}` only for long-running services.
   Setup, migration, and deployment jobs retain `restart: "no"`.
 - Initially `URL` may be required because every supported mode contains Ghost. Do
-  not put `:?` guards on optional-service variables such as `PROJECT_DIR` or DOMAIN.
+  not put `:?` guards on optional-service variables such as `PROJECT_DIR`.
   Validate requirements by mode before provisioning or startup. Revisit URL's guard
   before adding infra-only mode in S13.
 - Keep the initial default network naming unchanged. Do not introduce an empty
@@ -224,24 +224,34 @@ atomic replacement preserving intended ownership/mode. Logs list sensitive key n
 never their values. Add file-based credentials later only for supported Ghost images.
 
 `.ghost-docker.json` is gitignored and contains a schema version, installation time,
-mode, release channel, installed stack version/commit, project identity, and completed
-migrations. Separate durable operation journals record in-progress work and recovery
-state. An installation that predates metadata must be supported explicitly.
+mode, release channel, how the stack was installed (`image` or `checkout`), installed
+stack version/commit and the manager image the site's launcher is pinned to, project
+identity, the resolved Ghost image, a checksum of every file written from the image
+(§2.7), and completed migrations. An installation that predates metadata must be
+supported explicitly.
 
-All mutating operations on a site acquire the same host-visible operation lock:
-install/reconfigure, import, restore, Ghost upgrade, and stack update. Define stale
-lock recovery after a crashed process; never discard a lock solely due to elapsed
-time. S13 adds an infra-wide registration lock.
+Backup, restore, Ghost upgrade and stack update take a lock file in the site
+directory for the length of the operation, so two of them cannot run on one site
+at once. A lock left behind by a crashed run names its operation and start time;
+`check` reports it and how to remove it, and nothing removes it automatically.
+Install and import write into an empty directory, and `config set` replaces one
+file atomically, so they do not lock.
 
 ### 2.3 Caddy and optional services
 
-- Track a generic Caddyfile importing generated `sites/*.caddy` and operator-managed
-  `custom/*.caddy`. Ignore generated/operator files in Git.
-- Render sites from a template with explicit upstream, public/admin domains, and
-  optional-service targets. Preserve every import argument; missing arguments may
-  survive adaptation and fail at runtime.
-- Validate a candidate configuration, atomically install it, reload Caddy, and verify
-  routing. Restore the previous on-disk configuration if validation/reload fails.
+- Track a generic Caddyfile importing `sites/*.caddy` and operator-managed
+  `custom/*.caddy` and `global/*.caddy`. Ignore the site's routes and operator
+  files in Git.
+- `install` renders the site's routes once, into `sites/site.caddy`, with
+  explicit upstreams (the site's network aliases), public/admin domains and
+  optional-service targets, and every import argument; missing arguments may
+  survive adaptation and fail at runtime. After that the file is the
+  operator's, as Ghost-CLI's generated nginx file was: no command rewrites it,
+  and changing routes is editing it and reloading Caddy. Verification (§2.8)
+  confirms Caddy serves each domain. Most servers run one site and set their
+  routes once; a validate/install/reload/rollback command for them was built
+  in N3 and taken out again as not worth its code. Shared infrastructure (S13)
+  brings generation back where several sites share one Caddy.
 - Use explicit reload in production, not `--watch`. Caddy documents watch as a local
   development feature. Use `docker compose --project-directory "$DIR" ...`, not `-C`.
 - Migrations must preserve custom routes. Do not silently replace a customized
@@ -268,13 +278,15 @@ Bundle kinds:
 | --- | --- | --- | --- |
 | `mysql-dump` | MySQL/mysql2 | Schema and data for the selected database | Provision, load, start Ghost |
 | `mysql-data` | Local SQLite; the exporter's default | Data-only MySQL `INSERT`s for every table, including migration history; `database.rows` holds per-table counts | Provision, boot Ghost once at the exact source version to create the schema, stop it, load, verify counts, start Ghost |
-| `portable` | Local SQLite with `--sqlite-format portable` | Content JSON and members CSV from the Admin API | Isolated authenticated API import; lossy |
+| `portable` | Local SQLite with `--sqlite-format portable` | Content JSON and members CSV from the Admin API | Not imported by the manager; through Ghost Admin |
 
 `mysql-data` is the expected route for local SQLite sites and preserves IDs, staff
-credentials, members and settings. `portable` remains supported as the fallback
-for a source whose data the exporter refuses to write as `mysql-data` (values
-MySQL would reject). It is never selected automatically: the operator chooses it
-knowing the documented losses.
+credentials, members and settings. `portable` is the exporter's fallback for a
+source whose data it refuses to write as `mysql-data` (values MySQL would
+reject). The manager refuses such a bundle and says how to finish by hand:
+install an empty site, import the bundle's content JSON and members CSV in Ghost
+Admin, and copy its content directory. That is what Ghost-CLI users do today when
+they move a site, and its losses are those of Ghost's own import.
 
 Before freezing the contract:
 
@@ -285,9 +297,6 @@ Before freezing the contract:
 - Update exporter, importer, documentation, and fixtures together before freezing
   bundle v1. The unpublished draft format does not need backward compatibility.
 - Test actual Compose round trips rather than only comparing exporter strings.
-- Define portable-import losses explicitly, including identity/authentication and
-  integration/subscription relationships as applicable. Establish the supported
-  fidelity matrix from fixtures and real exporter/importer behavior.
 - Record the consistency/cutover behavior: the exporter currently restarts Ghost.
   Add a documented final-export mode that leaves the source stopped, with explicit
   operator selection, and preserve the current restart behavior for ordinary exports.
@@ -298,8 +307,8 @@ Before freezing the contract:
 
 Import sequence:
 
-1. Acquire the site lock. Validate target state and available space. Default to a
-   fresh target; refuse merging into an existing live database/content tree.
+1. Validate target state and available space. The target is always a fresh site
+   directory; refuse merging into an existing database or content tree.
 2. Inspect/extract into private staging. Reject path traversal, absolute member paths,
    and escaping symlinks/hardlinks, including in directory bundles. Bound expansion
    and check space for extracted content, database restore, and recovery copies;
@@ -325,23 +334,18 @@ Import sequence:
    and fixtures, stop it, then load `database.sql` with the `mysql` client and
    compare per-table `COUNT(*)` with `database.rows`. Never synthesize DDL from
    the bundle.
-8. For portable data, start an isolated destination with no public ingress, set up
-   the owner, authenticate, and perform multipart content/member imports. Explicitly
-   mount the helper script. Use the unique service alias, correct Host/Origin/proxy
-   semantics, and handle separate admin URLs, HTTPS, sessions, and supported auth.
-   Owner credentials may come from a prompt or private file, not only command args.
-9. Verify the expected content/member records, active theme/assets, redirects, URLs,
-   and supported configuration. Preserve a journal so a retry cannot duplicate a
-   partially completed portable import. Prefer recreating the isolated target from
-   the bundle when resumability cannot be proved.
-10. Switch ingress only after verification and an explicit final-source write freeze.
-    Explain DNS/proxy cutover for cross-host moves. Keep the old installation and
-    recovery instructions intact until the operator accepts the destination.
+8. Verify the expected content and records, the active theme and assets, redirects,
+   URLs and configuration. A failed import removes what it created, so it is
+   re-run rather than resumed.
+9. Cutover is the operator's, documented rather than automated: take a final
+   export with `--leave-stopped`, so the source cannot take writes the copy will
+   not have; import; then point DNS at the new host, or on the same server stop
+   the old proxy and start the new site's Caddy. The source stays intact until
+   the operator removes it.
 
-`install --import` must not start normal production ingress before this workflow.
-For rehearsal/local imports, provide a safe documented way to suppress outbound
-email, newsletters, payments/webhooks, and federation activity. Do not silently send
-real production traffic from a copied database.
+A copied database sends real email, newsletters and webhooks once it runs, so the
+documentation says to stop the source before the destination starts serving, and
+to remove mail settings from a copy started elsewhere as a rehearsal.
 
 #### Local imports
 
@@ -352,13 +356,11 @@ outside the new site directory is modified, and a failed import removes what it 
 configuration, staging) so the same command can be run again in the same
 directory. While an import is in progress the directory is marked incomplete and
 `.env` selects no Compose service, so an import interrupted before it could clean
-up cannot be started; the next import clears it first. Steps 1 and 10 above reduce accordingly: there
-is no pre-existing site lock to honour and no ingress to switch. Path validation,
-private staging, the exact source image, raw config handling and verification all
-still apply. When S4 lands, local import adopts the shared operation lock like
-every other mutating command.
+up cannot be started; the next import clears it first. There is no ingress to
+switch (step 9).
 
-Production imports keep the full sequence and require S4.
+A production import differs only in step 9 and in its URLs: separate admin URLs,
+and an existing proxy holding 80 and 443 on the same server.
 
 #### `--migrate`
 
@@ -393,13 +395,10 @@ The launcher mounts the bundle read-only for it.
   site therefore takes the source's own port and URL when that port is free,
   and `--port` overrides the choice. If the import then fails and the source
   was running beforehand, start it again with `ghost start` so the operator is
-  back where they began; say so either way. The one exception is the portable
-  retry below, which exports through the Admin API and so needs Ghost running;
-  the exporter starts and stops it itself.
+  back where they began; say so either way.
 - Export failure: surface the exporter's message unchanged. When `mysql-data`
-  validation refuses the source, offer one retry with `--sqlite-format portable`
-  after showing the portable losses. Never fall back without that confirmation,
-  and never under `--no-prompt`.
+  validation refuses the source, say how to move the site through Ghost Admin
+  instead (as for a `portable` bundle above); never fall back on its own.
 - Scope: local installations first (S5c). On a production installation
   `--migrate` refuses with a pointer to the manual export/import procedure until
   production cutover is implemented (S5e), because an existing proxy holds ports
@@ -410,58 +409,49 @@ The launcher mounts the bundle read-only for it.
 
 ### 2.5 Backup, upgrade, and recovery
 
-**This section is a ceiling, not a floor.** It describes the most careful
-version of each operation, so that nothing here is designed in a way that rules
-it out. It is more than most self-hosted software does, and the first stable
-release does not have to reach all of it. The floor for that release is:
+Ghost-CLI's level, made reliable. Ghost-CLI's `ghost update` installed the new
+version beside the old one and could switch back; `ghost backup` exported the
+content. This stack does the same with a real database backup, and states what
+it does:
 
-- a verified backup is taken before an upgrade or a stack update changes
+- a backup is taken and checked before an upgrade or a stack update changes
   anything;
 - a failure restores that backup and the previous image and configuration;
-- the outcome is reported truthfully: done, restored, or needs the operator;
-- two operations cannot run on one site at once.
+- the outcome is reported truthfully: done, restored, or needs the operator,
+  with what to do;
+- two operations cannot run on one site at once (the lock in §2.2).
 
-Beyond the floor — resuming an operation killed at an arbitrary point from its
-journal, maintenance ingress during upgrades, retention policies, the full
-fault-injection matrix — is built when a step shows it is needed, and each of
-S4, S6b and S7 states in its pull request which parts it implements and which it
-defers. Deferring is a decision recorded there, not an omission. What must not
-be deferred is honesty: never report success or a completed rollback that was
-not verified.
+Not built: journals that resume an operation killed at an arbitrary point,
+maintenance ingress, retention policies, and a fault-injection matrix. A crashed
+operation leaves its lock and its backup; `check` says so, and the operator
+restores or re-runs. Each is added only when a real failure shows it is needed,
+in the step that needs it.
 
-Implement backup and restore before promising automated rollback. Backups include
-the Ghost database, content, site configuration, versions/digests, and a manifest.
-Document optional-service state and which remote changes cannot be restored locally.
-Use restrictive permissions, retention controls, space checks, and a restore drill.
-Neither `docker compose down -v` nor a database-only export is a complete backup.
+**Backup** is a directory under `backups/` in the site: a `mysqldump` of the site's
+databases taken as the site's user, a tarball of the content directory, `.env`,
+`ghost.env`, the site's Caddy files and the metadata, and a manifest naming the
+exact images. Checked means the dump loads and the archive lists. It is written
+private, and kept until the operator removes it. Optional-service state outside
+the site (a Tinybird workspace) is named in the manifest as not included.
 
-Ghost upgrade contract:
+**Restore** stops the site, loads the dump, puts the content and files back, pins
+the recorded images, and starts the site with `up --wait`, then verifies it as
+`check` does.
 
-1. Acquire the operation lock; validate current state, target, compatibility, disk
-   space, and backup capability. Reject unsupported majors/downgrades. Resolve
-   `latest` to one exact supported same-major version and immutable image identity.
-2. Pull/verify the target before downtime. Record the previous image digest and
-   configuration; retain the previous image for recovery.
-3. Enable maintenance ingress and stop application writes/background writers.
-   Create and verify a consistent recovery checkpoint of all affected local state.
-   Production automated upgrades require this checkpoint; request input cannot waive it.
-4. Persist the journal before mutation. Apply the exact image configuration, run
-   migrations/startup and the supported optional-service deployment sequence.
-5. Verify database/application readiness and proxy routing while external writes
-   remain blocked. Resume traffic only after verification, then mark the job done.
-6. If verification fails, restore the checkpoint and previous image/configuration
-   using the tested recovery procedure. Report `rolled-back` only after verifying
-   the restored system. If restore fails or affected external state cannot safely
-   be reconciled, retain maintenance mode and report `recovery-required`.
+**Ghost upgrade:**
 
-Do not confuse switching images with reversing schema migrations. A later rollback
-after traffic has resumed needs a separate deliberate recovery workflow because
-restoring the pre-upgrade snapshot would discard newer writes. A generic request
-for an older version must not bypass this rule.
+1. Take the lock. Resolve the target to one exact image of the same major and
+   pull it before anything stops. Refuse other majors and downgrades.
+2. Back up.
+3. Change the pin (and its metadata) and `up --wait`. Ghost runs its own
+   migrations at boot and rolls back one that fails.
+4. Verify as `check` does. On a failure, put the previous pin back and restore the
+   backup, then verify again: `restored`, or `needs the operator` if that fails
+   too, with the backup's path.
 
-On restart, reconcile an interrupted operation from its journal and actual container/
-database state; never blindly replay destructive steps. Inject failures at pull,
-backup, config write, migration, readiness, restore, and process interruption.
+Switching images back is not reversing migrations, and a rollback after traffic
+has resumed would discard newer writes: going back to an older version later is
+a restore, chosen deliberately, never a side effect of asking for an old tag.
 
 ### 2.6 Supervisor and Ghost integration
 
@@ -553,11 +543,13 @@ Rules:
 - **The image writes the files.** The release payload in the site directory is
   a copy of the image's, written by `install` and replaced by `update`. They are not
   edited by operators; operator-owned files are `.env`, `ghost.env`,
-  `caddy/custom/` and `caddy/global/`. The manager records a checksum of each
+  `caddy/sites/site.caddy` (written once by `install`), `caddy/custom/` and
+  `caddy/global/`. A release that changes a snippet's arguments must say how
+  to change the site's routes, or carry a migration that edits them; it may
+  not overwrite them. The manager records a checksum of each
   file it wrote, so `update` can tell an untouched file from an edited one. An
-  untouched file is replaced. An edited one is never replaced silently: `update`
-  names it, keeps a backup copy beside it, and asks before replacing it. Under
-  `--no-prompt` it stops instead, unless `--replace-edited` was given.
+  untouched file is replaced. An edited one is kept, the release's version is
+  written beside it as `<file>.new`, and `update` names both; it never asks.
 - **Clone mode.** A launcher that finds itself in a checkout of this repository
   builds the image locally from that checkout and uses the files in place,
   writing nothing over them. Metadata records `source: checkout` and the commit
@@ -567,23 +559,10 @@ Rules:
   Updating such a site is `git checkout` of a newer ref followed by
   `./ghost-docker update`. That is the same update as in image mode — validate,
   pull the service images the new `compose.yml` names, apply, verify — except
-  that the payload is already in place and is not written. The checkout has
-  happened before the updater starts, so the recovery boundary cannot be "the
-  files as the updater found them": those are already the new ones. It is
-  instead:
-  - the **previous commit**, read from metadata, which Git holds and which
-    fully determines the previous payload;
-  - a snapshot of the operator's files (`.env`, `ghost.env`, `caddy/custom/`,
-    `caddy/global/`, generated routes, metadata), which a checkout never
-    touches;
-  - the **previous manager image**, which the launcher keeps by tagging every
-    image it builds with its commit.
-
-  A tracked tree with local modifications, or a checkout whose recorded commit
-  cannot be found, is refused before anything changes. On a failure the
-  updater restores the snapshot and checks the previous commit out again, so
-  the directory is never left as new payload with old configuration, and says
-  which manager image belongs to it.
+  that the payload is already in place and is not written. A tracked tree with
+  local modifications is refused. On a failure the updater puts the operator's
+  files back and checks out the previous commit (recorded in metadata), and the
+  launcher has kept the previous manager image, tagged with its commit.
 - **The launcher is served** from the `gh-pages` branch with the custom domain
   `docker.ghost.org`: `https://docker.ghost.org/install.sh`. It is the
   repository's own `ghost-docker`, published by a workflow on release and
@@ -598,28 +577,20 @@ The updater is the *target* release's image, started by the site's launcher. It
 runs entirely outside the files it replaces, which is what makes this tractable:
 there is no script rewriting itself mid-run.
 
-Transactional flow:
+Flow:
 
-1. Acquire the site lock; reject unresolved operations and, in clone mode, a
-   dirty tracked tree or an unknown previous commit.
-2. Resolve the release, check compatibility, show changes, and record the
-   previous version and digest.
-3. Back up `.env`, `ghost.env`, generated and custom Caddy files, metadata, and
-   the migration journal; and the payload being replaced, which in image mode is
-   a copy of the files and in clone mode is the previous commit.
-4. Run the target release's migrations, journalled per phase. Idempotency does
-   not substitute for recovery. Record completion only after the corresponding
-   stage succeeds.
-5. Write the managed files, validate Compose and Caddy, pull images, apply the
-   release, and verify readiness. Define safe handling of DB/ActivityPub
-   schema-affecting stack changes using the backup/recovery contract; do not
-   blindly roll back a migrated service image.
-6. On failure, restore the previous payload and configuration together where
-   safe (in clone mode, by checking the previous commit out). If
-   stateful service changes already occurred, use their recovery procedure or
-   report recovery-required. Never report success merely because `up -d`
-   returned zero.
-7. On success, rewrite the site's launcher to pin the new digest.
+1. Take the lock; in clone mode refuse a dirty tracked tree.
+2. Resolve the release, refuse a downgrade, and record the previous version and
+   digest.
+3. Back up (§2.5), which also keeps the operator's files and, in image mode, the
+   payload being replaced.
+4. Write the managed files, run the release's migration scripts in order (each
+   recorded in metadata when it completes), validate Compose, pull images, `up
+   --wait`, and verify as `check` does.
+5. On a failure, put the previous payload and configuration back (in clone mode,
+   by checking the previous commit out), `up --wait`, and report restored or
+   needs the operator. Never report success because `up -d` returned zero.
+6. On success, rewrite the site's launcher to pin the new digest.
 
 Migration `0001-compose-profiles` moves an installation made from `main` before
 this layout: it must handle both an absent profile setting and existing
@@ -644,10 +615,9 @@ ghost-docker install [--local | --domain example.com [--admin-domain admin.examp
                      [--dir PATH] [--port 2368] [--version 6.3.1]
                      [--channel stable|beta] [--ref vX.Y.Z]
                      [--with analytics,activitypub,supervisor]
-                     [--import BUNDLE | --migrate[=PATH]] [--no-prompt] [--no-start]
+                     [--import BUNDLE | --migrate[=PATH]] [--no-start]
 ghost-docker check | info | list
-ghost-docker config get|set|unset|validate ...
-ghost-docker caddy render|apply|validate|reload
+ghost-docker config get|set|validate ...
 ghost-docker update | backup | restore | upgrade      (as their steps land)
 ```
 
@@ -663,8 +633,8 @@ Installation writes a copy of the launcher into the site directory, pinned to
 the image digest that installed it. Every later command is `./ghost-docker ...`
 from there.
 
-Unknown or not-yet-supported options fail clearly: exit `2` for a usage error,
-`3` for a documented option whose step has not landed, naming that step. Use the
+Unknown options fail clearly with exit `2`. An option whose step has not landed
+does not exist until it does, so it is an unknown option like any other. Use the
 terminal for interactive input even when the launcher itself was piped from
 `curl`; `--no-prompt` must not silently accept destructive choices, and every
 prompt has a flag or environment-variable equivalent.
@@ -695,69 +665,55 @@ So:
   again in the same directory. Installation needs that for a failed pull or a
   service that never becomes healthy as well.
 
-Rootless support requires verified socket, port, ownership, and boot behaviour;
-do not infer support from linger alone.
+Supported platforms are as in §1: production on Linux with rootful Docker
+Engine, local sites also on Docker Desktop, OrbStack and WSL2. Rootless Docker
+is best effort and not claimed as supported; do not infer it from linger alone.
 
 **Reaching a site in order to verify it.** `127.0.0.1` inside the manager is the
 manager, not the host, so the first implementation's probes of host loopback
-cannot be ported as they were. Verification has three parts, reported
-separately, and none is described as more than it is:
+cannot be ported as they were. The site is asked from inside its own
+containers instead, and nothing is described as more than it is:
 
-- **Routing, over the site's own network.** A probe attached to the site's
-  Compose network requests Ghost at its unique alias
-  (`ghost-${COMPOSE_PROJECT_NAME}:2368`). In production it also requests Caddy
-  on port 80 with the site's `Host` header and expects the redirect to HTTPS
-  that Caddy issues only for a name it serves, and it asks Caddy's admin API
-  (`docker compose exec caddy`, `127.0.0.1:2019/config/`) whether each domain
-  is in the running configuration, as `caddy_verify` did on `next`. This shows
-  that the services answer and that the generated routes send each domain where
-  it should go. It says nothing about the host, and it does not need a
+- **Ghost** passes its health check, which `up --wait` already requires: the
+  Admin API answers inside the container.
+- **Routing, over the site's own network.** In production, the ghost
+  container (which has Node and is on the site's network) requests Caddy on
+  port 80 with each domain's `Host` header and expects the redirect to HTTPS
+  that Caddy issues only for a name it serves. This shows the generated routes
+  are loaded and send each domain to Caddy's HTTPS server. It needs no
   certificate.
-- **Published ports, from the host's network namespace, where that namespace
-  can be entered.** On a Linux host with Docker Engine, a short-lived container
-  of the manager image started with `--network host` requests `127.0.0.1` on
-  the published ports: Ghost's loopback port, and Caddy's HTTP port with `Host`
-  preserved. That is the request an operator's own `curl` would make.
-  Everywhere else the daemon is in a VM, or in a user namespace:
-  - *Docker Desktop:* `--network host` enters the VM's namespace unless the
-    host-networking option of Desktop 4.34 or later is enabled, and nothing in
-    `docker info` says whether it is. Both outcomes look like success.
-  - *OrbStack:* host networking is native, but it is one more platform to be
-    shown rather than assumed.
-  - *Rootless Docker:* the namespace entered is the daemon's, not the host's.
-
-  On those platforms the manager does not start the sibling. It reports the
-  ports the daemon says it published (`docker compose ps --format json`), and
-  the output says that they were not verified from the host. The installer
-  still prints the URL; opening it is the verification. No probe is attempted
-  whose result cannot be told apart from the result it is meant to rule out.
+- **Published ports are reported, not verified.** A container cannot reach
+  the host's loopback interface on every platform (Docker Desktop and OrbStack
+  run the daemon in a VM, rootless Docker in a user namespace), and whether a
+  `--network host` container lands on the host cannot always be told from
+  `docker info`. So the manager lists the ports Docker
+  says it published (`docker compose ps --format json`) and says they were not
+  checked from the host; the installer prints the URL, and opening it is that
+  check. An earlier revision of N3 probed them from the host's namespace on
+  Linux with Docker Engine; it was dropped as not worth its code.
 - **HTTPS, as an issuance state, not a probe result.** Caddy obtains a public
   certificate for a public domain name in the background, retrying with
-  backoff for up to thirty days; it does not substitute its internal CA when
-  issuance fails, and until a certificate exists the TLS handshake for that
-  name fails whatever trust the client ignores. So before DNS points at the
-  host there is no certificate, and no probe can show more. The routing probe
-  attempts the handshake with the site's SNI and reports one of three states:
-  *serving* (a certificate exists, with its issuer and whether it is publicly
-  trusted), *pending* (no certificate yet; the message names the domain, says
-  that Caddy obtains one once the domain's DNS reaches this host, and that
-  `./ghost-docker check` reports the change), or *failing*. Failing is
-  reserved for issuance errors in Caddy's log that pointing DNS at the host
-  will not cure: a CAA record that forbids the issuer, a rejected ACME
-  account, a rate limit. Those are quoted. The errors expected before DNS
-  exists, an unknown name or a challenge that reached another address, keep
-  the state *pending*, with the last attempt's message shown. *Pending* is not
-  a failure of installation. Temporary internal TLS before DNS is deliberately
-  not offered: it would be a second TLS state to transition out of, and a
-  self-signed certificate on a public name is a browser warning to click
-  through, which is the habit this setup should not teach. Operators who want
-  internal TLS for a private name put `tls internal` in `caddy/custom/`, as
-  today.
+  backoff for up to thirty days, and keeps it in its data volume; it does not
+  substitute its internal CA when issuance fails. So before DNS points at the
+  host there is no certificate, and no probe can show more. The manager looks
+  for the certificate in Caddy's storage and reports *serving* (with its
+  issuer) or *pending* (no certificate yet; the message names the domain, says
+  that Caddy obtains one once the domain's DNS reaches this host, that
+  `./ghost-docker check` reports the change, and that `docker compose logs
+  caddy` shows each attempt). Telling an issuance error that DNS will not cure
+  (a CAA record, a rejected ACME account, a rate limit) apart from the errors
+  expected before DNS exists was built and dropped: Caddy's log already says
+  which, and the operator is pointed at it. *Pending* is not a failure of
+  installation. Temporary internal TLS before DNS is deliberately not offered:
+  it would be a second TLS state to transition out of, and a self-signed
+  certificate on a public name is a browser warning to click through, which is
+  the habit this setup should not teach. Operators who want internal TLS for a
+  private name put `tls internal` in `caddy/custom/`, as today.
 
 A production site before its DNS points at the host therefore passes routing,
-has its ports either verified or reported as published, and shows HTTPS as
-pending. That is the expected state of a fresh production installation, and the
-output says so in those words.
+has its ports reported as published, and shows HTTPS as pending. That is the
+expected state of a fresh production installation, and the output says so in
+those words.
 
 Keep nginx/apache running until cutover; a server may proxy other applications,
 so replacing its whole service requires an explicit operator choice. Installation
@@ -864,7 +820,7 @@ and distinguish disposable cache from durable queues/counters/salts/other state.
 Durable state needs appropriate persistence, eviction, isolation, backup/restore, and
 upgrade policy; separate instances when policies differ. Key prefixes or Redis logical
 DBs alone do not isolate memory/eviction/durability policies. Redis remains per-site
-if shared Caddy/MySQL infra is enabled.
+if a shared Caddy (S13) is in use.
 
 ### 2.10 Where the tooling runs
 
@@ -1038,9 +994,9 @@ intent, not the bash.
 | Milestone | Outcome | Steps |
 | --- | --- | --- |
 | M0 Foundation | A manager image and launchers exist, and `install` works for local and production sites. | N1, N2, N3 |
-| M1 Local sites | A theme developer or migration-tool author moves each local Ghost-CLI site to Docker with one command. Local mode runs Ghost and MySQL with no Caddy. | S5b, S5c, S5d |
+| M1 Local sites | A theme developer or migration-tool author moves each local Ghost-CLI site to Docker with one command. Local mode runs Ghost and MySQL with no Caddy. | S5b, S5c |
 | M2 Tagged single-site production | Production installs from a tagged release at `docker.ghost.org`, updates between releases, has backup/restore, imports a production Ghost-CLI site, and migrates the pre-`next-docker` layout. | S6a, S4, S5e, S6b, S12 |
-| M3 Multi-site | Several sites on one host behind shared Caddy/MySQL. | S13 |
+| M3 Multi-site | Several sites on one host behind one shared Caddy, each with its own MySQL. | S13 |
 | M4 One-click Admin updates | Ghost Admin requests an upgrade that the host executes and recovers. | S7, S8, S9, S10 |
 
 S11 and S14-S16 follow M4.
@@ -1053,17 +1009,16 @@ N3 install, config, caddy, check               needs N2
 M1
 S5b local import                               needs N3
 S5c local --migrate                            needs S5b
-S5d portable import                            needs S5b
 
 M2
 S6a releases, served launcher, update          needs N3
-S4  backup/restore, lock, journal              needs N3
-S5e production import and cutover              needs S4, S5b; S5d for portable sources
+S4  backup/restore, lock                       needs N3
+S5e production import and cutover              needs S5b
 S6b legacy-layout migration                    needs S4, S6a
 S12 release qualification                      needs the rest of M2
 
 M3
-S13 shared infrastructure                      needs S4, S5e, S6b
+S13 shared Caddy                               needs S6b
 
 M4
 S7  host Ghost upgrade                         needs S4, S6a
@@ -1169,11 +1124,12 @@ pinned launcher into the site directory; in clone mode it writes neither.
 
 New in this step, not on `next`: `--email`, the ACME account email. Caddy
 needs none to issue, but Let's Encrypt sends expiry and incident notices to
-it. It is a flag only, never a prompt: omitted means none. It is stored as
-`ACME_EMAIL` in `.env` and rendered into the generated site file as `tls
-{$ACME_EMAIL}` only when set, so it lives with the site that uses it and
-`caddy/global/` stays operator owned. `config set ACME_EMAIL` followed by
-`caddy apply` changes it later.
+it. It is a flag only, never a prompt: omitted means none. It is
+rendered into the site's routes as `tls <email>` only when given, so it lives
+with the site that uses it and `caddy/global/` stays operator owned; it is
+validated as an address before it reaches the Caddyfile. It is not kept in
+`.env`: the routes are the operator's file after install, and changing the
+address is editing its `tls` line.
 
 Reference: `install.sh`, `scripts/lib/{env,config,compose,caddy,meta,preflight,install}.sh`,
 `docs/install.md`, and `tests/{env,env-compose,config,caddy,compose-matrix,ingress,install,install-e2e,meta}.test.mjs`
@@ -1187,15 +1143,78 @@ and the same command succeeds on a free port, an existing proxy on 80/443 left
 running, two local sites side by side, `--no-start` starting nothing, and
 local ingress verified on the loopback port, and production ingress verified
 by "Reaching a site in order to verify it" (§2.8) before DNS and a public
-certificate exist: routing passes, the published ports are verified from the
-host on Linux and reported as unverified on macOS, and HTTPS is reported as
-pending. A site
+certificate exist: routing passes, the published ports are reported, and
+HTTPS is reported as pending. A site
 installed into an empty directory from the published image alone, with no
 checkout, starts with `--with activitypub`, and its `analytics` helper images
 build from the payload written there. The dotenv encoder passes the round trip through real containers for
 `$VAR`, `${VAR}`, `$$`, spaces, both quote types, backslashes, newlines, empty
 strings and JSON arrays.
 
+Status: implemented. `tests/e2e/install.sh` passes against Docker Engine 28 and
+29 on Linux and against OrbStack on macOS; [install.md](install.md) documents the
+commands. Decisions made while building it, which later steps rely on:
+
+- **Resolution.** The requested Ghost tag is pulled and the pin is the
+  repository digest the pulled image carries. Resolving the digest first
+  through the registry and pulling that would close the window in which the
+  tag moves between the pull and the inspect; it was built and taken out
+  again as not worth its code.
+- **Verification** runs inside the site's own containers (`docker compose
+  exec`), not in a probe container of its own. A site that starts but fails
+  it is a failed installation and is removed. HTTPS is *serving* or *pending*
+  only; see §2.8 for what was dropped and why.
+- **No `caddy` command.** `install` writes `caddy/sites/site.caddy` once and
+  the file is the operator's from then on (§2.3); `docs/caddy.md` lists the
+  edits people make. The `CADDY_*_DIR` placeholders, which existed so a staged
+  candidate could be validated with the tracked Caddyfile, are gone from the
+  Caddyfile and compose.yml.
+- **A failed installation** is undone by `docker compose down --volumes` with
+  every profile enabled, then the data directories it created, removed as root
+  in a short-lived container of the manager image (MySQL owns its files by
+  then), then the files it wrote. Directories that existed before are kept.
+- **Ports.** The only ports the manager can know are taken are the ones
+  containers publish; it refuses those before writing anything. A program
+  outside Docker holding a port is found at `up`. OrbStack publishes the port
+  over such a program without an error, so on macOS with OrbStack that conflict
+  is not detected at all; the e2e records it as skipped there. The e2e itself
+  requests the host's ports with curl, which is the check the manager cannot
+  make. A failed `up` is reported in Compose's own words, which name the port
+  (their wording differs between Docker 28 and 29, so it is quoted, not
+  parsed), followed by `--port` and that nothing running was stopped.
+- **The Tinybird path** comes from the image's declared environment: the older
+  layout declares `GHOST_CLI_INSTALL` and keeps Ghost under `current/`; the
+  `next` variants do not. No container is started to look.
+- **`--channel` and `--ref`** do not exist until S6a: choosing a release is
+  the launcher's job. The recorded channel is derived from
+  the version the manager image carries (`vX.Y.Z` stable, `-beta.N` beta,
+  `edge-…` edge).
+- **Prompts.** At a terminal, `install` asks for the site mode and a
+  production site's domain when no option gave them (`@inquirer/select` and
+  `@inquirer/input`); `--no-prompt`, or no terminal, makes a missing answer a
+  usage error naming its option. `--with analytics` is a usage error that says
+  how to add analytics to the installed site: its `tinybird-login` job is an
+  interactive browser login and Ghost waits for the Tinybird jobs, so `up
+  --wait` cannot succeed before it. The final-phase options (`--image-registry`,
+  `--ghost-channel`, `--without`) are not accepted at all until their steps
+  land; as unknown options they exit 2.
+- **The launcher passes `GD_COMPOSE_OVERRIDES`** into the manager when it is
+  set, so the opt-in to an override file in docs/configuration.md reaches the
+  manager's Compose runs. It is the one setting passed through, besides the
+  launcher's own contract (§2.10).
+- **Operator keys** in the wrong file are derived from `compose.yml`'s
+  interpolations, the settings `.env.example` documents, `COMPOSE_*` and the
+  keys `.env` holds, so `GHOST_PORT` in `ghost.env` is caught on a local site too.
+- **No `DOMAIN` setting.** Nothing in Compose or Caddy reads one since the
+  routes became a file, so the domain is the host of `URL` (and the admin
+  domain the host of `ADMIN_URL`); a second copy only needed a check that the
+  two agreed.
+- **Metadata** gained `source`, `stack.image` and `payload` (the checksums of
+  §2.7); `schemaVersion` stays 1, since nothing has been released with it.
+- **Fewer commands than listed above.** `caddy render|apply|validate|reload`
+  and `config unset` were cut before merging: the routes are an operator file
+  (above), and removing a line from an env file carries no encoding risk, so
+  `unset` bought nothing over an editor.
 ### S3 — Ghost-CLI export command
 
 Status: implemented and released in Ghost-CLI 1.33.0 (PR #2333).
@@ -1204,7 +1223,7 @@ Status: implemented and released in Ghost-CLI 1.33.0 (PR #2333).
 ### S5 — Bundle import and migration cutover
 
 Repo: ghost-docker. Implement §2.4 as `install --import` and `install
---migrate`. Four parts; each is its own pull request. (S5a, syncing the contract
+--migrate`. Three parts; each is its own pull request. (S5a, syncing the contract
 with the released exporter, is done.)
 
 **S5b — Local import.** Deps: N3. Not S4; see "Local imports" in §2.4. Import
@@ -1222,8 +1241,8 @@ with the released exporter, is done.)
   dropped from mysqldump's version-comment lines so that is possible.
 - A failed import removes what it created; an interrupted one cannot be started
   and is cleared by the next import.
-- A `portable` bundle is refused until S5d; a `production` bundle
-  until S5e.
+- A `portable` bundle is refused, saying how to move the site through Ghost
+  Admin (§2.4); a `production` bundle is refused until S5e.
 
 Reference: `scripts/lib/import.sh`, the import blocks of `install.sh`,
 `tests/import.test.mjs` and `tests/e2e/import.sh` on `next`. That e2e script is
@@ -1247,29 +1266,19 @@ directly and through the served launcher; a non-install directory, a Ghost-CLI
 older than 1.33.0, a Ghost 5.x source and a production install are each refused
 before any change; the source is stopped by the export and never started; the
 Docker site takes the source's port; after a failed import a source that was
-running is running again; exporter failure is surfaced, with the portable retry
-offered only interactively.
+running is running again; exporter failure is surfaced, with the Ghost Admin
+route when `mysql-data` validation refuses the source.
 
-**S5d — Portable import.** Deps: S5b. Step 8 of the import sequence: isolated
-destination with no public ingress, owner setup, authenticated multipart content
-and member imports, documented losses verified. `manager/demo-import.mjs` on
-`codex/update-supervisor` is a starting point, not a finished implementation.
-Enables the `--migrate` portable retry.
+**S5e — Production import and cutover.** Deps: S5b. Production bundles
+(`sourceInstallType: production`): separate admin URLs, the same-server case
+with an existing proxy on 80/443, and the documented cutover of §2.4 step 9.
+Extends `--migrate` to production installations, where it exports with
+`--leave-stopped`.
 
-Acceptance: a portable bundle from a local SQLite source, including an empty
-members file; each documented loss demonstrated by a test rather than asserted;
-a retry cannot duplicate a partially completed import.
-
-**S5e — Production import and cutover.** Deps: S4, S5b; S5d for portable
-sources. The full §2.4 sequence for `sourceInstallType: production`: site lock,
-recovery copies, separate admin URLs, isolated verification, final-export
-(`--leave-stopped`) handling, explicit ingress switch, and source-restart
-instructions. Extends `--migrate` to production installations.
-
-Acceptance: a same-server migration with an existing proxy on 80/443 and a
-cross-host migration; partial retries; rehearsal imports with outbound side
-effects suppressed. This part is what replaces the legacy `scripts/migrate.sh`
-on `main`: S12 must not merge this branch into `main` before it passes.
+Acceptance: a same-server migration with an existing proxy on 80/443, and a
+cross-host migration following the documented cutover. This part is what
+replaces the legacy `scripts/migrate.sh` on `main`: S12 must not merge this
+branch into `main` before it passes.
 
 ### S6 — Releases, the served launcher, and updates
 
@@ -1286,46 +1295,39 @@ Acceptance: the served launchers install the newest beta and an explicit
 `--ref`; version selection is tested against prerelease ordering rather than
 lexical sort; a dependency-only change produces a release; `update` moves a site
 between two releases with the Ghost pin unchanged and the launcher re-pinned,
-refuses a downgrade, asks before replacing a hand-edited managed file and keeps
-a backup of it (stopping instead under `--no-prompt` without `--replace-edited`),
-and restores the previous files when validation fails before services change.
+refuses a downgrade, keeps a hand-edited managed file and writes the release's
+beside it, and restores the previous files when validation fails before
+services change.
 In clone mode, a failed update between two refs whose `compose.yml` differs
 leaves the checkout at the previous commit with the previous configuration and
 the site running, and a dirty tree is refused before anything changes.
 
 **S6b — Legacy-layout migration and transactional updates.** Deps: S4, S6a. The
-journalled migration framework, migration `0001-compose-profiles`, the way in
-for installations that have no launcher, and checkpoint-backed recovery. Gates
+release migration scripts (run in order, recorded in metadata), migration
+`0001-compose-profiles`, the way in for installations that have no launcher, and
+backup-backed recovery (§2.5). Gates
 merging `next-docker` into `main`.
 
 Acceptance: update from the layout on `main`, including existing optional
 profiles, custom Caddy routes/overrides, absent metadata, and an untagged
-starting commit. Inject failures before and after migrations, pull, and startup;
-verify complete recovery or an accurate recovery-required outcome.
+starting commit. A failure during a migration, the pull or startup ends restored,
+or reports that the operator is needed, accurately.
 
-### S4 — Backup, restore, locks, and recovery journal
+### S4 — Backup, restore and the lock
 
-Repo: ghost-docker. Deps: N3. Implement the reusable §2.5 checkpoint/restore
-contract as manager commands: explicit DB connection abstraction, operation
-lock, maintenance handling, retention, and journals. Backups include required
-local application/configuration state and describe optional-service limitations.
-Define supported backup formats independently of migration bundles; a portable
-export is not a lossless recovery checkpoint.
+Repo: ghost-docker. Deps: N3. `./ghost-docker backup` and `restore` as described
+in §2.5, and the lock of §2.2 on backup, restore and (when they land) upgrade
+and update. Backups are their own format, not migration bundles.
 
-Add the shared operation lock to every mutating command that already exists
-(install, config, caddy, import): §2.2 requires it.
+PR #300 implemented a much larger version against the bash layout. Its
+TypeScript (`manager/storage.ts`, `probes.ts`, `process.ts`) and its tests are
+material to draw on; its journals, maintenance handling and bash dispatcher are
+not carried over.
 
-PR #300 implemented this against the bash layout. Its TypeScript
-(`manager/main.ts`, `storage.ts`, `probes.ts`, `process.ts`, `types.ts`), its
-recovery documentation and its tests carry over; its bash dispatcher and its
-changes to bash helpers do not. Land it as reviewable slices: the lock on
-existing commands, then checkpoints, then restore and interrupted-operation
-recovery.
-
-Acceptance: restore a representative site to a fresh destination and verify
-database, assets/theme/configuration; inject interrupted backup/restore, full
-disk, stale lock, and SQL pipeline failure. Recover without exposing an
-incomplete destination.
+Acceptance: back up a site with ActivityPub, restore it into the same directory
+and into a fresh one, and verify the database (staff sign in), assets, theme and
+configuration; a second operation is refused while one holds the lock; a stale
+lock is reported by `check`; a dump that fails is an error, not a backup.
 
 ### S7 — Host-driven Ghost upgrades
 
@@ -1334,14 +1336,14 @@ upgrade [version|latest]` following §2.5, initially without a supervisor. Speci
 execution interface so the supervisor cannot diverge from backup/recovery behavior.
 Keep supported majors/downgrades constrained and feature compatibility explicit.
 
-Acceptance: upgrade across an actual database migration, verify optional analytics
-sync/deploy, inject startup failure after migration, and restore the checkpoint.
-Test process interruption at each mutation boundary, two concurrent requests, and
-refusal of unsupported transitions. A live database restore drill is a release gate.
+Acceptance: upgrade across a real database migration, with the analytics sync
+and deploy run; a target that fails to start after migrating is restored from
+the backup and reported `restored`; a concurrent second request is refused by
+the lock; another major and a downgrade are refused.
 
 ### S8 — Supervisor command, protocol, and installer integration
 
-Repo: ghost-docker. Deps: S7, S9; S13's shared-DB rules if it has shipped. A
+Repo: ghost-docker. Deps: S7, S9; S13 if it has shipped. A
 prototype exists on `codex/update-supervisor`; rework it against the adapter
 contract merged from Ghost PR #31277 rather than starting over. Write
 `docs/upgrade-supervisor.md` with the exact §2.6 schemas, transitions, ownership,
@@ -1409,52 +1411,27 @@ explicit recovery consequences. Explain command equivalences without claiming fu
 CLI parity for unsupported features. Describe shared infra according to whether
 S13 has shipped.
 
-### S13 — Optional shared Caddy/MySQL infrastructure
+### S13 — Optional shared Caddy
 
-Repo: ghost-docker. Deps: S4, S5e, S6b. Scheduled before S7-S10 so upgrades and the
-supervisor are built against per-site projects. Only now introduce `infra` and `site` modes and
-`--infra-only`/`--infra` installation. ActivityPub, traffic analytics, and Tinybird
-jobs remain per-site; no shared analytics/federation variants in this step.
+Repo: ghost-docker. Deps: S6b. Several sites on one server, as Ghost-CLI ran
+several sites behind one nginx. 80 and 443 can belong to one Caddy only, so that
+Caddy is shared; everything else stays per site, MySQL included, so backup,
+restore, upgrade and import are unchanged.
 
-Design/implementation requirements:
+- `install --infra` sets up the shared Caddy once: a Compose project of its own,
+  with an external network each member site's Ghost (and optional services) also
+  joins. `install --domain` on a server that has it adds the site as a member
+  instead of starting a Caddy of its own.
+- Each member's routes are a file in the shared Caddy's `sites/` directory,
+  written once by its install and then the operator's, as in N3. Upstreams are
+  the member's unique aliases, which N1 already requires.
+- `list` shows the members; removing a site removes its routes file.
+- Ghost publishes on loopback as before, so a member can still be reached
+  without Caddy.
 
-- Extend the complete profile/dependency matrix: infra has no Ghost, Caddy must not
-  require an inactive Ghost, and URL cannot remain universally required. Optional
-  jobs must not accidentally provision a member's local database.
-- Assign unique database names/users and restricted grants per site, with distinct
-  ActivityPub database/grants where enabled. Backups/restores target a site's DBs,
-  never the whole shared MySQL instance during a site operation.
-- Make DB endpoint selection explicit. If private DB opt-in is offered, add a real
-  `db` profile and isolate/address it without ambiguous shared `db` aliases.
-- Separate private service networks from shared ingress/database connectivity where
-  appropriate. Shared networks are not tenant isolation; document the trust model.
-- Parameterize every optional-service upstream. No global `ghost`, `activitypub`,
-  or `traffic-analytics` alias is safe across member projects. Verify that shared
-  Caddy routes ActivityPub assets to the correct site's storage-serving endpoint.
-- Resolve network names from actual infra configuration. If a Compose override is
-  needed for external networking, explicitly support it: persist the file list,
-  make helpers honor it, document override auto-loading changes and IPv6 composition.
-  Do not claim COMPOSE_FILE is unused if a fallback actually sets it.
-- Add register/unregister/list/check. Serialize registrations, reject duplicate
-  domains/project identities, provision DB grants safely, validate/reload Caddy, and
-  leave recoverable state after partial failure. Purge requires explicit selection
-  and cannot delete another site's data/user grants.
-- Route shared-DB operations through the established DB abstraction. The supervisor
-  cannot assume `exec db` in its own project or access an unmounted infra checkout.
-  Keep infra root credentials out of member configuration and supervisor scope.
-- Define supported Ghost/MySQL/infra version combinations and infra maintenance/
-  backup policy. An infra `down` or DB update affects every member; verify recovery
-  and clearly report this blast radius. Set capacity limits and connection budgets.
-- Default new shared setups to dedicated infra. Do not promise converting an existing
-  single-site installation by merely changing profiles. If offering a conversion,
-  include stopped MySQL transfer, Caddy certificate volume ownership/identity,
-  unchanged data, checkpoint, verification, and tested rollback as part of this phase.
-
-Acceptance: dedicated infra plus two sites on different exact Ghost versions, each
-with per-site optional services; upgrade/restore/remove one without touching the
-other's data; exercise private DB opt-in if supported, concurrent registration,
-cross-site route checks, infra restart/outage, and partial provisioning recovery.
-Document unsupported combinations rather than silently falling back to shared aliases.
+Acceptance: a shared Caddy with two members on different Ghost versions, each
+with its own optional services; upgrading, restoring or removing one leaves the
+other untouched; a duplicate domain is refused; a Caddy restart brings both back.
 
 ### S14 — Dual-published service images and registry selection
 

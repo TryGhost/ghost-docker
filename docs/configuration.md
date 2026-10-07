@@ -1,9 +1,8 @@
 # Configuration
 
-> **Status.** Commands written `./ghost-docker ...` are provided by the manager
-> CLI described in [the plan](ghost-cli-replacement.md). It lands in steps N2 and
-> N3; until then this branch holds the Compose and Caddy configuration and these
-> contracts, and no tooling.
+> **Status.** `./ghost-docker install`, `config`, `check`, `info` and `list`
+> exist (plan step N3); see [install.md](install.md). Commands the plan has not
+> delivered yet do not exist until their step lands.
 
 ## Two files, two audiences
 
@@ -27,8 +26,13 @@ needs no daemon) and reports any `ghost.env` key whose effective value differs.
 An entry added to `compose.yml` is therefore caught the moment it is added,
 with nothing to keep in sync. The same applies to operator settings in the
 wrong file: the set of keys that belong in `.env` is derived from the variables
-`compose.yml` interpolates, plus `COMPOSE_*`, plus whatever `.env` already
-defines.
+`compose.yml` interpolates, the settings `.env.example` documents (commented
+out or not), `COMPOSE_*`, and whatever `.env` already defines.
+
+A site's domain is not a setting of its own: it is the host of `URL`, and an
+admin domain the host of `ADMIN_URL`. A production `URL` must be `https://`.
+Caddy serves the addresses in `caddy/sites/site.caddy`; `check` asks it for
+each host, so a change to one that is not made to the other is reported.
 
 Both files hold credentials and should be mode `0600`. The helpers write them
 atomically with a restrictive umask and preserve the mode of an existing file.
@@ -54,11 +58,19 @@ Let the helper encode it instead of guessing:
 
 ```bash
 ./ghost-docker config set ghost.env mail__options__auth__pass 'Pa$$w0rd!'
+./ghost-docker config get ghost.env mail__options__auth__pass
 ```
+
+The file may be left out: a key `.env` is meant to hold (as derived above)
+goes there, and any other in `ghost.env`, so `config set GHOST_PORT 2369`
+writes `.env`. A value that starts with a dash follows `--`. `set` replaces the
+key's assignment in place, keeping the comments around it, writes the file
+atomically, and keeps its mode; a new file is `0600`. Only the key name is
+printed, never a value.
 
 `./ghost-docker config validate` reports values Compose would interpolate by
 accident. It cannot catch every case: a hand-written `$$` is indistinguishable
-from a correctly escaped single `$`, so writing values through `config.sh set`
+from a correctly escaped single `$`, so writing values through `config set`
 is the only way to be sure.
 
 ### A limit worth knowing
@@ -174,8 +186,10 @@ contract.
 ## Installation metadata
 
 `.ghost-docker.json` records the schema version, installation time, mode,
-release channel, installed stack version/commit/ref, project identity, resolved
-Ghost image and digest, selected profiles, and completed migrations. Its schema
+release channel, how the stack was installed (from the image or a clone),
+installed stack version/commit/ref and manager image, project identity,
+resolved Ghost image and digest, selected profiles, checksums of the files the
+manager wrote, and completed migrations. Its schema
 is specified in §2.2 of [the plan](ghost-cli-replacement.md). It is gitignored,
 mode `0600`, and machine generated — do not hand-edit it. Durable operation
 journals for in-progress work and recovery state are separate files, and land
@@ -187,7 +201,11 @@ with backup/restore in S4.
   "installedAt": "2026-09-03T09:12:44Z",
   "mode": "production",
   "channel": "stable",
-  "stack": { "version": "v1.2.3", "commit": "…", "ref": "v1.2.3" },
+  "source": "image",
+  "stack": {
+    "version": "v1.2.3", "commit": "…", "ref": "v1.2.3",
+    "image": "ghcr.io/tryghost/ghost-docker@sha256:…"
+  },
   "site": {
     "project": "ghost-example-com", "dir": "/opt/ghost/example.com",
     "url": "https://example.com", "domain": "example.com", "adminDomain": null
@@ -197,9 +215,18 @@ with backup/restore in S4.
     "version": "6.62.0", "digest": "sha256:…"
   },
   "profiles": ["production"],
+  "payload": { "compose.yml": "<sha256>", "caddy/Caddyfile": "<sha256>", "ghost-docker": "<sha256>" },
   "migrations": []
 }
 ```
+
+`source` is `image` when `install` wrote the stack's files from the manager
+image, and `checkout` for a clone of the repository whose files are used in
+place. `stack.image` is the manager image the site's launcher is pinned to:
+a repository digest, or, for an image only this host holds, its ID. `payload`
+is the SHA-256 of every file `install` wrote from the image, so that an update
+can tell a file nobody edited from one somebody did (plan §2.7); it is empty
+in clone mode, where Git already knows.
 
 A field that was not supplied is `null` rather than an empty string, so "not
 known" and "deliberately empty" stay distinguishable. The digest is the
@@ -228,7 +255,7 @@ because it changes override auto-loading, and an explicit `-f` replaces the
 selected list. Opt into an override file with `GD_COMPOSE_OVERRIDES`:
 
 ```bash
-GD_COMPOSE_OVERRIDES=compose.ipv6.yml ./ghost-docker caddy validate
+GD_COMPOSE_OVERRIDES=compose.ipv6.yml ./ghost-docker check
 ```
 
 ## Ghost image layout

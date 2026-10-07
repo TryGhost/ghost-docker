@@ -194,6 +194,15 @@ expect_run_arg "$SITE:$SITE"
     "$BASH_BIN" "$LAUNCHER" version && expect_run_arg "$SITE:$SITE")
 ok "a symlinked path is mounted as the real one"
 
+step "Compose overrides reach the manager"
+with_fake ok env ${fake_socket_env[@]+"${fake_socket_env[@]}"} GD_IMAGE=example/manager:1 \
+    GD_COMPOSE_OVERRIDES=compose.ipv6.yml "$BASH_BIN" "$LAUNCHER" --dir "$SITE" version
+expect_run_arg "GD_COMPOSE_OVERRIDES=compose.ipv6.yml"
+with_fake ok env ${fake_socket_env[@]+"${fake_socket_env[@]}"} GD_IMAGE=example/manager:1 \
+    "$BASH_BIN" "$LAUNCHER" --dir "$SITE" version
+run_args | grep -q '^GD_COMPOSE_OVERRIDES=' && fail "an unset GD_COMPOSE_OVERRIDES was passed" "$(run_args)"
+ok "GD_COMPOSE_OVERRIDES is passed when set, and only then"
+
 step "Rootless Docker"
 with_fake rootless env ${fake_socket_env[@]+"${fake_socket_env[@]}"} GD_IMAGE=example/manager:1 \
     "$BASH_BIN" "$LAUNCHER" --dir "$SITE" version
@@ -323,7 +332,7 @@ step "The image holds everything compose.yml refers to"
 # be in the image. Data directories are created at install and are exempt.
 # shellcheck disable=SC2016  # a Node program, not shell
 run docker run --rm --entrypoint sh \
-    -e URL=https://example.com -e DOMAIN=example.com -e DATABASE_PASSWORD=x -e DATABASE_ROOT_PASSWORD=y \
+    -e URL=https://example.com -e DATABASE_PASSWORD=x -e DATABASE_ROOT_PASSWORD=y \
     -e COMPOSE_PROFILES=production,analytics,activitypub \
     ghost-docker:checkout -c 'cd /opt/ghost-docker/stack && docker compose -f compose.yml config --format json | node -e "
 const fs = require(\"fs\");

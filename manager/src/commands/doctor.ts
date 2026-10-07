@@ -11,19 +11,23 @@ import { loadContext, type Context } from '../context.ts';
 import { composeVersion } from '../compose.ts';
 import { daemonInfo, runOnce, type DaemonResult } from '../docker/client.ts';
 import { EXIT } from '../errors.ts';
+import { failed, printChecks, type Check } from '../report.ts';
 import type { Io } from '../io.ts';
 import { atLeast, managerVersion, MINIMUM } from '../versions.ts';
 
-export interface Check {
-    status: 'ok' | 'warn' | 'error';
-    label: string;
-    detail: string;
-}
+export type { Check };
 
 /** Left in the site directory by `--keep-probe`, so its ownership can be read from the host. */
 export const PROBE_FILE = '.ghost-docker-probe';
 
 const SUPPORTED_ARCHITECTURES = ['x86_64', 'amd64', 'aarch64', 'arm64'];
+
+/**
+ * Below these a site will probably install and then fail later, so they are
+ * warnings rather than refusals: images, the database and content need the
+ * disk, and Ghost and MySQL together need the memory.
+ */
+export const RECOMMENDED = { diskMb: 5120, memoryMb: 1024 } as const;
 
 export const doctorCommand = defineCommand({
     brief: 'Report what the manager can see: Docker, the platform, the site directory and who owns what is written there.',
@@ -42,17 +46,11 @@ export const doctorCommand = defineCommand({
         if (json) {
             io.stdout(`${JSON.stringify({ checks }, null, 2)}\n`);
         } else {
-            for (const check of checks) {
-                const line = `  ${STATUS_LABEL[check.status]} ${check.label.padEnd(18)} ${check.detail}\n`;
-                // Problems go to stderr so they can be separated from the summary.
-                (check.status === 'ok' ? io.stdout : io.stderr)(line);
-            }
+            printChecks(io, checks);
         }
-        return checks.some((check) => check.status === 'error') ? EXIT.failure : EXIT.ok;
+        return failed(checks) ? EXIT.failure : EXIT.ok;
     },
 });
-
-const STATUS_LABEL = { ok: 'ok      ', warn: 'warning ', error: 'ERROR   ' } as const;
 
 /** What the checks read. Gathered once, so each check is a function of these. */
 interface Facts {
@@ -75,10 +73,11 @@ const HOST_CHECKS: readonly CheckFn[] = [
     platform,
     rootless,
     dockerCompose,
+    memory,
 ];
 
 /** About the site directory; only meaningful once `siteDirectory` has passed. */
-const SITE_CHECKS: readonly CheckFn[] = [identity, probeAndBindMounts, projectDir];
+const SITE_CHECKS: readonly CheckFn[] = [identity, probeAndBindMounts, disk, projectDir];
 
 export async function collect(context: Context, io: Io, keepProbe = false): Promise<Check[]> {
     const facts: Facts = {
@@ -198,6 +197,21 @@ function dockerCompose({ compose }: Facts): Check {
     };
 }
 
+/** The daemon's memory: what the containers will share. */
+function memory({ daemon }: Facts): Check | null {
+    if (!daemon.ok || daemon.info.memoryBytes <= 0) {
+        return null;
+    }
+    const mb = Math.floor(daemon.info.memoryBytes / 1024 ** 2);
+    return mb < RECOMMENDED.memoryMb
+        ? {
+              status: 'warn',
+              label: 'memory',
+              detail: `${mb} MB available to Docker; Ghost and MySQL together want at least ${RECOMMENDED.memoryMb} MB`,
+          }
+        : { status: 'ok', label: 'memory', detail: `${mb} MB available to Docker` };
+}
+
 // --- The site directory ------------------------------------------------------
 
 /**
@@ -236,6 +250,26 @@ async function probeAndBindMounts({ cwd, keepProbe, context, io }: Facts): Promi
             rmSync(join(cwd, PROBE_FILE), { force: true });
         }
     }
+}
+
+/** Free space where the site keeps its data, which is under its own directory. */
+function disk({ cwd, io }: Facts): Check {
+    const free = io.freeBytes(cwd);
+    if (free === null) {
+        return {
+            status: 'warn',
+            label: 'disk space',
+            detail: `could not be determined for ${cwd}`,
+        };
+    }
+    const mb = Math.floor(free / 1024 ** 2);
+    return mb < RECOMMENDED.diskMb
+        ? {
+              status: 'warn',
+              label: 'disk space',
+              detail: `${mb} MB free; ${RECOMMENDED.diskMb} MB is recommended for images, the database and content`,
+          }
+        : { status: 'ok', label: 'disk space', detail: `${mb} MB free` };
 }
 
 function projectDir({ cwd }: Facts): Check | null {

@@ -106,6 +106,155 @@ export async function daemonInfo(docker: DockerTransport): Promise<DaemonResult>
     };
 }
 
+// --- Images -------------------------------------------------------------------
+
+/** `ghost:6-alpine` → `{ repository: 'ghost', tag: '6-alpine' }`; a digest is kept as one. */
+export function splitReference(reference: string): { repository: string; tag: string } {
+    const at = reference.indexOf('@');
+    if (at >= 0) {
+        return { repository: reference.slice(0, at), tag: reference.slice(at + 1) };
+    }
+    // A colon after the last slash separates the tag; one before it is a registry port.
+    const colon = reference.lastIndexOf(':');
+    if (colon > reference.lastIndexOf('/')) {
+        return { repository: reference.slice(0, colon), tag: reference.slice(colon + 1) };
+    }
+    return { repository: reference, tag: 'latest' };
+}
+
+const progress = z.looseObject({
+    error: z.string().optional(),
+    errorDetail: z.looseObject({ message: z.string().optional() }).optional(),
+});
+
+/**
+ * `docker pull`. The daemon answers 200 and then streams progress; a failure
+ * part-way is an `error` line in that stream, not a status code.
+ */
+export async function pullImage(
+    docker: DockerTransport,
+    repository: string,
+    tag: string,
+    timeoutMs = 900_000,
+): Promise<void> {
+    const response = await docker({
+        method: 'POST',
+        path: '/images/create',
+        query: { fromImage: repository, tag },
+        timeoutMs,
+    });
+    const text = response.body.toString('utf8');
+    if (response.status >= 400) {
+        const parsed = errorBody.safeParse(safeJson(text));
+        throw new DaemonError(response.status, parsed.success ? parsed.data.message : text.trim());
+    }
+    for (const line of text.split('\n')) {
+        const parsed = progress.safeParse(safeJson(line));
+        if (parsed.success && (parsed.data.error || parsed.data.errorDetail?.message)) {
+            throw new DaemonError(500, parsed.data.errorDetail?.message ?? parsed.data.error!);
+        }
+    }
+}
+
+const imageInspect = z.object({
+    Id: z.string(),
+    RepoDigests: z.array(z.string()).nullable().default([]),
+    Config: z
+        .looseObject({ Env: z.array(z.string()).nullable().default([]) })
+        .nullable()
+        .default({ Env: [] }),
+});
+
+export interface ImageFacts {
+    readonly id: string;
+    readonly repoDigests: readonly string[];
+    readonly env: Readonly<Record<string, string>>;
+}
+
+/** An image the daemon holds, or null when it has none by that reference. */
+export async function inspectImage(
+    docker: DockerTransport,
+    reference: string,
+): Promise<ImageFacts | null> {
+    try {
+        const image = await call(
+            docker,
+            { method: 'GET', path: `/images/${reference}/json` },
+            imageInspect,
+        );
+        const env: Record<string, string> = {};
+        for (const entry of image.Config?.Env ?? []) {
+            const equals = entry.indexOf('=');
+            if (equals > 0) {
+                env[entry.slice(0, equals)] = entry.slice(equals + 1);
+            }
+        }
+        return { id: image.Id, repoDigests: image.RepoDigests ?? [], env };
+    } catch (error) {
+        if (error instanceof DaemonError && error.status === 404) {
+            return null;
+        }
+        throw error;
+    }
+}
+
+// --- Containers -------------------------------------------------------------
+
+const containerSummary = z.object({
+    Id: z.string(),
+    Names: z.array(z.string()).default([]),
+    Status: z.string().default(''),
+    Labels: z.record(z.string(), z.string()).nullable().default({}),
+    Ports: z
+        .array(
+            z.object({
+                IP: z.string().optional(),
+                PrivatePort: z.number(),
+                PublicPort: z.number().optional(),
+                Type: z.string().default('tcp'),
+            }),
+        )
+        .nullable()
+        .default([]),
+});
+
+export interface ContainerFacts {
+    /** Without Docker's leading slash. */
+    readonly name: string;
+    readonly status: string;
+    readonly labels: Readonly<Record<string, string>>;
+    /** Host ports the container publishes. */
+    readonly publishedPorts: readonly number[];
+}
+
+/** `docker ps`, or with `all` `docker ps -a`, optionally filtered by label. */
+export async function listContainers(
+    docker: DockerTransport,
+    { all = false, labels = [] }: { all?: boolean; labels?: readonly string[] } = {},
+): Promise<ContainerFacts[]> {
+    const query: Record<string, string> = { all: all ? '1' : '0' };
+    if (labels.length > 0) {
+        query.filters = JSON.stringify({ label: labels });
+    }
+    const containers = await call(
+        docker,
+        { method: 'GET', path: '/containers/json', query },
+        z.array(containerSummary),
+    );
+    return containers.map((container) => ({
+        name: (container.Names[0] ?? container.Id.slice(0, 12)).replace(/^\//, ''),
+        status: container.Status,
+        labels: container.Labels ?? {},
+        publishedPorts: [
+            ...new Set(
+                (container.Ports ?? []).flatMap((port) =>
+                    port.PublicPort === undefined ? [] : [port.PublicPort],
+                ),
+            ),
+        ],
+    }));
+}
+
 // --- One-shot containers ----------------------------------------------------
 
 export interface Bind {
@@ -122,6 +271,8 @@ export interface RunSpec {
     binds?: readonly Bind[];
     /** `none`, `host`, or a network's name. */
     network?: string;
+    /** Run as this user rather than the image's. */
+    user?: string;
     /** How long the container may run before it is killed. */
     timeoutMs?: number;
 }
@@ -157,6 +308,7 @@ export async function runOnce(docker: DockerTransport, spec: RunSpec): Promise<R
                     Image: spec.image,
                     Cmd: [...spec.cmd],
                     ...(spec.entrypoint ? { Entrypoint: [...spec.entrypoint] } : {}),
+                    ...(spec.user ? { User: spec.user } : {}),
                     Tty: false,
                     OpenStdin: false,
                     HostConfig: {

@@ -10,7 +10,7 @@ Note: Currently Traffic Analytics features are behind a feature flag. For now, y
 1. Copy and paste the values from the previous step into your `.env` file (Tinybird credentials are operator settings, not Ghost application settings)
 1. Run `docker compose --profile=analytics up -d` to start all services in the background
 1. Add `analytics` to `COMPOSE_PROFILES` in your `.env` file, alongside the site mode, to include the `analytics` profile automatically when running `docker compose` commands. Profiles are additive: adding `analytics` does not change the site mode.
-1. Run `./ghost-docker caddy apply` so the generated routes proxy `/.ghost/analytics/` to this site's analytics service (production only)
+1. In production, add the analytics route to `caddy/sites/site.caddy`, inside the site's block: `import /etc/caddy/snippets/TrafficAnalytics traffic-analytics-<COMPOSE_PROJECT_NAME>:3000`, then reload Caddy with `docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile`
 1. At this point, everything should be working. You can test it's working by visiting your site's homepage, then checking the Stats page in Ghost Admin — you should see a view recorded.
 
 Tinybird credentials, workspace selection and schema deployment belong to this

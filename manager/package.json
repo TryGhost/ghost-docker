@@ -11,6 +11,8 @@
     "test": "node --test --test-timeout=60000 'test/*.test.ts'"
   },
   "dependencies": {
+    "@inquirer/input": "5.1.7",
+    "@inquirer/select": "5.2.6",
     "execa": "10.0.1",
     "semver": "7.8.5",
     "undici": "^8.11.2",

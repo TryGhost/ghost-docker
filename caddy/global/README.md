@@ -5,14 +5,13 @@ options block. Use them for settings that apply to the whole server rather than
 to one site, for example:
 
 ```caddyfile
-email ops@example.com
-```
-
-```caddyfile
 # Issue certificates from Caddy's internal CA instead of a public ACME CA.
 # Useful for staging hosts and test domains.
 local_certs
 ```
 
-They are validated together with the generated site routes before any
-configuration is installed or reloaded.
+Reload Caddy after a change:
+
+```bash
+docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile
+```

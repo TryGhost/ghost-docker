@@ -24,11 +24,13 @@ Branches:
 
 ## Current state
 
-Steps N1 and N2: the stack's files and contracts, and the skeleton of the
-tooling. The launchers and the manager image exist; the only commands are
-`version`, `doctor` and `help`. Every other `./ghost-docker ...` command in the
-documents is the planned interface: it does not exist until its step lands
-(an unknown command exits 2), and the plan says which step delivers it.
+Steps N1–N3: the stack's files and contracts, the launcher and manager image,
+and the first real commands: `install` (local and production, from the image
+or a clone), `config get|set|validate`, `check`, `info`, `list`, plus
+`version`, `doctor` and `help`. Every other `./ghost-docker ...` command or
+option in the documents is the planned interface: it does not exist until its
+step lands (an unknown command or option exits 2), and the plan says which step
+delivers it. `docs/install.md` describes what exists.
 
 - `ghost-docker` (bash) is the only host code. It checks Docker, chooses the
   image, and `docker run`s it (plan §2.10). Add no logic to it that the
@@ -51,15 +53,25 @@ documents is the planned interface: it does not exist until its step lands
 - `manager/entrypoint.sh` drops from root to the caller's uid and gid, keeping
   the Docker socket's group. It does not drop under rootless Docker.
 - `manager/Dockerfile` builds from the repository root and also carries the
-  stack's files under `/opt/ghost-docker/stack`.
+  stack's files under `/opt/ghost-docker/stack` (the payload `install` writes in
+  image mode) and the launcher under `/opt/ghost-docker/launcher`.
+- `src/env.ts` is the one dotenv encoder and parser; nothing else reads or
+  writes `.env` or `ghost.env`. `src/fs.ts` writes atomically. `src/site.ts`
+  holds file names, modes and profiles; `src/config.ts` validation;
+  `src/caddy.ts` fills `templates/site.caddy`, the routes install writes; `src/meta.ts` the metadata schema; `src/ghost.ts`
+  image resolution; `src/payload.ts` the image-mode files and pinned launcher.
+- The manager verifies a site from inside its own containers
+  (`src/verify.ts`): `127.0.0.1` in the manager is the manager, and it cannot
+  reach the host's ports.
 
 - `compose.yml` — Ghost, MySQL, Caddy, optional analytics and ActivityPub.
   Site mode is `local` or `production`, selected in `COMPOSE_PROFILES`;
   optional profiles are additive. Long-running services take
   `RESTART_POLICY`; one-shot jobs keep `restart: "no"`.
-- `caddy/Caddyfile` is tracked and generic. Generated routes go in
-  `caddy/sites/`, operator routes in `caddy/custom/`, global options in
-  `caddy/global/`. Snippets take their upstreams and domains as import
+- `caddy/Caddyfile` is tracked and generic. `install` writes a production
+  site's routes into `caddy/sites/site.caddy` once; after that it is the
+  operator's and the manager never rewrites it. Other sites go in
+  `caddy/custom/`, global options in `caddy/global/`. Snippets take their upstreams and domains as import
   arguments.
 - `.env` holds Compose and operator settings, including the MySQL root
   password, and is never passed into the Ghost container. `ghost.env` holds
@@ -102,7 +114,12 @@ passes ShellCheck.
 cd manager && pnpm install
 pnpm run format:check && pnpm run lint && pnpm run typecheck && pnpm test
 tests/e2e/launcher.sh         # stand-in docker, then the real image
+tests/e2e/install.sh          # real installs; binds 80/443, pulls images
 ```
+
+Unit tests fake the daemon at the transport (`test/helpers.ts`: `api`, `run`
+and `containers` for the Engine API, `composeRun` for Compose); `test/site.ts`
+makes a site directory from the repository's own files.
 
 ## Common commands
 

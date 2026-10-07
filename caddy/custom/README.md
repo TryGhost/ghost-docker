@@ -1,11 +1,7 @@
 # Custom Caddy routes
 
-Files matching `*.caddy` in this directory are imported after the generated
-site routes in `caddy/sites/`. They are never generated and never overwritten
-by `./ghost-docker caddy`, and they are validated together with the generated
-routes before any configuration is installed or reloaded.
-
-Snippets live in `caddy/snippets/` and are imported by absolute path, for
+Files matching `*.caddy` in this directory are imported after this site's
+routes in `caddy/sites/`. Use them for other sites on the same server, for
 example:
 
 ```caddyfile
@@ -15,4 +11,12 @@ status.example.com {
 }
 ```
 
-Ghost itself is reachable on the Compose network as `ghost-$COMPOSE_PROJECT_NAME:2368`.
+Snippets live in `caddy/snippets/` and are imported by absolute path. Ghost
+itself is reachable on the Compose network as `ghost-$COMPOSE_PROJECT_NAME:2368`.
+
+Reload Caddy after a change; it refuses a configuration that does not load and
+keeps serving the previous one:
+
+```bash
+docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile
+```

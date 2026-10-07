@@ -74,6 +74,24 @@ describe('exit statuses', () => {
             assert.equal(result.stdout, '');
         }
     });
+
+    test('a two-word command: config alone names its subcommands, and has help', async () => {
+        const bare = await h.run('config');
+        assert.equal(bare.code, 2);
+        assert.match(bare.stderr, /config takes a subcommand: get, set, validate/);
+        for (const argv of [
+            ['config', '--help'],
+            ['help', 'config'],
+        ]) {
+            const result = await h.run(...argv);
+            assert.equal(result.code, 0, argv.join(' '));
+            assert.match(result.stdout, /ghost-docker config set \[<file>\] \[<key>\] \[<value>\]/);
+        }
+        const one = await h.run('config', 'get', '--help');
+        assert.equal(one.code, 0);
+        assert.match(one.stdout, /Print one decoded value/);
+        assert.equal((await h.run('config', 'frobnicate')).code, 2);
+    });
 });
 
 describe('version', () => {
