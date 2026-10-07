@@ -16,8 +16,8 @@ Configuration to run Ghost and its services with Docker Compose.
 
 `doctor` reports what ghost-docker can see: Docker and Compose versions, the
 platform, the site directory, and who will own the files written there.
-`version` and `help` are the only other commands so far; the rest answer that
-they are not implemented yet and name the plan step that delivers them.
+`version` and `help` are the only other commands so far; the others in these
+documents are the planned interface, and each arrives with its plan step.
 
 Everything runs in a container. From a clone of this repository the launcher
 builds that image from the clone; anywhere else it uses the published one,

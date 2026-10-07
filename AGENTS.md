@@ -27,8 +27,8 @@ Branches:
 Steps N1 and N2: the stack's files and contracts, and the skeleton of the
 tooling. The launchers and the manager image exist; the only commands are
 `version`, `doctor` and `help`. Every other `./ghost-docker ...` command in the
-documents is the planned interface, exits 3 naming its step, and the plan says
-which step delivers it.
+documents is the planned interface: it does not exist until its step lands
+(an unknown command exits 2), and the plan says which step delivers it.
 
 - `ghost-docker` (bash) is the only host code. It checks Docker, chooses the
   image, and `docker run`s it (plan §2.10). Add no logic to it that the
@@ -87,8 +87,8 @@ which step delivers it.
   site's own ingress. A running container is not readiness.
 - Docker access is established by asking the daemon, never from group
   membership.
-- Options for steps that have not landed exit `3` and name the step; usage
-  errors exit `2`.
+- Commands and options are added when their step lands, not stubbed ahead of
+  it; usage errors exit `2`.
 - The launcher holds no logic that could live in the manager.
 
 ## Tests

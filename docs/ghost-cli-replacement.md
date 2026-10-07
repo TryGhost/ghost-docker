@@ -1222,7 +1222,7 @@ with the released exporter, is done.)
   dropped from mysqldump's version-comment lines so that is possible.
 - A failed import removes what it created; an interrupted one cannot be started
   and is cleared by the next import.
-- A `portable` bundle is refused with exit 3 until S5d; a `production` bundle
+- A `portable` bundle is refused until S5d; a `production` bundle
   until S5e.
 
 Reference: `scripts/lib/import.sh`, the import blocks of `install.sh`,

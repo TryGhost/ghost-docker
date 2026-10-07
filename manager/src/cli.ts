@@ -6,7 +6,7 @@ import { parseArgs } from 'node:util';
 import { defineCommand, type Command } from './command.ts';
 import { doctorCommand } from './commands/doctor.ts';
 import { versionCommand, versionLine } from './commands/version.ts';
-import { CliError, EXIT, UnimplementedError, UsageError } from './errors.ts';
+import { CliError, EXIT, UsageError } from './errors.ts';
 import type { Io } from './io.ts';
 
 const COMMANDS: Record<string, Command> = {
@@ -19,23 +19,6 @@ const COMMANDS: Record<string, Command> = {
             return EXIT.ok;
         },
     }),
-};
-
-/** Documented commands whose step has not landed, and the step that delivers each. */
-const PLANNED: Record<string, { step: string; hint?: string }> = {
-    install: { step: 'N3' },
-    config: { step: 'N3' },
-    caddy: { step: 'N3' },
-    check: { step: 'N3', hint: '`doctor` reports what the manager can see today' },
-    info: { step: 'N3' },
-    list: { step: 'N3' },
-    update: { step: 'S6a' },
-    backup: { step: 'S4' },
-    restore: { step: 'S4' },
-    upgrade: {
-        step: 'S7',
-        hint: 'until then, change the Ghost version pin and run `docker compose up -d` after a backup',
-    },
 };
 
 const DESCRIPTION = `Self-hosted Ghost with Docker Compose: the manager.
@@ -54,12 +37,6 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
         if (name === '--version' || name === '-v') {
             io.stdout(`${versionLine().replace(/^ghost-docker /, '')}\n`);
             return EXIT.ok;
-        }
-        // A planned command is refused whatever follows it: a script written
-        // against the documented interface gets an answer it can act on.
-        const planned = PLANNED[name];
-        if (planned) {
-            throw new UnimplementedError(`ghost-docker ${name}`, planned.step, planned.hint);
         }
         const command = COMMANDS[name];
         if (!command) {
@@ -131,13 +108,10 @@ const columns = (rows: [string, string][]) => {
 };
 
 function rootHelp(): string {
-    const commands: [string, string][] = [
-        ...Object.entries(COMMANDS).map(([name, { brief }]): [string, string] => [name, brief]),
-        ...Object.entries(PLANNED).map(([name, { step }]): [string, string] => [
-            name,
-            `Not implemented yet; lands in plan step ${step}.`,
-        ]),
-    ];
+    const commands = Object.entries(COMMANDS).map(([name, { brief }]): [string, string] => [
+        name,
+        brief,
+    ]);
     return (
         'USAGE\n' +
         commands.map(([name]) => `  ghost-docker ${usageLine(name)}\n`).join('') +

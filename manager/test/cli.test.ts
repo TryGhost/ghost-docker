@@ -54,38 +54,6 @@ describe('exit statuses', () => {
             assert.equal(result.stdout, '');
         }
     });
-
-    // A script written against the documented interface gets an answer it can
-    // act on, and nothing advertises support that does not exist.
-    const planned: [string, RegExp][] = [
-        ['install', /N3/],
-        ['config', /N3/],
-        ['caddy', /N3/],
-        ['check', /N3/],
-        ['info', /N3/],
-        ['list', /N3/],
-        ['update', /S6a/],
-        ['backup', /S4/],
-        ['restore', /S4/],
-        ['upgrade', /S7/],
-    ];
-    for (const [command, step] of planned) {
-        test(`${command} exits 3 and names the step it lands in`, async () => {
-            const result = await h.run(command, '--anything');
-            assert.equal(result.code, 3);
-            assert.match(
-                result.stderr,
-                new RegExp(`ghost-docker ${command} is not implemented yet`),
-            );
-            assert.match(result.stderr, step);
-            assert.doesNotMatch(result.stderr, /USAGE/);
-        });
-    }
-
-    test('a planned command is refused before the launcher contract is even checked', async () => {
-        h.env = {};
-        assert.equal((await h.run('install')).code, 3);
-    });
 });
 
 describe('version', () => {

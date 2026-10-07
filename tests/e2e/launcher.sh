@@ -283,17 +283,17 @@ rm -f "$probe"
 ok "owned by uid $(id -u) on the host, and removable without privileges"
 
 step "Exit statuses, through the real launcher and image"
-run "$LAUNCHER" --dir "$SITE" install --local
-expect_status 3
-expect_output 'install is not implemented yet \(it lands in N3\)'
 run "$LAUNCHER" --dir "$SITE" frobnicate
 expect_status 2
 expect_output 'unknown command: frobnicate'
+run "$LAUNCHER" --dir "$SITE" doctor --bogus
+expect_status 2
+expect_output 'ghost-docker doctor --help'
 run "$LAUNCHER" --dir "$SITE" help
 expect_status 0
 expect_output 'USAGE'
 expect_output 'ghost-docker doctor'
-ok "3 for a planned command, 2 for a usage error, 0 for help"
+ok "2 for a usage error, 0 for help"
 
 step "The image, as a published one would be used"
 with_dir=$WORK/elsewhere
