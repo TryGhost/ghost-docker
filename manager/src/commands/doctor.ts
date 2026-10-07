@@ -6,6 +6,7 @@
 import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
+import { defineCommand } from '../command.ts';
 import { loadContext, type Context } from '../context.ts';
 import { composeVersion } from '../compose.ts';
 import { daemonInfo, runOnce, type DaemonResult } from '../docker/client.ts';
@@ -23,6 +24,20 @@ export interface Check {
 export const PROBE_FILE = '.ghost-docker-probe';
 
 const SUPPORTED_ARCHITECTURES = ['x86_64', 'amd64', 'aarch64', 'arm64'];
+
+export const doctorCommand = defineCommand({
+    brief: 'Report what the manager can see: Docker, the platform, the site directory and who owns what is written there.',
+    options: {
+        json: { type: 'boolean', brief: 'Machine-readable output.' },
+        'keep-probe': {
+            type: 'boolean',
+            brief: 'Leave the probe file so its ownership can be inspected from the host.',
+        },
+    },
+    // A report with an error in it is not a failed command: doctor returns
+    // its own status rather than throwing.
+    run: ({ json = false, keepProbe = false }, _positionals, io) => doctor({ json, keepProbe }, io),
+});
 
 export interface DoctorFlags {
     readonly json: boolean;

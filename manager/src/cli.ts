@@ -2,53 +2,23 @@
 //
 // `run` is the whole CLI as a function: arguments and an Io in, an exit status
 // out. main.ts is the only caller that touches the real process.
-import { parseArgs, type ParseArgsOptionDescriptor } from 'node:util';
-import { doctor } from './commands/doctor.ts';
-import { versionLine } from './commands/version.ts';
+import { parseArgs } from 'node:util';
+import { defineCommand, type Command } from './command.ts';
+import { doctorCommand } from './commands/doctor.ts';
+import { versionCommand, versionLine } from './commands/version.ts';
 import { CliError, EXIT, UnimplementedError, UsageError } from './errors.ts';
 import type { Io } from './io.ts';
 
-type Option = ParseArgsOptionDescriptor & { brief: string };
-
-/** Option values, keyed in camelCase: `--keep-probe` arrives as `keepProbe`. */
-export type Values = Record<string, string | boolean | (string | boolean)[] | undefined>;
-
-interface Command {
-    brief: string;
-    /** Options as typed on the command line, kebab-case. */
-    options?: Record<string, Option>;
-    /** The most positional arguments the command takes. */
-    positionals?: number;
-    run: (values: Values, positionals: string[], io: Io) => Promise<number>;
-}
-
 const COMMANDS: Record<string, Command> = {
-    version: {
-        brief: "Print the manager's version.",
-        run: async (_values, _positionals, io) => {
-            io.stdout(`${versionLine()}\n`);
-            return EXIT.ok;
-        },
-    },
-    doctor: {
-        brief: 'Report what the manager can see: Docker, the platform, the site directory and who owns what is written there.',
-        options: {
-            json: { type: 'boolean', brief: 'Machine-readable output.' },
-            'keep-probe': {
-                type: 'boolean',
-                brief: 'Leave the probe file so its ownership can be inspected from the host.',
-            },
-        },
-        run: (values, _positionals, io) =>
-            doctor({ json: values.json === true, keepProbe: values.keepProbe === true }, io),
-    },
-    help: {
+    version: versionCommand,
+    doctor: doctorCommand,
+    help: defineCommand({
         brief: 'Print this.',
         run: async (_values, _positionals, io) => {
             io.stdout(rootHelp());
             return EXIT.ok;
         },
-    },
+    }),
 };
 
 /** Documented commands whose step has not landed, and the step that delivers each. */
@@ -137,7 +107,7 @@ function parse(name: string, command: Command, args: string[]) {
     return parsed;
 }
 
-const camelKeys = (values: Values): Values =>
+const camelKeys = <T>(values: Record<string, T>): Record<string, T> =>
     Object.fromEntries(
         Object.entries(values).map(([key, value]) => [
             key.replace(/-(\w)/g, (_, letter: string) => letter.toUpperCase()),
