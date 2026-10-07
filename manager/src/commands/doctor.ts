@@ -9,8 +9,6 @@ import { join } from 'node:path';
 import { loadContext, type Context } from '../context.ts';
 import { composeVersion } from '../compose.ts';
 import { daemonInfo, runOnce, type DaemonResult } from '../docker/client.ts';
-import { buildCommand } from '@stricli/core';
-import type { ManagerContext } from '../context-stricli.ts';
 import { EXIT } from '../errors.ts';
 import type { Io } from '../io.ts';
 import { atLeast, managerVersion, MINIMUM } from '../versions.ts';
@@ -30,27 +28,6 @@ export interface DoctorFlags {
     readonly json: boolean;
     readonly keepProbe: boolean;
 }
-
-export const doctorCommand = buildCommand<DoctorFlags, [], ManagerContext>({
-    async func(flags) {
-        // stricli keeps an exit code the command sets itself; a report with an
-        // error in it is not a failed command, so it is not thrown.
-        this.process.exitCode = await doctor(flags, this.io);
-    },
-    parameters: {
-        flags: {
-            json: { kind: 'boolean', brief: 'Machine-readable output.', withNegated: false },
-            keepProbe: {
-                kind: 'boolean',
-                brief: 'Leave the probe file so its ownership can be inspected from the host.',
-                withNegated: false,
-            },
-        },
-    },
-    docs: {
-        brief: 'Report what the manager can see: Docker, the platform, the site directory and who owns what is written there.',
-    },
-});
 
 export async function doctor({ json, keepProbe }: DoctorFlags, io: Io): Promise<number> {
     const context = loadContext(io.env);

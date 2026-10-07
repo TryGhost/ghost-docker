@@ -30,6 +30,31 @@ describe('exit statuses', () => {
         assert.equal(result.stdout, '');
     });
 
+    test('a command prints its own help, with its flags', async () => {
+        for (const flag of ['--help', '-h']) {
+            const result = await h.run('doctor', flag);
+            assert.equal(result.code, 0);
+            assert.match(result.stdout, /ghost-docker doctor \(--json\) \(--keep-probe\)/);
+            assert.match(result.stdout, /--keep-probe +Leave the probe file/);
+        }
+    });
+
+    test('an unknown option, an option value or a stray argument is a usage error', async () => {
+        for (const argv of [
+            ['doctor', '--bogus'],
+            ['doctor', '--json=yes'],
+            ['doctor', 'extra'],
+            // `--` ends the options: what follows is an argument, not --json.
+            ['doctor', '--', '--json'],
+        ]) {
+            const result = await h.run(...argv);
+            assert.equal(result.code, 2, argv.join(' '));
+            assert.match(result.stderr, /^error: /);
+            assert.match(result.stderr, /ghost-docker doctor --help/);
+            assert.equal(result.stdout, '');
+        }
+    });
+
     // A script written against the documented interface gets an answer it can
     // act on, and nothing advertises support that does not exist.
     const planned: [string, RegExp][] = [
