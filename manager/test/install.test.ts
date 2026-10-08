@@ -205,6 +205,41 @@ describe('refusals that change nothing', () => {
         );
     });
 
+    const stoppedSite = () => {
+        h.daemon.containers = [
+            {
+                Id: 'a',
+                Names: ['/ghost-local-a-ghost-1'],
+                State: 'exited',
+                Labels: { 'org.ghost.docker.managed': 'true' },
+                Ports: [],
+                HostConfig: {
+                    PortBindings: { '2368/tcp': [{ HostIp: '127.0.0.1', HostPort: '2368' }] },
+                },
+            },
+            // Anything else that is stopped is not looked into.
+            { Id: 'x', Names: ['/something-else'], State: 'exited', Labels: {}, Ports: [] },
+        ];
+    };
+
+    test('a chosen port skips the port of a stopped site', async () => {
+        stoppedSite();
+        const result = await install('--local', '--no-start');
+        assert.equal(result.code, 0, result.stderr);
+        assert.equal(env.get(readFileSync(join(h.dir, '.env'), 'utf8'), 'GHOST_PORT'), '2369');
+    });
+
+    test('an explicit --port a stopped site takes is refused, saying it is stopped', async () => {
+        stoppedSite();
+        const result = await install('--local', '--port', '2368');
+        assert.equal(result.code, 1);
+        assert.match(
+            result.stderr,
+            /port 2368 is already taken by the Docker container ghost-local-a-ghost-1, which is stopped and publishes it when it starts/,
+        );
+        assert.deepEqual(siteFiles(), []);
+    });
+
     test('an explicit --port a host process holds is refused where Docker would publish over it', async () => {
         h.daemon.hostPorts = [2368];
         const result = await install('--local', '--port', '2368', '--no-start');

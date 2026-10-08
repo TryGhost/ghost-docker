@@ -29,7 +29,7 @@ import { compose } from '../compose.ts';
 import { defineCommand, type Options, type Values } from '../command.ts';
 import { validate } from '../config.ts';
 import { loadContext, type Context } from '../context.ts';
-import { listContainers } from '../docker/client.ts';
+import { listContainers, stoppedSiteContainers } from '../docker/client.ts';
 import * as env from '../env.ts';
 import { CliError, EXIT, UsageError } from '../errors.ts';
 import { atomicWrite, PRIVATE } from '../fs.ts';
@@ -425,7 +425,10 @@ async function preflight(io: Io, context: Context): Promise<void> {
  * refused.
  */
 async function ghostPort(io: Io, mode: SiteMode, requested: number | undefined): Promise<number> {
-    const containers = await listContainers(io.docker);
+    // A stopped site's ports count as taken: it would fail to start again.
+    const running = await listContainers(io.docker);
+    const stopped = await stoppedSiteContainers(io.docker);
+    const containers = [...running, ...stopped];
     const published = new Set(containers.flatMap((container) => container.publishedPorts));
     const port = requested ?? (await freeOnHost(io, published));
     const wanted = [
@@ -435,13 +438,16 @@ async function ghostPort(io: Io, mode: SiteMode, requested: number | undefined):
     const holders = new Map<number, string>();
     for (const container of containers) {
         for (const busy of container.publishedPorts.filter((each) => wanted.includes(each))) {
-            holders.set(busy, container.name);
+            holders.set(
+                busy,
+                running.includes(container)
+                    ? `in use by the Docker container ${container.name}`
+                    : `taken by the Docker container ${container.name}, which is stopped and publishes it when it starts`,
+            );
         }
     }
     if (holders.size > 0) {
-        const lines = [...holders].map(
-            ([busy, name]) => `  port ${busy} is already in use by the Docker container ${name}`,
-        );
+        const lines = [...holders].map(([busy, holder]) => `  port ${busy} is already ${holder}`);
         throw new CliError(
             `${lines.join('\n').trimStart()}\n` +
                 (holders.has(port)

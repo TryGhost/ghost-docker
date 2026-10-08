@@ -231,7 +231,10 @@ installer's decision.
 
 - A port the installer *chooses* moves out of the way of containers, and on
   macOS (OrbStack, Docker Desktop) also of programs on the host, such as a
-  Ghost-CLI site.
+  Ghost-CLI site. A ghost-docker site that is stopped (`docker compose stop`)
+  keeps its port: its containers publish it again when they start. A site
+  taken down with `docker compose down` has no containers left, so nothing
+  records its port, and a new site may be given the same one.
 - A port you *asked for* does not: `--port` on a busy port is an error, because
   a site at an address nothing else expects is worse than a refusal.
 - A production site needs 80 and 443. If a container holds them, installation

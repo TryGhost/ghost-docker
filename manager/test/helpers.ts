@@ -238,6 +238,34 @@ let sibling: { binds: string[]; cmd: string[] } | null = null;
 /** Other one-shot containers, by the index in their ID. */
 const ran: { status: number; stdout?: string; stderr?: string }[] = [];
 
+/** The fields of a `containers` entry the fake daemon itself reads. */
+interface Listed {
+    Names?: string[];
+    State?: string;
+    Labels?: Record<string, string> | null;
+    HostConfig?: unknown;
+}
+
+/**
+ * GET /containers/json as the daemon answers it: stopped containers only with
+ * `all`, and only those with every label the filter names. An entry without a
+ * State is running.
+ */
+function listed(containers: unknown[], query: Record<string, string> = {}): unknown[] {
+    const labels: string[] = query.filters ? (JSON.parse(query.filters).label ?? []) : [];
+    return containers.filter((each) => {
+        const container = each as Listed;
+        if (query.all !== '1' && (container.State ?? 'running') !== 'running') {
+            return false;
+        }
+        return labels.every((label) => {
+            const [key = '', value] = label.split('=');
+            const actual = container.Labels?.[key];
+            return value === undefined ? actual !== undefined : actual === value;
+        });
+    });
+}
+
 function daemon(state: Harness, request: DockerRequest): Promise<DockerResponse> {
     const { method, path } = request;
     if (method === 'GET' && path === '/info') {
@@ -255,7 +283,19 @@ function daemon(state: Harness, request: DockerRequest): Promise<DockerResponse>
         return Promise.resolve(answered);
     }
     if (method === 'GET' && path === '/containers/json') {
-        return Promise.resolve(json(200, state.daemon.containers ?? []));
+        return Promise.resolve(json(200, listed(state.daemon.containers ?? [], request.query)));
+    }
+    const inspected = /^\/containers\/([^/]+)\/json$/.exec(path);
+    if (method === 'GET' && inspected) {
+        const name = `/${decodeURIComponent(inspected[1] ?? '')}`;
+        const container = (state.daemon.containers ?? []).find((each) =>
+            (each as Listed).Names?.includes(name),
+        );
+        return Promise.resolve(
+            container === undefined
+                ? json(404, { message: `No such container: ${name}` })
+                : json(200, { HostConfig: (container as Listed).HostConfig ?? {} }),
+        );
     }
     if (method === 'POST' && path === '/containers/create' && state.daemon.run) {
         const body = request.body as {
