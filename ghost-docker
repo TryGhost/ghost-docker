@@ -17,7 +17,7 @@
 #   GD_IMAGE           an image you name
 #   a pinned image     written into a site's own copy of this script at install
 #   a checkout         this script next to manager/Dockerfile builds from it
-#   GD_CHANNEL         a published channel (default: edge)
+#   GD_CHANNEL         a published channel (default: edge), pulled every time
 #
 # Requires bash and Docker with the Compose plugin. Nothing else. On Windows,
 # run it inside WSL2. The contract this implements is
@@ -208,6 +208,17 @@ elif [[ -n $script_dir && -f $script_dir/manager/Dockerfile && -f $script_dir/co
     fi
 else
     image="$GD_REGISTRY_IMAGE:${GD_CHANNEL:-edge}"
+    # A channel is a tag that moves, and `docker run` would keep using
+    # whatever copy of it this host pulled first. Offline, a copy already
+    # here still runs; with none, there is nothing to run.
+    if ! pull_output=$(docker pull --quiet "$image" 2>&1 </dev/null); then
+        if docker image inspect "$image" >/dev/null 2>&1 </dev/null; then
+            printf 'warning: %s could not be pulled; running the copy already on this host.\n' "$image" >&2
+        else
+            printf '%s\n' "$pull_output" >&2
+            die "the manager image $image could not be pulled. Check that this host can reach ghcr.io."
+        fi
+    fi
 fi
 
 # --- Run it -----------------------------------------------------------------
