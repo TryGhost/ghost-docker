@@ -142,7 +142,7 @@ jobs:
             echo "::error::installed $version on $channel, expected $TAG on beta"
             exit 1
           }
-          "$site/ghost-docker" check
+          "$site/ghost-docker" --dir "$site" check
           docker compose --project-directory "$site" -f "$site/compose.yml" down --volumes
 
       - name: The served launcher installs an explicit --release
