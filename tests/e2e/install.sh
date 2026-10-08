@@ -273,21 +273,31 @@ s.bind(("127.0.0.1", int(sys.argv[1]))); s.listen(); time.sleep(900)' "$busy" &
     sleep 1
     run install_alone "$P" --local --port "$busy"
     if ((RC == 0)) && [[ $(uname -s) != Linux ]]; then
-        # Docker Desktop refuses the port; OrbStack forwards it regardless,
-        # so the conflict cannot be seen from a container there at all.
+        # Docker Desktop and OrbStack publish over the program holding the
+        # port; the manager refuses first only when it can reach the host.
         skip "$operating_system published $busy over the program holding it, without an error"
         compose_in "$P" down --volumes >/dev/null 2>&1
     else
         expect_status 1
-        # Docker's own words name the port; the manager adds what to do.
-        expect_output "127\\.0\\.0\\.1:$busy"
-        expect_output 'already (in use|allocated)'
-        expect_output -- 'choose another for Ghost with --port'
-        expect_output 'Nothing that was already running was stopped'
+        if grep -qE 'already in use on this host by something outside Docker' <<<"$OUT"; then
+            # Where the manager can see the host's ports (Docker Desktop,
+            # OrbStack), it refuses the port before writing anything.
+            expect_output '--port'
+            expect_output 'Nothing has been changed'
+            refused="refused before anything was written, naming --port"
+        else
+            # On Linux, Docker's own words name the port; the manager adds
+            # what to do.
+            expect_output "127\\.0\\.0\\.1:$busy"
+            expect_output 'already (in use|allocated)'
+            expect_output 'choose another for Ghost with --port'
+            expect_output 'Nothing that was already running was stopped'
+            refused="an error naming the port and --port"
+        fi
         [[ -z $(ls -A "$P") ]] || fail "the failed installation left files behind" "$(ls -A "$P")"
         [[ -z $(compose_in "$P" ps --all --quiet 2>/dev/null || true) ]] || fail "it left containers behind"
         kill -0 "$HOLDER" || fail "the program holding the port was stopped"
-        ok "an error naming the port and --port, the directory as it was, the holder untouched"
+        ok "$refused, the directory as it was, the holder untouched"
         run install_alone "$P" --local --port 24772
         expect_status 0
         ok "the same command with a free --port succeeds"
