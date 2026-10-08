@@ -71,9 +71,6 @@ case "$FAKE_DOCKER:$1" in
     *:compose) echo "Docker Compose version v2.40.3"; exit 0 ;;
     *:context) echo "${FAKE_ENDPOINT:-unix:///var/run/docker.sock}"; exit 0 ;;
     *:build) echo "sha256:built"; exit 0 ;;
-    offline:pull) echo "dial tcp: lookup ghcr.io: no such host" >&2; exit 1 ;;
-    *:pull) echo "sha256:pulled"; exit 0 ;;
-    offline:image) [ -n "${FAKE_HAS_IMAGE:-}" ]; exit $? ;;
     *:run) exit "${FAKE_RUN_STATUS:-0}" ;;
 esac
 exit 0
@@ -246,28 +243,19 @@ with_fake ok env ${fake_socket_env[@]+"${fake_socket_env[@]}"} GD_CHANNEL=beta "
 expect_run_arg "ghcr.io/tryghost/ghost-docker:beta"
 ok "outside a checkout, the published channel"
 
-# pulled CALLS_FILE IMAGE -- the launcher ran `docker pull` for IMAGE.
-pulled() { awk -v image="$1" 'prev == "pull" && $0 == "--quiet" { q = 1 } q && $0 == image { found = 1 } { prev = $0 } END { exit !found }' "$FAKE_CALLS"; }
 with_fake ok env ${fake_socket_env[@]+"${fake_socket_env[@]}"} "$BASH_BIN" "$WORK/standalone-launcher" --dir "$SITE" version
-pulled "ghcr.io/tryghost/ghost-docker:edge" || fail "the channel's image was not pulled" "$(cat "$FAKE_CALLS")"
-with_fake offline env ${fake_socket_env[@]+"${fake_socket_env[@]}"} FAKE_HAS_IMAGE=1 "$BASH_BIN" "$WORK/standalone-launcher" --dir "$SITE" version
-expect_status 0
-expect_output 'could not be pulled; running the copy already on this host'
-expect_run_arg "ghcr.io/tryghost/ghost-docker:edge"
-with_fake offline env ${fake_socket_env[@]+"${fake_socket_env[@]}"} "$BASH_BIN" "$WORK/standalone-launcher" --dir "$SITE" version
-expect_status 1
-expect_output 'no such host'
-expect_output 'could not be pulled. Check that this host can reach ghcr.io'
-ok "a channel is pulled every time; offline, a copy already here runs, and none is an error"
+expect_run_arg "--pull"
+expect_run_arg "always"
+ok "a channel is pulled every time it runs"
 
 sed 's|^readonly GD_PINNED_IMAGE=""$|readonly GD_PINNED_IMAGE="ghcr.io/tryghost/ghost-docker@sha256:abc123"|' \
     "$LAUNCHER" >"$WORK/pinned-launcher"
 grep -q 'sha256:abc123' "$WORK/pinned-launcher" || fail "the pin placeholder is not where install will look for it"
 with_fake ok env ${fake_socket_env[@]+"${fake_socket_env[@]}"} "$BASH_BIN" "$WORK/pinned-launcher" --dir "$SITE" version
 expect_run_arg "ghcr.io/tryghost/ghost-docker@sha256:abc123"
-grep -qx 'pull' "$FAKE_CALLS" && fail "a pinned digest was pulled by the launcher" "$(cat "$FAKE_CALLS")"
+run_args | grep -qx -- '--pull' && fail "a pinned digest was pulled by the launcher" "$(run_args)"
 with_fake ok env ${fake_socket_env[@]+"${fake_socket_env[@]}"} GD_IMAGE=example/manager:1 "$BASH_BIN" "$WORK/standalone-launcher" --dir "$SITE" version
-grep -qx 'pull' "$FAKE_CALLS" && fail "an image named with GD_IMAGE was pulled" "$(cat "$FAKE_CALLS")"
+run_args | grep -qx -- '--pull' && fail "an image named with GD_IMAGE was pulled" "$(run_args)"
 ok "a site's own copy runs the digest it was pinned to; neither it nor GD_IMAGE is pulled"
 
 step "Piped from curl"
