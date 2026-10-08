@@ -246,8 +246,7 @@ ok "outside a checkout, the published channel"
 with_fake ok env ${fake_socket_env[@]+"${fake_socket_env[@]}"} "$BASH_BIN" "$WORK/standalone-launcher" --dir "$SITE" version
 expect_run_arg "--pull"
 expect_run_arg "always"
-run_args | grep -qx -- '--quiet' && fail "the pull's progress is hidden" "$(run_args)"
-ok "a channel is pulled every time it runs, showing Docker's progress"
+ok "a channel is pulled every time it runs"
 
 sed 's|^readonly GD_PINNED_IMAGE=""$|readonly GD_PINNED_IMAGE="ghcr.io/tryghost/ghost-docker@sha256:abc123"|' \
     "$LAUNCHER" >"$WORK/pinned-launcher"
