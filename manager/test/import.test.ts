@@ -21,16 +21,14 @@ import { text } from 'node:stream/consumers';
 import { afterEach, beforeEach, describe, test } from 'node:test';
 import { readManifest, type BundleManifest } from '../src/bundle/manifest.ts';
 import * as env from '../src/env.ts';
+import { INCOMPLETE_PROFILE, MARKER } from '../src/import.ts';
+import { carriedConfig, isContainerOwned } from '../src/import/config.ts';
 import {
-    carriedConfig,
     DefinerFilter,
     dropDefiner,
-    INCOMPLETE_PROFILE,
-    isContainerOwned,
-    MARKER,
     rowCountQuery,
     rowMismatches,
-} from '../src/import.ts';
+} from '../src/import/database.ts';
 import { failed, harness, json, ok, type Harness, type ProgramResult } from './helpers.ts';
 import { fixture, REPO, type Manifest } from './site.ts';
 
@@ -104,9 +102,9 @@ describe('DEFINER clauses in a dump', () => {
         }
     });
 
-    test('a long line passes through without being held', async () => {
+    test('a long line arrives intact', async () => {
         const line = Buffer.from(`INSERT INTO t VALUES ('${'x'.repeat(5 * 1024 * 1024)}');\n`);
-        assert.equal((await filtered(line, 65_536)).length, line.length);
+        assert.deepEqual(await filtered(line, 65_536), line);
     });
 });
 
@@ -653,7 +651,7 @@ describe('an import that is kept, or killed, cannot be started and is cleared by
 });
 
 test('the load reads database.sql through the DEFINER filter for a dump only', async () => {
-    const { databaseInput } = await import('../src/import.ts');
+    const { databaseInput } = await import('../src/import/database.ts');
     const dir = bundle(local('mysql-dump'));
     writeFileSync(
         join(dir, 'database.sql'),
