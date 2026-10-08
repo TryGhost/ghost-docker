@@ -203,6 +203,25 @@ with_fake ok env ${fake_socket_env[@]+"${fake_socket_env[@]}"} GD_IMAGE=example/
 run_args | grep -q '^GD_COMPOSE_OVERRIDES=' && fail "an unset GD_COMPOSE_OVERRIDES was passed" "$(run_args)"
 ok "GD_COMPOSE_OVERRIDES is passed when set, and only then"
 
+step "A bundle to import is mounted read-only at its own path"
+mkdir -p "$WORK/exports/bundle-dir"
+: >"$WORK/exports/bundle.tgz"
+ln -s "$WORK/exports" "$WORK/link-to-exports"
+(cd "$WORK" && with_fake ok env ${fake_socket_env[@]+"${fake_socket_env[@]}"} GD_IMAGE=example/manager:1 \
+    "$BASH_BIN" "$LAUNCHER" --dir "$SITE" install --import link-to-exports/bundle.tgz --no-start &&
+    expect_run_arg "$WORK/exports/bundle.tgz:$WORK/exports/bundle.tgz:ro" &&
+    expect_run_arg "$WORK/exports/bundle.tgz")
+with_fake ok env ${fake_socket_env[@]+"${fake_socket_env[@]}"} GD_IMAGE=example/manager:1 \
+    GD_IMPORT_KEEP_FAILED=1 "$BASH_BIN" "$LAUNCHER" --dir "$SITE" install --import="$WORK/link-to-exports/bundle-dir"
+expect_run_arg "$WORK/exports/bundle-dir:$WORK/exports/bundle-dir:ro"
+expect_run_arg "--import"
+expect_run_arg "GD_IMPORT_KEEP_FAILED=1"
+with_fake ok env ${fake_socket_env[@]+"${fake_socket_env[@]}"} GD_IMAGE=example/manager:1 \
+    "$BASH_BIN" "$LAUNCHER" --dir "$SITE" install --import "$WORK/missing.tgz"
+expect_run_arg "$WORK/missing.tgz"
+run_args | grep -q ':ro$' && fail "a bundle that does not exist was mounted" "$(run_args)"
+ok "resolved, mounted read-only and passed by that path; a missing one is left to the manager"
+
 step "Rootless Docker"
 with_fake rootless env ${fake_socket_env[@]+"${fake_socket_env[@]}"} GD_IMAGE=example/manager:1 \
     "$BASH_BIN" "$LAUNCHER" --dir "$SITE" version

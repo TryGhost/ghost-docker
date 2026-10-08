@@ -22,9 +22,10 @@ Status of the work:
   Ghost-CLI 1.33.0.
 - Alignment of this document and its fixtures with the released exporter,
   including the `mysql-data` kind: **S5a**, implemented.
-- Importer for local `mysql-dump` and `mysql-data` bundles: **S5b**. A bash
-  implementation exists on the frozen `next` branch (`install.sh --import`)
-  and is the behaviour reference; it is being ported to the manager CLI.
+- Importer for local `mysql-dump` and `mysql-data` bundles: **S5b**,
+  implemented as `./ghost-docker install --import BUNDLE`. The manifest schema
+  is `manager/src/bundle/manifest.ts`, a zod schema that depends on nothing
+  else so that the exporter can share it.
 - **S5c** (local `--migrate`) and **S5e** (production import and cutover):
   not yet implemented. `portable` bundles are not imported by the manager;
   their content JSON and members CSV are imported through Ghost Admin (plan
@@ -126,7 +127,8 @@ never emits one, so the importer has no reason to follow any. Devices, FIFOs
 and other special files are rejected the same way.
 
 A bundle is accepted as a directory, a gzip-compressed tar (`--archive tgz`),
-an uncompressed tar, or a zip (`--archive zip`) where `unzip` is installed.
+an uncompressed tar, or a zip (`--archive zip`). The manager unpacks each
+itself, so nothing on the host is needed for any of them.
 
 ### `config`
 

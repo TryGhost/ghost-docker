@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { chmodSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, test } from 'node:test';
+import { composeEnvironment } from '../src/compose.ts';
 import { operatorVariables } from '../src/config.ts';
 import { harness, type Harness } from './helpers.ts';
 import { LOCAL, makeSite, PRODUCTION, REPO } from './site.ts';
@@ -273,4 +274,25 @@ test('GD_COMPOSE_OVERRIDES adds -f files after compose.yml, relative to the site
         join(h.dir, 'compose.ipv6.yml'),
         '/abs/extra.yml',
     ]);
+});
+
+test('Compose gets only what it needs of the manager’s environment, so .env is what it interpolates', () => {
+    const environment = composeEnvironment(
+        {
+            env: {
+                PATH: '/usr/bin',
+                HOME: '/home/node',
+                NODE_ENV: 'production',
+                COMPOSE_FILE: 'other.yml',
+                URL: 'http://elsewhere',
+                GD_SITE_DIR: '/site',
+            },
+        },
+        { COMPOSE_PROFILES: 'local' },
+    );
+    assert.deepEqual(environment, {
+        PATH: '/usr/bin',
+        HOME: '/home/node',
+        COMPOSE_PROFILES: 'local',
+    });
 });

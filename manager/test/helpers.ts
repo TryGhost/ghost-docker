@@ -28,9 +28,14 @@ export interface Daemon {
     containers?: unknown[];
     /**
      * `docker compose ...` after the --project-directory and -f options, with
-     * the environment it was given. Undefined falls through to "unexpected".
+     * the environment it was given and its standard input when that is text.
+     * Undefined falls through to "unexpected".
      */
-    composeRun?: (args: string[], env: Record<string, string>) => ProgramResult | undefined;
+    composeRun?: (
+        args: string[],
+        env: Record<string, string>,
+        input?: string,
+    ) => ProgramResult | undefined;
     /**
      * Any other request, answered before the defaults: return undefined to
      * fall through. A one-shot container is a `POST /containers/create`
@@ -184,7 +189,11 @@ export function harness(): Harness {
                     while (rest[0] === '-f') {
                         rest = rest.slice(2);
                     }
-                    const answer = state.daemon.composeRun?.(rest, options.env ?? {});
+                    const answer = state.daemon.composeRun?.(
+                        rest,
+                        options.env ?? {},
+                        typeof options.input === 'string' ? options.input : undefined,
+                    );
                     if (answer) {
                         return answer;
                     }
@@ -335,6 +344,7 @@ function daemon(state: Harness, request: DockerRequest): Promise<DockerResponse>
  */
 interface ExecOptions {
     env?: Record<string, string>;
+    input?: unknown;
 }
 
 function fakeExec(

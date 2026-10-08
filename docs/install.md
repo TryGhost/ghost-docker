@@ -32,6 +32,7 @@ ghost-docker install [--local | --domain example.com [--admin-domain admin.examp
                                 [--email ops@example.com]]
                      [--port 2368] [--version 6.3.1] [--with activitypub]
                      [--no-prompt] [--no-start]
+ghost-docker install --import BUNDLE [--port 2368] [--no-prompt] [--no-start]
 ```
 
 | Option | Meaning |
@@ -45,6 +46,7 @@ ghost-docker install [--local | --domain example.com [--admin-domain admin.examp
 | `--with LIST` | `activitypub`. `analytics` is added after installation; see below. |
 | `--no-prompt` | Never ask: every input must then be an option. |
 | `--no-start` | Write the configuration and routes; create no containers. |
+| `--import BUNDLE` | Import a local Ghost-CLI site from the bundle `ghost migrate-export` made; see [Importing a Ghost-CLI site](#importing-a-ghost-cli-site). |
 
 With neither `--local` nor `--domain`, `install` asks which kind of site, and
 for a production site its domain. It asks only at a terminal, including when
@@ -54,10 +56,10 @@ silent default. Every question has an option, so a script never needs to answer
 one.
 
 Exit statuses: `0` installed, `1` failed, `2` a usage error. Options the plan
-documents for later steps (`--import` in S5b, `--migrate` in S5c, `--channel`
-and `--ref` in S6a, `--with supervisor` in S8) do not exist yet, and are usage
-errors like any unknown option. Until `--migrate`, `ghost migrate-export` makes
-the bundle that `--import` will take.
+documents for later steps (`--migrate` in S5c, `--channel` and `--ref` in S6a,
+`--with supervisor` in S8) do not exist yet, and are usage errors like any
+unknown option. Until `--migrate`, `ghost migrate-export` makes the bundle that
+`--import` takes.
 
 ### The ACME email
 
@@ -128,6 +130,98 @@ written stack files — so the same command can simply be run again in the same
 directory. That covers a port conflict, a failed pull, a service that never
 becomes healthy, and a site that starts but cannot be reached. Before removing
 anything it prints the services' last log lines.
+
+## Importing a Ghost-CLI site
+
+A local Ghost-CLI site — the kind `ghost install local` makes — moves to Docker
+in two commands. Export it with Ghost-CLI 1.33.0 or later, from the site's
+directory:
+
+```bash
+ghost migrate-export --output ~/my-site-bundle --archive tgz
+```
+
+Then, in a new empty directory, install from the bundle:
+
+```bash
+./ghost-docker install --import ~/my-site-bundle.tgz
+```
+
+No `--local` is needed: the bundle says what kind of site it is. The launcher
+mounts the bundle into the manager read-only, at its own path; the bundle can
+be anywhere on the host.
+
+The exporter picks the bundle kind from the source database:
+
+| Source | Bundle kind | Imported how |
+| --- | --- | --- |
+| Local SQLite | `mysql-data` | Ghost starts once on a fresh MySQL database to create its schema, then every row is loaded and the row counts are compared with the bundle's. |
+| Local MySQL | `mysql-dump` | The dump is loaded into a fresh MySQL database. |
+
+Either way the database arrives whole: posts, members, staff accounts and their
+passwords, settings, and history. Themes, images, files, media, routes and
+redirects come with it, and so does the Ghost configuration from the source's
+`config.*.json`, written to `ghost.env` through the same encoder as every other
+value. Keys the container sets itself (`url`, `database__*`, `server__*`,
+`paths__*` and the rest listed in [bundle-v1.md](bundle-v1.md)) are not
+carried; `install` names each one it leaves out, without its value.
+
+What to expect:
+
+- **The exact source version.** The site is installed at the Ghost version it
+  was exported from, because a rows-only bundle only fits the schema of that
+  version: `VERSION-next-alpine`, or `VERSION-alpine` for a release only
+  published in that layout. Upgrade afterwards. `--version` naming a different
+  version is a usage error. A source older than Ghost 6 is refused: run
+  `ghost update` there first.
+- **A new address.** The site is served at `http://localhost:PORT`, on the
+  first port at or above 2368 that no container publishes unless `--port` says
+  otherwise. An ordinary export leaves the source running, so the two sit side
+  by side until you run `ghost stop` in the source directory. They are separate
+  copies from the moment of export.
+- **Nothing is merged.** The directory must not already hold a site, and
+  `data/ghost` and `data/mysql` must be empty.
+- **The bundle is checked before anything changes.** It is unpacked into a
+  private staging directory (`.import`) inside the site directory and
+  validated there. A path that would leave the bundle, a symbolic or hard
+  link, a device or anything else that is not a plain file or directory is
+  refused before anything is extracted, as is a manifest that does not meet the
+  [contract](bundle-v1.md). The database is loaded as the site's own database
+  user, never as root. Importing a bundle still means trusting it: its
+  database and themes become your site, so import bundles you made.
+- **A failure leaves nothing behind.** If any step fails — the dump will not
+  load, the row counts disagree, Ghost will not start on the imported data —
+  the containers, data, configuration and stack files the import created are
+  removed and the directory is as it was, so the same command can simply be
+  run again. The bundle and the source site are never modified. Set
+  `GD_IMPORT_KEEP_FAILED=1` to keep what it created for inspection instead.
+- **An unfinished import cannot be started.** While an import runs, `.env`
+  selects no Compose service (`COMPOSE_PROFILES=import-incomplete`) and
+  `.ghost-docker-import` records what it has created. An import that was
+  killed, or kept with `GD_IMPORT_KEEP_FAILED`, therefore starts nothing under
+  `docker compose up`; an ordinary `install` there is refused, and the next
+  `install --import` removes it first.
+
+Bundles are accepted as a directory, a `.tgz`, a plain `.tar`, or a `.zip`
+(`--archive zip`). The manager unpacks them itself; nothing on the host is
+needed beyond the launcher's own requirements.
+
+Mail settings travel with the configuration. A local site set up to send
+through a real mail service will send through it from Docker too.
+
+Refused, each with a message that says so:
+
+- A `portable` bundle (`--sqlite-format portable`): Ghost Admin imports its
+  content JSON and members CSV. The message gives the steps: install an empty
+  site, import both files in Ghost Admin, copy the content directory. Export
+  without `--sqlite-format portable` to get a `mysql-data` bundle instead.
+- A bundle from a production installation, and `--import` with `--domain`,
+  until production import and cutover (S5e).
+- `--import` with `--with`: import the site first, then enable optional
+  services.
+
+See the [plan](ghost-cli-replacement.md) for where each lands, and
+[bundle-v1.md](bundle-v1.md) for the bundle contract.
 
 ## Ports, and your existing proxy
 

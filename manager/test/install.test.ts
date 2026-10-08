@@ -106,7 +106,7 @@ describe('refusals that change nothing', () => {
             [['--local', '--port', '70000'], /port number/],
             [['--local', '--frobnicate'], /frobnicate/],
             // Options whose step has not landed do not exist yet.
-            [['--import', 'bundle.tgz'], /Unknown option '--import'/],
+            [['--migrate'], /Unknown option '--migrate'/],
             [['--local', '--channel', 'beta'], /Unknown option '--channel'/],
             [['--local', '--with', 'supervisor'], /unknown optional service: supervisor/],
         ] as const) {
