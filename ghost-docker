@@ -186,7 +186,8 @@ if [[ -n ${BASH_SOURCE[0]:-} && -f ${BASH_SOURCE[0]} ]]; then
 fi
 source_kind=image
 # A channel is a tag that moves, and `docker run` would otherwise keep using
-# whichever copy of it this host pulled first.
+# whichever copy of it this host pulled first. Docker's progress goes to
+# stderr, so a long pull is visibly happening.
 declare -a pull=()
 if [[ -n ${GD_IMAGE:-} ]]; then
     image=$GD_IMAGE
@@ -211,7 +212,7 @@ elif [[ -n $script_dir && -f $script_dir/manager/Dockerfile && -f $script_dir/co
     fi
 else
     image="$GD_REGISTRY_IMAGE:${GD_CHANNEL:-edge}"
-    pull=(--pull always --quiet)
+    pull=(--pull always)
 fi
 
 # --- Run it -----------------------------------------------------------------
