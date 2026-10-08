@@ -126,6 +126,12 @@ Adding one never changes the site mode:
 | --- | --- | --- |
 | `analytics` | `traffic-analytics` plus the Tinybird one-shot jobs | one long-running Node service (~100-200 MB RSS) and a Tinybird workspace |
 | `activitypub` | `activitypub`, `activitypub-migrate` | one long-running Node service (~150-250 MB RSS), one migration job per start, one extra MySQL database |
+| `mailpit` | `mailpit`, its inbox on `127.0.0.1:${MAILPIT_PORT}` | one long-running Go service (~20-30 MB RSS); its messages in `${MAILPIT_DATA_LOCATION}` |
+
+`mailpit` is for local sites only: validation rejects it beside `production`,
+where it would catch the site's real mail. Selecting the profile only runs
+Mailpit; Ghost sends to it because `ghost.env` says so (`install --with
+mailpit` writes those settings; see [install.md](install.md#optional-services)).
 
 `supervisor` is reserved for the upgrade supervisor and currently defines no
 service. Any other profile name is rejected by validation.
@@ -149,16 +155,17 @@ updates may touch `compose.yml`.
 ## Lifecycle
 
 Long-running services (`ghost`, `db`, `caddy`, `traffic-analytics`,
-`activitypub`) use `restart: ${RESTART_POLICY:-unless-stopped}`.
+`activitypub`, `mailpit`) use `restart: ${RESTART_POLICY:-unless-stopped}`.
 
 One-shot jobs (`activitypub-migrate`, `tinybird-login`, `tinybird-sync`,
 `tinybird-deploy`) keep `restart: "no"`. A completed or failed job stays
 stopped; the restart policy is not migration orchestration and is not
 readiness.
 
-`ghost` and `db` have real health checks: Ghost's probe requires the Admin API
-to answer, and MySQL's probe requires a real client connection to the
-application database. A running container or a redirect is not readiness.
+`ghost`, `db` and `mailpit` have real health checks: Ghost's probe requires
+the Admin API to answer, MySQL's probe requires a real client connection to
+the application database, and Mailpit's asks its own readiness endpoint. A
+running container or a redirect is not readiness.
 
 Container logs are capped (`LOG_MAX_SIZE`, `LOG_MAX_FILE`) so a long-running
 site cannot fill the disk.
@@ -171,6 +178,7 @@ Each service has a unique alias suffixed with the project name:
 - `db-${COMPOSE_PROJECT_NAME}:3306`
 - `traffic-analytics-${COMPOSE_PROJECT_NAME}:3000`
 - `activitypub-${COMPOSE_PROJECT_NAME}:8080`
+- `mailpit-${COMPOSE_PROJECT_NAME}:1025` (SMTP)
 
 Generated proxy routes and helper clients use these, never the bare service
 name. `COMPOSE_PROJECT_NAME` is the site's stable identity and is kept

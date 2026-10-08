@@ -76,7 +76,9 @@ delivers it. `docs/install.md` describes what exists.
   (`src/verify.ts`): `127.0.0.1` in the manager is the manager, and it cannot
   reach the host's ports.
 
-- `compose.yml` — Ghost, MySQL, Caddy, optional analytics and ActivityPub.
+- `compose.yml` — Ghost, MySQL, Caddy, optional analytics and ActivityPub,
+  and for local sites Mailpit (`--with mailpit`; validation keeps it out of
+  production).
   Site mode is `local` or `production`, selected in `COMPOSE_PROFILES`;
   optional profiles are additive. Long-running services take
   `RESTART_POLICY`; one-shot jobs keep `restart: "no"`.

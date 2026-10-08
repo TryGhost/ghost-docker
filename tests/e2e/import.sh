@@ -269,15 +269,16 @@ export_source() {
         >"$output.export.log" 2>&1 || fail "ghost migrate-export failed" "$(tail -40 "$output.export.log")"
 }
 
-# expect_imported SITE SLUG TITLE
+# expect_imported SITE SLUG TITLE [PROFILES]
 # Everything that must be true of a running site imported from a source.
+# PROFILES is what .env selects once the import is done; local by default.
 expect_imported() {
-    local site=$1 slug=$2 title=$3 port base jar body value
+    local site=$1 slug=$2 title=$3 profiles=${4:-local} port base jar body value
     port=$(setting "$site" GHOST_PORT)
     base="http://localhost:$port"
     jar=$site.cookies
 
-    [[ $(setting "$site" COMPOSE_PROFILES) == local ]] || fail "COMPOSE_PROFILES is not local"
+    [[ $(setting "$site" COMPOSE_PROFILES) == "$profiles" ]] || fail "COMPOSE_PROFILES is not $profiles"
     [[ ! -e $site/.ghost-docker-import ]] || fail "the import marker was left behind"
     [[ ! -e $site/.import ]] || fail "the staging directory was left behind"
     [[ $(jq -r .ghost.version "$site/.ghost-docker.json") == "$GHOST_VERSION" ]] ||
@@ -390,6 +391,28 @@ expect_output 'Nothing is running'
 ok "nothing is running and the bundle directory is unchanged"
 compose_in "$site" up --detach --wait --wait-timeout 600 >/dev/null 2>&1 || fail "the imported site did not start"
 expect_imported "$site" "$SQLITE_SLUG" "SQLite source"
+compose_in "$site" down >/dev/null 2>&1
+
+step "With --with mailpit, the source's mail transport is replaced, and its mail is caught"
+destination with-mailpit
+run_import "$site" --import "$UNPACKED" --port "$port" --with mailpit
+expect_success "the import"
+expect_output 'not carried +mail__transport: replaced by Mailpit'
+expect_imported "$site" "$SQLITE_SLUG" "SQLite source" local,mailpit
+[[ $(compose_in "$site" exec -T ghost printenv mail__options__host) == "mailpit-$(setting "$site" COMPOSE_PROJECT_NAME)" ]] ||
+    fail "Ghost does not send mail to Mailpit"
+status=$(http_status "http://127.0.0.1:$port/ghost/api/admin/authentication/password_reset/" --request POST \
+    --header 'Content-Type: application/json' --header "Origin: http://localhost:$port" \
+    --data "$(jq -cn --arg e "$OWNER_EMAIL" '{password_reset: [{email: $e}]}')")
+[[ $status == 200 ]] || fail "the password reset answered $status"
+inbox=http://127.0.0.1:$(setting "$site" MAILPIT_PORT)/api/v1/messages
+for _ in $(seq 1 30); do
+    curl --disable --silent --noproxy '*' --max-time 10 "$inbox" | jq -e '.messages[] | select(.Subject == "Reset Password")' >/dev/null && break
+    sleep 1
+done
+curl --disable --silent --noproxy '*' --max-time 10 "$inbox" | jq -e '.messages[] | select(.Subject == "Reset Password")' >/dev/null ||
+    fail "the reset mail never reached Mailpit" "$(curl --disable --silent --noproxy '*' "$inbox")"
+ok "mail__from carried over, and the imported site's mail goes to Mailpit"
 compose_in "$site" down >/dev/null 2>&1
 
 step "Row counts that disagree with the bundle fail the import"

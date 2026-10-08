@@ -7,13 +7,15 @@ import { failed, harness, ok, type Harness } from './helpers.ts';
 import { LOCAL, makeSite, PRODUCTION } from './site.ts';
 
 let h: Harness;
-let site: { ghost: string; redirect: string; certificate: boolean };
+let site: { ghost: string; redirect: string; certificate: boolean; mailpit: string; smtp: string };
 beforeEach(() => {
     h = harness();
     site = {
         ghost: 'healthy',
         redirect: '308 https://example.com/',
         certificate: false,
+        mailpit: 'healthy',
+        smtp: '220 a1b2c3 Mailpit ESMTP Service ready',
     };
     h.daemon.composeRun = (args) => {
         if (args[0] === 'ps') {
@@ -30,13 +32,19 @@ beforeEach(() => {
                         State: 'running',
                         Publishers: [{ URL: '0.0.0.0', PublishedPort: 80 }],
                     },
+                    {
+                        Service: 'mailpit',
+                        State: 'running',
+                        Health: site.mailpit,
+                        Publishers: [{ URL: '127.0.0.1', PublishedPort: 8025 }],
+                    },
                 ]
                     .map((entry) => JSON.stringify(entry))
                     .join('\n'),
             );
         }
         if (args[0] === 'exec' && args[2] === 'ghost') {
-            return ok(`${site.redirect}\n`);
+            return ok(`${args.at(-1)?.startsWith('mailpit-') ? site.smtp : site.redirect}\n`);
         }
         if (args[0] === 'exec' && args[2] === 'caddy') {
             return site.certificate
@@ -95,4 +103,28 @@ describe('a production site', () => {
 test('a local site has no Caddy to ask', async () => {
     const checks = await verify(LOCAL);
     assert.deepEqual(Object.keys(checks), ['ghost', 'published ports']);
+});
+
+describe('a local site with Mailpit', () => {
+    const MAILPIT = { ...LOCAL, COMPOSE_PROFILES: 'local,mailpit' };
+
+    test('healthy, it takes mail at its alias, and its inbox port is reported', async () => {
+        const checks = await verify(MAILPIT);
+        assert.equal(checks.mailpit!.status, 'ok');
+        assert.match(checks.mailpit!.detail, /takes mail at mailpit-ghost-local-site:1025/);
+        assert.match(
+            checks['published ports']!.detail,
+            /Ghost on 127\.0\.0\.1:2368, and Mailpit's inbox on 127\.0\.0\.1:8025/,
+        );
+    });
+
+    test('unhealthy, or not answering SMTP, it is an error', async () => {
+        site.mailpit = 'unhealthy';
+        assert.match((await verify(MAILPIT)).mailpit!.detail, /not healthy \(running, unhealthy\)/);
+        site.mailpit = 'healthy';
+        site.smtp = 'connect ECONNREFUSED';
+        const checks = await verify(MAILPIT);
+        assert.equal(checks.mailpit!.status, 'error');
+        assert.match(checks.mailpit!.detail, /did not answer SMTP .*ECONNREFUSED/);
+    });
 });

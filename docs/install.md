@@ -30,9 +30,9 @@ directory, and day-to-day operation is plain `docker compose`.
 ```text
 ghost-docker install [--local | --domain example.com [--admin-domain admin.example.com]
                                 [--email ops@example.com]]
-                     [--port 2368] [--version 6.3.1] [--with activitypub]
+                     [--port 2368] [--version 6.3.1] [--with activitypub,mailpit]
                      [--no-prompt] [--no-start]
-ghost-docker install --import BUNDLE [--port 2368] [--no-prompt] [--no-start]
+ghost-docker install --import BUNDLE [--port 2368] [--with mailpit] [--no-prompt] [--no-start]
 ```
 
 | Option | Meaning |
@@ -43,7 +43,7 @@ ghost-docker install --import BUNDLE [--port 2368] [--no-prompt] [--no-start]
 | `--email EMAIL` | The ACME account email. Production only; see below. |
 | `--port PORT` | The loopback port Ghost is published on, in both modes. Omitted: the first at or above 2368 that is free (see [Ports](#ports-and-your-existing-proxy)). |
 | `--version VERSION` | A Ghost version (`6.3.1`, which means `6.3.1-next-alpine`) or a full image tag (`6-alpine`). Resolved to an exact digest. |
-| `--with LIST` | `activitypub`. `analytics` is added after installation; see below. |
+| `--with LIST` | `activitypub`, and `mailpit` for a local site. `analytics` is added after installation; see below. |
 | `--no-prompt` | Never ask: every input must then be an option. |
 | `--no-start` | Write the configuration and routes; create no containers. |
 | `--import BUNDLE` | Import a local Ghost-CLI site from the bundle `ghost migrate-export` made; see [Importing a Ghost-CLI site](#importing-a-ghost-cli-site). |
@@ -75,6 +75,21 @@ job and its database; it needs nothing else.
 It also sets `labs__publicAPI` in `ghost.env`, which ActivityPub and
 analytics both need.
 
+`--with mailpit`, for a local site only, runs [Mailpit](https://mailpit.axllent.org)
+beside Ghost and sends Ghost's mail to it: staff invites, password resets and
+member sign-in links land in a web inbox at `http://127.0.0.1:MAILPIT_PORT`
+instead of going nowhere. `install` writes the SMTP settings into `ghost.env`
+(`mail__transport`, `mail__options__host` set to the site's
+`mailpit-${COMPOSE_PROJECT_NAME}` alias, `mail__options__port`,
+`mail__options__secure`); they are yours from then on, like any other line
+there. The inbox is published on the loopback interface only, on the first port
+at or above 8025 that is free, chosen the way Ghost's is, and kept in
+`data/mailpit` across restarts. Newsletters are sent through Mailgun's API,
+not SMTP, so Mailpit never sees them. A production site cannot select it:
+`--domain` with `--with mailpit` is a usage error, and `config validate`
+rejects `mailpit` beside `production` in `COMPOSE_PROFILES`, because it would
+catch the site's real mail.
+
 Analytics is set up after installation: its Tinybird login is interactive, in a
 browser, and Ghost waits for the Tinybird jobs to finish, so a site cannot start
 with it before that login. Add it to an installed site: set the tokens with
@@ -89,7 +104,8 @@ with it before that login. Add it to an installed site: set the tokens with
 
 1. **Refuses what it should not touch**, before anything else: a directory
    that already holds a site (`.env` or `.ghost-docker.json`), stack files the
-   payload would write over, and non-empty `data/ghost` or `data/mysql`.
+   payload would write over, and non-empty `data/ghost`, `data/mysql` or
+   `data/mailpit`.
 2. **Preflight**: everything `./ghost-docker doctor` checks (Docker and
    Compose versions, platform and architecture, the site directory, file
    ownership, and that a sibling container sees the directory at the same
@@ -205,7 +221,12 @@ Bundles are accepted as a directory, a `.tgz`, a plain `.tar`, or a `.zip`
 needed beyond the launcher's own requirements.
 
 Mail settings travel with the configuration. A local site set up to send
-through a real mail service will send through it from Docker too.
+through a real mail service will send through it from Docker too, unless
+`--with mailpit` is given: then the source's `mail__transport` and
+`mail__options__*` are left out (and named, as above), Mailpit's are written
+instead, and the imported copy's mail, to real members included, goes to the
+inbox. `mail__from` is kept. `--with mailpit` is the only optional service an
+import takes; enable the others afterwards.
 
 Refused, each with a message that says so:
 
@@ -314,6 +335,7 @@ its own containers, and each answer is reported for what it is:
 | ghost | Its health check, which `up --wait` already required: the Admin API answers inside the container. | `ok` or `ERROR` |
 | caddy | From the ghost container, over the site's network, Caddy is asked for `http://` and the host of `URL` (and of `ADMIN_URL`), and must redirect to HTTPS, which it does only for a name it serves. | `ok` or `ERROR` |
 | https | Whether Caddy holds a certificate for the domain. **serving** names the issuer. **pending** means there is none yet: Caddy obtains one once the domain's DNS reaches this host, `./ghost-docker check` reports the change, and `docker compose logs caddy` shows each attempt and why it failed. | `ok` or `note` |
+| mailpit | With `--with mailpit`: its health check, and from the ghost container, over the site's network, its SMTP server greets on `mailpit-${COMPOSE_PROJECT_NAME}:1025`, where Ghost sends mail. | `ok` or `ERROR` |
 | published ports | The ports Docker says it published. A container cannot reach the host's own loopback interface, so they are not checked from there: opening the URL is that check. | `note` |
 
 A production site installed before its DNS points at the host therefore passes
@@ -325,7 +347,7 @@ offered; for a private name, put `tls internal` in a `caddy/custom/` file.
 
 ```bash
 ./ghost-docker check      # diagnose this site: host, configuration, services, database, ingress
-./ghost-docker info       # the recorded installation metadata
+./ghost-docker info       # the recorded installation metadata, and where Mailpit's inbox is
 ./ghost-docker list       # every ghost-docker container on this host, stopped ones included
 ./ghost-docker config get|set|validate
 ```

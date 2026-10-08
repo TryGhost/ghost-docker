@@ -385,6 +385,45 @@ expect_status 0
 ok "the analytics helper images build from the tinybird/ written there"
 compose_in "$AP" down --volumes >/dev/null 2>&1
 
+step "Mailpit catches the mail a local site sends"
+new_site e2e-mailpit
+M=$SITE
+run install_alone "$M" --local --with mailpit
+expect_status 0
+expect_output 'ok +mailpit +healthy, and takes mail at mailpit-ghost-local-e2e-mailpit:1025'
+expect_output 'Mailpit +http://127\.0\.0\.1:[0-9]+'
+inbox=$(setting "$M" MAILPIT_PORT)
+[[ $(setting "$M" mail__options__host) == mailpit-ghost-local-e2e-mailpit ]] || fail "ghost.env does not send mail to Mailpit"
+bindings=$(docker inspect -f '{{range $p, $b := .HostConfig.PortBindings}}{{range $b}}{{.HostIp}} {{end}}{{end}}' "$(compose_in "$M" ps -q mailpit)")
+[[ $bindings == "127.0.0.1 " ]] || fail "Mailpit is published on: $bindings"
+ok "installed, verified, and the inbox is published on 127.0.0.1:$inbox only"
+# The owner, then a password reset: Ghost sends both through SMTP.
+ghost_url=http://127.0.0.1:$(setting "$M" GHOST_PORT)/ghost/api/admin/authentication
+admin_post() {
+    curl --silent --noproxy '*' --max-time 60 --output /dev/null --write-out '%{http_code}' \
+        --header 'Content-Type: application/json' --header "Origin: $(setting "$M" URL)" \
+        --data "$2" "$ghost_url/$1/" || true
+}
+status=$(admin_post setup "{\"setup\":[{\"name\":\"E2E\",\"email\":\"owner@example.com\",\"password\":\"$(openssl rand -hex 16)\",\"blogTitle\":\"E2E\"}]}")
+[[ $status == 201 ]] || fail "owner setup answered $status"
+status=$(admin_post password_reset '{"password_reset":[{"email":"owner@example.com"}]}')
+[[ $status == 200 ]] || fail "the password reset answered $status"
+subjects=""
+for _ in $(seq 1 30); do
+    subjects=$(curl --silent --noproxy '*' --max-time 10 "http://127.0.0.1:$inbox/api/v1/messages" | grep -oE '"Subject":"[^"]*"' || true)
+    grep -q '"Subject":"Reset Password"' <<<"$subjects" && break
+    sleep 1
+done
+grep -q '"Subject":"Reset Password"' <<<"$subjects" || fail "the reset mail never reached Mailpit" "$subjects"
+ok "Ghost's password-reset mail arrived in Mailpit's inbox"
+compose_in "$M" restart mailpit >/dev/null 2>&1
+compose_in "$M" up --detach --wait mailpit >/dev/null 2>&1
+curl --silent --noproxy '*' --max-time 10 "http://127.0.0.1:$inbox/api/v1/messages" | grep -q '"Subject":"Reset Password"' ||
+    fail "the inbox did not survive a restart"
+[[ -f $M/data/mailpit/mailpit.db ]] || fail "the inbox is not kept in data/mailpit"
+ok "the inbox is kept in data/mailpit, across a restart"
+compose_in "$M" down --volumes >/dev/null 2>&1
+
 # --- From a clone ---------------------------------------------------------------
 
 step "A local and a production site from a clone of the repository"

@@ -17,6 +17,9 @@ export const COMPOSE_OVERRIDE_FILE = 'compose.override.yml';
  */
 export const DATA_DIRS = [join('data', 'ghost'), join('data', 'mysql')] as const;
 
+/** Mailpit's inbox, at compose.yml's default (MAILPIT_DATA_LOCATION); only a mailpit site has it. */
+export const MAILPIT_DATA_DIR = join('data', 'mailpit');
+
 /** The two files `config` reads and writes. Nothing else is an env file here. */
 export const CONFIG_FILES = [ENV_FILE, GHOST_ENV_FILE] as const;
 export type ConfigFile = (typeof CONFIG_FILES)[number];
@@ -25,7 +28,13 @@ export const SITE_MODES = ['local', 'production'] as const;
 export type SiteMode = (typeof SITE_MODES)[number];
 
 /** Additive, per-site. `supervisor` is reserved and defines no service yet. */
-export const OPTIONAL_PROFILES = ['analytics', 'activitypub', 'supervisor'] as const;
+export const OPTIONAL_PROFILES = ['analytics', 'activitypub', 'mailpit', 'supervisor'] as const;
+
+/**
+ * Optional profiles a production site must not select: Mailpit would catch
+ * the site's real mail.
+ */
+export const LOCAL_ONLY_PROFILES = ['mailpit'] as const;
 
 /** `production, analytics` as a list: trimmed, empties dropped. */
 export const splitProfiles = (profiles: string): string[] =>
