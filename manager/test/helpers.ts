@@ -1,4 +1,4 @@
-// A fake Io: captured output, a scripted daemon and `docker compose`, a
+// A fake Io: captured output, a scripted daemon and `docker-compose`, a
 // temporary site directory.
 import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -27,7 +27,7 @@ export interface Daemon {
     /** What GET /containers/json answers, as the Engine API spells it. */
     containers?: unknown[];
     /**
-     * `docker compose ...` after the --project-directory and -f options, with
+     * `docker-compose ...` after the --project-directory and -f options, with
      * the environment it was given and its standard input when that is text.
      * Undefined falls through to "unexpected".
      */
@@ -175,17 +175,17 @@ export function harness(): Harness {
             freeBytes: () => state.daemon.freeBytes ?? 50 * 1024 ** 3,
             exec: fakeExec((command, args, options) => {
                 state.calls.push([command, ...args]);
-                if (command !== 'docker') {
+                if (command !== 'docker-compose') {
                     return failed(undefined, `spawn ${command} ENOENT`);
                 }
-                if (args[0] === 'compose' && args[1] === 'version') {
+                if (args[0] === 'version') {
                     return state.daemon.compose
                         ? ok(`${state.daemon.compose}\n`)
                         : failed(1, 'unknown command');
                 }
-                if (args[0] === 'compose' && args[1] === '--project-directory') {
+                if (args[0] === '--project-directory') {
                     // Past --project-directory DIR and each -f FILE.
-                    let rest = args.slice(3);
+                    let rest = args.slice(2);
                     while (rest[0] === '-f') {
                         rest = rest.slice(2);
                     }
@@ -198,7 +198,7 @@ export function harness(): Harness {
                         return answer;
                     }
                 }
-                return failed(1, `unexpected: docker ${args.join(' ')}`);
+                return failed(1, `unexpected: docker-compose ${args.join(' ')}`);
             }),
         }),
         run: async (...argv) => {

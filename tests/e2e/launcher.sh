@@ -334,16 +334,16 @@ ok "runs with no checkout beside the launcher"
 
 step "The stack's files are in the image"
 run docker run --rm --entrypoint sh ghost-docker:checkout -c \
-    'cd /opt/ghost-docker/stack && ls compose.yml caddy/Caddyfile caddy/snippets .env.example ghost.env.example mysql-init >/dev/null && docker compose version --short && node --version'
+    'cd /opt/ghost-docker/stack && ls compose.yml caddy/Caddyfile caddy/snippets .env.example ghost.env.example mysql-init >/dev/null && docker-compose version --short && node --version'
 expect_status 0
 ok "compose.yml, Caddy configuration and examples; Compose and Node present"
 
 step "The stack in the image resolves"
 run docker run --rm --entrypoint sh \
     -e URL=http://localhost:2368 -e DATABASE_PASSWORD=x -e DATABASE_ROOT_PASSWORD=y -e COMPOSE_PROFILES=local \
-    ghost-docker:checkout -c 'docker compose -f /opt/ghost-docker/stack/compose.yml config --quiet'
+    ghost-docker:checkout -c 'docker-compose -f /opt/ghost-docker/stack/compose.yml config --quiet'
 expect_status 0
-ok "docker compose config accepts it, using the image's own Compose"
+ok "docker-compose config accepts it, using the image's own Compose"
 
 step "The image holds everything compose.yml refers to"
 # The release payload is defined by the Compose file, not by a list: every
@@ -353,7 +353,7 @@ step "The image holds everything compose.yml refers to"
 run docker run --rm --entrypoint sh \
     -e URL=https://example.com -e DATABASE_PASSWORD=x -e DATABASE_ROOT_PASSWORD=y \
     -e COMPOSE_PROFILES=production,analytics,activitypub \
-    ghost-docker:checkout -c 'cd /opt/ghost-docker/stack && docker compose -f compose.yml config --format json | node -e "
+    ghost-docker:checkout -c 'cd /opt/ghost-docker/stack && docker-compose -f compose.yml config --format json | node -e "
 const fs = require(\"fs\");
 const project = JSON.parse(fs.readFileSync(0, \"utf8\"));
 const stack = process.cwd() + \"/\";

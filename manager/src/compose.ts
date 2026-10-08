@@ -18,7 +18,7 @@ import { COMPOSE_FILE } from './site.ts';
 
 /** The version of the Compose client in this image. */
 export async function composeVersion(exec: Exec): Promise<string | null> {
-    const result = await exec({ timeout: 20_000 })`docker compose version --short`;
+    const result = await exec({ timeout: 20_000 })`docker-compose version --short`;
     const version = result.stdout.trim();
     return result.exitCode === 0 && version ? version : null;
 }
@@ -98,7 +98,7 @@ export async function compose(
         : command({
               stdin: 'pipe',
               input,
-          }))`docker compose --project-directory ${dir} ${composeFiles(dir, io.env.GD_COMPOSE_OVERRIDES)} ${args}`;
+          }))`docker-compose --project-directory ${dir} ${composeFiles(dir, io.env.GD_COMPOSE_OVERRIDES)} ${args}`;
     return {
         exitCode: typeof result.exitCode === 'number' ? result.exitCode : null,
         stdout: String(result.stdout ?? ''),
