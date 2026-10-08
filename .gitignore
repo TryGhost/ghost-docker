@@ -93,5 +93,7 @@ caddy/global/*
 !caddy/global/README.md
 # Operator's own Caddyfile from pre-1.0 installations (see the S6 migration)
 caddy/Caddyfile.local
+# The operator's own Compose overrides (docs/configuration.md)
+compose.override.yml
 # Backups written by the helpers
 *.bak.*

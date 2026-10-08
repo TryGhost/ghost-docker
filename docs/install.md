@@ -253,6 +253,11 @@ curl -fsSLO https://raw.githubusercontent.com/TryGhost/ghost-docker/next-docker/
 - **Afterwards** the source is stopped and intact. Nothing removes it;
   `ghost start` there brings it back. The bundle holds the site's
   configuration, secrets included: remove it once you no longer need it.
+- **A theme you develop through a link** in `content/themes/` arrives as a
+  copy: the exporter follows the link and copies the folder, so edits there
+  no longer reach the site. To keep developing it, mount the folder yourself
+  with a `compose.override.yml`; see [Your own Compose
+  overrides](configuration.md#your-own-compose-overrides).
 
 Exporting needs Ghost-CLI 1.33.0 or later (`ghost --version`) and a source
 on Ghost 6; on Ghost 5, run `ghost update` there first. When the exporter
