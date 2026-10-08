@@ -1,6 +1,6 @@
 // A fake Io: captured output, a scripted daemon and `docker-compose`, a
 // temporary site directory.
-import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { run } from '../src/cli.ts';
@@ -398,6 +398,7 @@ function daemon(state: Harness, request: DockerRequest): Promise<DockerResponse>
 interface ExecOptions {
     env?: Record<string, string>;
     input?: unknown;
+    stdout?: unknown;
 }
 
 function fakeExec(
@@ -409,7 +410,14 @@ function fakeExec(
                 return make({ ...options, ...(first as ExecOptions) });
             }
             const [command = '', ...args] = parseTemplate(first, values);
-            const result = program(command, args, options);
+            let result = program(command, args, options);
+            // Standard output to a file, as execa writes it: the program's
+            // output goes there and none is returned.
+            const file = (options.stdout as { file?: string } | undefined)?.file;
+            if (file !== undefined) {
+                writeFileSync(file, result.stdout);
+                result = { ...result, stdout: '' };
+            }
             return Promise.resolve({
                 ...result,
                 failed: result.exitCode !== 0,

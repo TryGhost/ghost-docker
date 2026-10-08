@@ -24,11 +24,12 @@ Branches:
 
 ## Current state
 
-Steps N1–N3, S5b, S5c and S6a: the stack's files and contracts, the launcher
-and manager image, releases, and the commands: `install` (local and
+Steps N1–N3, S4, S5b, S5c and S6a: the stack's files and contracts, the
+launcher and manager image, releases, and the commands: `install` (local and
 production, from the image or a clone, from a channel or a release, and
 `--import` of a local Ghost-CLI site's bundle), `update` (between releases, or
-commits of a clone), `config get|set|validate`, `check`, `info`, `list`, plus
+commits of a clone), `backup` and `restore` (over the site, or into a new
+directory), `config get|set|validate`, `check`, `info`, `list`, plus
 `version`, `doctor` and `help`. Every other `./ghost-docker ...` command or
 option in the documents is the planned interface: it does not exist until its
 step lands (an unknown command or option exits 2), and the plan says which step
@@ -41,7 +42,8 @@ delivers it. `docs/install.md` describes what exists.
   `ghost stop`, `ghost migrate-export`, `install --import` (S5c). It reads
   `--channel`, `--release` and `--to` to choose the image (and passes them on);
   `update` from a pinned site runs the newest release on the site's channel
-  (`GD_PINNED_CHANNEL`), not its pin.
+  (`GD_PINNED_CHANNEL`), not its pin. It mounts `--import`'s bundle, and
+  `restore`'s backup when it is outside the site, read-only at its own path.
 - `manager/` is the CLI: TypeScript run directly by Node (types stripped, no
   build step, so `erasableSyntaxOnly`), with dependencies installed by pnpm
   (version pinned in `package.json`; `npm i -g corepack && corepack enable`
@@ -91,6 +93,15 @@ delivers it. `docs/install.md` describes what exists.
   beside `<file>.new`), validate, pull, `up --wait`, verify, and on failure
   put back and report restored or needs-the-operator. In a clone it checks
   the previous commit out instead. `src/lock.ts` is the site lock (§2.2).
+- `src/backup.ts` takes a backup (§2.5): a mysqldump of each of the site's
+  databases as its own user, the content as a tarball, the site's files, and
+  `backup/manifest.ts` (images, row counts, checksums), written as
+  `backups/.<id>.partial` and renamed only once every dump has loaded into a
+  scratch MySQL (a `runOnce` of the site's db image) and the archive lists.
+  `src/restore.ts` restores one over its site (set aside in
+  `.ghost-docker-restore/` until verified) or into an empty directory, through
+  a fresh MySQL and the import's client and DEFINER filter. Its outcome is
+  done or needs the operator; it never puts the old site back by itself.
 - The manager verifies a site from inside its own containers
   (`src/verify.ts`): `127.0.0.1` in the manager is the manager, and it cannot
   reach the host's ports.
@@ -153,6 +164,7 @@ tests/e2e/launcher.sh         # stand-in docker, then the real image
 tests/e2e/install.sh          # real installs; binds 80/443, pulls images
 tests/e2e/import.sh           # Ghost-CLI sites exported and imported; needs Node
 tests/e2e/update.sh           # updates between locally built releases, and a clone's commits
+tests/e2e/backup.sh           # a site with ActivityPub backed up, restored over itself and elsewhere; needs jq
 cd scripts && pnpm install && pnpm run typecheck && pnpm test   # the release tooling
 ```
 

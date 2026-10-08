@@ -39,6 +39,8 @@ export interface ComposeOptions {
     readonly env?: Readonly<Record<string, string>>;
     /** Standard input, for `exec -T`; none when absent. */
     readonly input?: string | Readable;
+    /** A file standard output is written to, rather than read into `stdout`. */
+    readonly output?: string;
 }
 
 /**
@@ -95,12 +97,13 @@ export async function compose(
     io: Io,
     dir: string,
     args: readonly string[],
-    { timeoutMs = 120_000, env, input }: ComposeOptions = {},
+    { timeoutMs = 120_000, env, input, output }: ComposeOptions = {},
 ): Promise<ComposeResult> {
     const command = io.exec({
         timeout: timeoutMs,
         env: composeEnvironment(io, env),
         extendEnv: false,
+        ...(output === undefined ? {} : { stdout: { file: output } }),
     });
     const result = await (input === undefined
         ? command
@@ -130,6 +133,7 @@ export const composeError = (result: ComposeResult, lines = 6): string =>
 // --- `docker compose config` --------------------------------------------------
 
 const resolvedService = z.looseObject({
+    image: z.string().optional(),
     environment: z.record(z.string(), z.union([z.string(), z.null()])).optional(),
 });
 

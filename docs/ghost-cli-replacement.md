@@ -406,16 +406,28 @@ operation leaves its lock and its backup; `check` says so, and the operator
 restores or re-runs. Each is added only when a real failure shows it is needed,
 in the step that needs it.
 
-**Backup** is a directory under `backups/` in the site: a `mysqldump` of the site's
-databases taken as the site's user, a tarball of the content directory, `.env`,
-`ghost.env`, the site's Caddy files and the metadata, and a manifest naming the
-exact images. Checked means the dump loads and the archive lists. It is written
-private, and kept until the operator removes it. Optional-service state outside
-the site (a Tinybird workspace) is named in the manifest as not included.
+**Backup** is a directory under `backups/` in the site: a `mysqldump` of each of
+the site's databases (Ghost's, and ActivityPub's when that profile is on) taken
+as the site's user, a tarball of the content directory, `.env`, `ghost.env`,
+the site's Caddy files, `compose.override.yml`, the metadata and, in image
+mode, the stack's files and launcher, and a manifest naming the exact image of
+each service, every table's row count and every file's checksum. Checked means
+every dump loads into a scratch MySQL of the site's own image and the archive
+lists; until then it is `backups/.<id>.partial`, and a failure removes it. It
+is written private, and kept until the operator removes it. State outside the
+site (a Tinybird workspace), Caddy's certificates and Mailpit's inbox are named
+in the manifest as not included.
 
-**Restore** stops the site, loads the dump, puts the content and files back, pins
-the recorded images, and starts the site with `up --wait`, then verifies it as
-`check` does.
+**Restore** works over the backup's own site or into a new, empty directory.
+It reads the backup whole and checks every checksum first, then takes the lock
+and pulls the recorded images. Over a site it stops the site and sets its
+files and data aside in `.ghost-docker-restore/`. It writes the backup's files
+with the directory's own path, requires Compose to resolve exactly the
+recorded images, unpacks the content, starts MySQL on an empty data directory
+and loads each dump as the site's user, checking every table's rows. Then
+`up --wait`, and it verifies as `check` does. The outcome is done, or needs
+the operator with what to do; the set-aside site is removed only once the
+restore is verified.
 
 **Ghost upgrade:**
 
@@ -976,34 +988,48 @@ intent, not the bash.
 
 ### Delivery order
 
-| Milestone | Outcome | Steps |
-| --- | --- | --- |
-| M0 Foundation | A manager image and launchers exist, and `install` works for local and production sites. | N1, N2, N3 |
-| M1 Local sites | A theme developer or migration-tool author moves each local Ghost-CLI site to Docker with the documented steps. Local mode runs Ghost and MySQL with no Caddy. | S5b, S5c |
-| M2 Tagged single-site production | Production installs from a tagged release at `docker.ghost.org`, updates between releases, has backup/restore, imports a production Ghost-CLI site, and migrates the pre-`next-docker` layout. | S6a, S4, S5e, S6b, S12 |
-| M3 Multi-site | Several sites on one host behind one shared Caddy, each with its own MySQL. | S13 |
-| M4 One-click Admin updates | Ghost Admin requests an upgrade that the host executes and recovers. | S7, S8, S9, S10 |
+Dates agreed on 2026-10-08, after `v0.1.0-beta.1` shipped. Engineering dates
+are kept in Linear; these are the targets they were set from.
+
+| Milestone | Outcome | Steps | Target |
+| --- | --- | --- | --- |
+| M0 Foundation | A manager image and launchers exist, and `install` works for local and production sites. | N1, N2, N3 | done |
+| M1 Local sites | A theme developer or migration-tool author moves each local Ghost-CLI site to Docker with the documented steps. Local mode runs Ghost and MySQL with no Caddy. | S5b, S5c | done |
+| M2 Tagged single-site production | Production installs from a tagged release at `docker.ghost.org`, updates between releases, has backup/restore, imports a production Ghost-CLI site, and migrates the pre-`next-docker` layout. | S6a, S4, S6b, S5e; S12 | S4 13 Oct, S6b 16 Oct, S5e 22 Oct; S12 18 Dec |
+| M3 Multi-site | Several sites on one host behind one shared Caddy, each with its own MySQL. | S13 | 28 Oct |
+| M4 One-click Admin updates | Ghost Admin requests an upgrade that the host executes and recovers. | S7, S8, S9, S10 | S7 21 Oct, S9 merged 21 Oct, S8 27 Oct, S10 merged 28 Oct |
 
 S11 and S14-S16 follow M4.
 
+October runs three tracks in parallel: migration (S4, S6b, S5e), multi-site
+(S13) and one-click updates (S7-S10). A beta is cut before the pause, on
+29 October, and active work pauses from **30 October**: November is a feedback
+period on that beta. December is for what the feedback finds, then S12: the
+first stable release, and `next-docker` merged into `main`, by **18
+December**.
+
+If October overruns, work slips in this order: S10 moves to a November Ghost
+release; then converting existing sites into a shared Caddy (PLA-504) moves to
+December; then the pause moves to 6 November. S4, S6b and S5e do not slip.
+
 ```text
-N1 foundation: stack files, contracts, plan    this pull request
-N2 manager image, launchers, publishing        needs N1
-N3 install, config, caddy, check               needs N2
+N1 foundation: stack files, contracts, plan    done
+N2 manager image, launchers, publishing        done
+N3 install, config, caddy, check               done
 
 M1
-S5b local import                               needs N3
-S5c moving a local site, documented           needs S5b
+S5b local import                               done
+S5c moving a local site, documented           done
 
 M2
-S6a releases, served launcher, update          needs N3
-S4  backup/restore, lock                       needs N3
-S5e production import and cutover              needs S5b
+S6a releases, served launcher, update          done
+S4  backup/restore, lock                       done
 S6b legacy-layout migration                    needs S4, S6a
+S5e production import and cutover              needs S5b
 S12 release qualification                      needs the rest of M2
 
 M3
-S13 shared Caddy                               needs S6b
+S13 shared Caddy                               needs S4; converting existing sites (PLA-504) needs S6b
 
 M4
 S7  host Ghost upgrade                         needs S4, S6a
@@ -1018,17 +1044,22 @@ S15 Ghost nightly channel                      needs S14
 S16 default Redis                              needs S12
 ```
 
-S7 depends only on S4 and S6a. It is scheduled with M4 because it defines the
-execution interface the supervisor reuses, but it can be pulled into M2 if
-operators need a scripted Ghost upgrade sooner. Until it ships, the documented
-Ghost upgrade is editing the exact version pin and running `docker compose up -d`
-after a manual backup.
+S13 keeps MySQL per site, so a new member site needs only S4: backup, restore,
+upgrade and import are the same for it as for a site alone. Converting a site
+that already runs its own Caddy into a member is separate work (PLA-504),
+which needs S6b.
+
+S7 depends only on S4 and S6a, and runs in October alongside the supervisor
+that reuses its execution interface. Until it ships, the documented Ghost
+upgrade is editing the exact version pin and running `docker compose up -d`
+after `./ghost-docker backup`.
 
 Work that exists outside this branch:
 
 - `next` (frozen): the bash implementation of S1, S2 and S5b, with its tests.
 - PR #300 (draft, against `next`): S4 as bash dispatcher plus a TypeScript
-  manager. Its `manager/` directory is the starting point for N2 and S4.
+  manager. Its `manager/` directory was the starting point for N2 and S4,
+  which have both landed; it is reference only.
 - `codex/update-supervisor` (local branch): an S8 prototype stacked on PR #300.
   Parked until the adapter contract in Ghost PR #31277 settles.
 
@@ -1363,6 +1394,47 @@ and into a fresh one, and verify the database (staff sign in), assets, theme and
 configuration; a second operation is refused while one holds the lock; a stale
 lock is reported by `check`; a dump that fails is an error, not a backup.
 
+Status: implemented. `tests/e2e/backup.sh` covers every acceptance item against
+real containers; `docs/install.md` describes both commands. Decisions made
+while building it:
+
+- **One dump per database**, `database/<name>.sql`, as the site's user:
+  `--single-transaction --no-tablespaces --set-gtid-purged=OFF`, no routines
+  or events, which need privileges the site's user does not have and Ghost
+  does not use. A dump that does not end with mysqldump's completion line is
+  refused as cut short.
+- **"The dump loads" is checked in a scratch MySQL**, a one-shot container of
+  the site's own db image with the backup mounted read-only and no network,
+  never the site's own server. Its row counts go into the manifest, and the
+  number of tables must equal the live database's; Ghost's must have a
+  migration history.
+- **The stack's files travel with an image-mode backup**, with the launcher,
+  so a restore anywhere runs exactly the images the site ran, whichever
+  manager restores it. A clone's backup records its commit and restores into
+  a clone checked out at it.
+- **The manifest holds a SHA-256 of every file**, and restore checks them all,
+  and lists the archive, before it changes anything.
+- **Restore always starts MySQL on an empty data directory** and loads the
+  dumps into it, over a site as into a new directory: no tables left over
+  from a newer schema, and the root password always matches the restored
+  `.env`.
+- **Over a site, `restore` asks** (`--yes` answers; with no terminal it is
+  required), and sets the site aside in `.ghost-docker-restore/`, moved as root
+  by a one-shot container because MySQL owns its data. A failure reports
+  "needs the operator" with the steps to put it back; it does not put it back
+  itself. `check` reports the directory and another restore is refused while
+  it is there.
+- **Into a new directory**, the site keeps its project name and ports, so
+  containers of the same project and busy ports are refused, named, never
+  stopped. `PROJECT_DIR` and the metadata's `site.dir` are rewritten to the
+  new directory.
+- **The backup is a positional argument**, `restore <backup>`. The launcher
+  mounts it read-only at its own path when it is outside the site, as it does
+  `--import`'s bundle.
+- **A site whose `.env` moves its data** (`UPLOAD_LOCATION`,
+  `MYSQL_DATA_LOCATION`) is refused rather than half backed up.
+- **No metadata changes**: `schemaVersion` stays 1.
+
 ### S7 — Host-driven Ghost upgrades
 
 Repo: ghost-docker. Deps: S4 and S6a compatibility rules. Implement `./ghost-docker
@@ -1447,7 +1519,8 @@ S13 has shipped.
 
 ### S13 — Optional shared Caddy
 
-Repo: ghost-docker. Deps: S6b. Several sites on one server, as Ghost-CLI ran
+Repo: ghost-docker. Deps: S4 for new member sites; converting an existing
+site into a member (PLA-504) also needs S6b. Several sites on one server, as Ghost-CLI ran
 several sites behind one nginx. 80 and 443 can belong to one Caddy only, so that
 Caddy is shared; everything else stays per site, MySQL included, so backup,
 restore, upgrade and import are unchanged.

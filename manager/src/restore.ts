@@ -1,0 +1,657 @@
+// Restoring a backup into its own site directory or a new, empty one (plan
+// §2.5). `restoreSite` takes these parts in order:
+//
+//   1. Refusals that change nothing: the backup is read whole and every file
+//      checked against its checksum; the directory is this backup's own
+//      site, or empty; in a new directory, nothing on the daemon already
+//      uses the site's project name or ports. Then the lock, and the
+//      recorded images are pulled before anything stops.
+//   2. Over the site itself: the site is stopped, and its files and data are
+//      moved aside into RESTORE_DIR, which is kept until the restore has
+//      been verified.
+//   3. The backup's files are written, with the site's own path, and Compose
+//      must resolve exactly the recorded images. The content is unpacked,
+//      a fresh MySQL is started, and each dump loaded as the site's user and
+//      its rows counted against the manifest.
+//   4. `up --wait`, then verify as `check` does.
+//
+// The outcome is done, or needs the operator with what to do: a restore
+// that fails part-way does not put the old site back by itself.
+import { cpSync, createReadStream, existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
+import * as tar from 'tar';
+import { backupSiteFiles, readBackup } from './backup.ts';
+import { SITE_FILES_DIR, type BackupManifest } from './backup/manifest.ts';
+import { git, upAndWait } from './commands/update.ts';
+import { compose, composeConfig, composeError } from './compose.ts';
+import type { Context } from './context.ts';
+import {
+    DaemonError,
+    inspectImage,
+    listContainers,
+    pullImage,
+    runOnce,
+    splitReference,
+    stoppedSiteContainers,
+} from './docker/client.ts';
+import * as env from './env.ts';
+import { CliError, UsageError } from './errors.ts';
+import { atomicWrite, readIfExists } from './fs.ts';
+import {
+    BATCH,
+    DefinerFilter,
+    rowCountQuery,
+    rowMismatches,
+    siteMysql,
+} from './import/database.ts';
+import type { Io } from './io.ts';
+import { acquireLock } from './lock.ts';
+import { readMetadata, writeMetadata } from './meta.ts';
+import { isCheckout, LAUNCHER } from './payload.ts';
+import { failed, printChecks } from './report.ts';
+import {
+    DATA_DIRS,
+    ENV_FILE,
+    MAILPIT_DATA_DIR,
+    META_FILE,
+    OPERATOR_FILES,
+    readSettings,
+    RESTORE_DIR,
+    siteFacts,
+} from './site.ts';
+import { ALL_PROFILES } from './undo.ts';
+import { verifyIngress } from './verify.ts';
+
+/** How long loading a dump may take. */
+const LOAD_MS = 3 * 60 * 60 * 1000;
+const READY_SECONDS = 600;
+
+const heading = (io: Io, title: string) => io.stdout(`\n${title}\n`);
+const ok = (io: Io, label: string, detail: string) =>
+    printChecks(io, [{ status: 'ok', label, detail }]);
+
+/** `over`: the backup's own site, replaced. `fresh`: a new, empty directory. */
+type Target = 'over' | 'fresh';
+
+export interface RestoreInput {
+    readonly io: Io;
+    readonly context: Context;
+    /** The backup's directory, absolute. */
+    readonly root: string;
+    /** Restore over the site without asking. */
+    readonly yes: boolean;
+}
+
+/** The part of a restore a failure happened in decides what the operator is told. */
+type Stage = 'prepare' | 'replace' | 'start';
+
+export async function restoreSite({ io, context, root, yes }: RestoreInput): Promise<void> {
+    const dir = context.siteDir;
+    io.stdout(`Reading the backup ${root}\n`);
+    const manifest = await readBackup(io, root);
+    ok(
+        io,
+        'backup',
+        `${manifest.site.url}, taken ${manifest.createdAt}; every file matches its checksum`,
+    );
+
+    const target = classify(context, dir, manifest);
+    if (target === 'fresh') {
+        await refuseTaken(io, root, manifest);
+    } else {
+        await confirm(io, dir, manifest, yes);
+    }
+    if (manifest.site.source === 'checkout') {
+        await refuseOtherCommit(io, dir, manifest);
+    }
+    if (existsSync(join(dir, RESTORE_DIR))) {
+        throw new CliError(
+            `${join(dir, RESTORE_DIR)} is left from a restore that did not finish, and holds the site as\n` +
+                '  it was before it. Once the site is as it should be, remove it (it needs sudo: MySQL owns\n' +
+                '  part of it) and run the restore again. Nothing has been changed.',
+        );
+    }
+
+    const lock = acquireLock(dir, `restore from ${basename(root)}`);
+    let stage: Stage = 'prepare';
+    try {
+        heading(io, 'Pulling the recorded images');
+        for (const image of new Set(Object.values(manifest.images))) {
+            await io.busy(`Pulling ${image}`, () => ensureImage(io, image));
+        }
+        ok(io, 'images', `${Object.keys(manifest.images).length} services, as the backup records`);
+
+        stage = 'replace';
+        if (target === 'over') {
+            await setAside(io, context, dir);
+        }
+        heading(io, 'Restoring the site');
+        writeSiteFiles(io, root, dir, manifest);
+        await checkImages(io, dir, manifest);
+        await restoreContent(io, root, dir, manifest);
+        await restoreDatabases(io, root, dir, manifest);
+
+        stage = 'start';
+        heading(io, 'Starting the services');
+        await upAndWait(io, dir, 'Starting the services and waiting for them to be healthy');
+        ok(io, 'services', 'healthy, by their own health checks');
+        heading(io, 'Verifying the site');
+        const verified = await io.busy('Reaching the site through its ingress', () =>
+            verifyIngress(io, siteFacts(dir, readSettings(dir)!)),
+        );
+        printChecks(io, verified);
+        if (failed(verified)) {
+            throw new CliError('the site started, but it is not reachable through its own ingress');
+        }
+    } catch (error) {
+        if (stage === 'prepare') {
+            throw error;
+        }
+        needsOperator(io, dir, target, error);
+    } finally {
+        lock.release();
+    }
+
+    if (target === 'over') {
+        await removeAside(io, context, dir);
+    }
+    summarize(io, dir, root, manifest, target);
+}
+
+// --- Before anything changes ----------------------------------------------------
+
+/** The backup's own site, or an empty directory; anything else is refused. */
+function classify(context: Context, dir: string, manifest: BackupManifest): Target {
+    const settings = readSettings(dir);
+    if (settings !== null) {
+        const project = settings.get('COMPOSE_PROJECT_NAME');
+        if (project !== manifest.site.project) {
+            throw new CliError(
+                `${dir} holds another site (${project ?? 'no project name'}); this backup is of ${manifest.site.project}.\n` +
+                    '  Restore it over its own site, or into a new, empty directory. Nothing has been changed.',
+            );
+        }
+        const metadata = readMetadata(dir);
+        if (metadata.state === 'present' && metadata.metadata.source !== manifest.site.source) {
+            throw new CliError(
+                `this site was installed ${metadata.metadata.source === 'checkout' ? 'as a checkout of the repository' : 'from the manager image'}, and the backup is of one\n` +
+                    `  installed ${manifest.site.source === 'checkout' ? 'as a checkout' : 'from the image'}. Restore it into a new, empty directory. Nothing has been changed.`,
+            );
+        }
+        return 'over';
+    }
+    if (existsSync(join(dir, META_FILE))) {
+        throw new CliError(
+            `${join(dir, META_FILE)} exists without ${ENV_FILE}, so this directory holds part of a site.\n` +
+                '  Restore into a new, empty directory instead. Nothing has been changed.',
+        );
+    }
+    for (const data of [...DATA_DIRS, MAILPIT_DATA_DIR]) {
+        const path = join(dir, data);
+        if (existsSync(path) && readdirSync(path).length > 0) {
+            throw new CliError(
+                `${path} is not empty. A backup is never restored over data that is not its site's. Nothing has been changed.`,
+            );
+        }
+    }
+    const clone = isCheckout(context, dir);
+    if (manifest.site.source === 'checkout' && !clone) {
+        throw new CliError(
+            'this backup is of a site that was a checkout of the repository. Restore it into a checkout:\n' +
+                `    git clone https://github.com/TryGhost/ghost-docker.git ${dir}\n` +
+                `    git -C ${dir} checkout ${manifest.site.commit ?? '<the commit the site ran>'}\n` +
+                `  then run that checkout's ./ghost-docker restore. Nothing has been changed.`,
+        );
+    }
+    if (manifest.site.source === 'image') {
+        if (clone) {
+            throw new CliError(
+                'this backup is of a site installed from the manager image, and this directory is a checkout\n' +
+                    '  of the repository. Restore it into a new, empty directory. Nothing has been changed.',
+            );
+        }
+        const conflicts = backupSiteFiles(manifest)
+            .map((file) => file.split('/')[0]!)
+            .filter((top, index, all) => all.indexOf(top) === index)
+            .filter((top) => existsSync(join(dir, top)));
+        if (conflicts.length > 0) {
+            throw new CliError(
+                `${dir} already has ${conflicts.slice(0, 5).join(', ')}${conflicts.length > 5 ? ', …' : ''}, which the restore would write.\n` +
+                    '  Restore into a new, empty directory, or move these aside. Nothing has been changed.',
+            );
+        }
+    }
+    return 'fresh';
+}
+
+/**
+ * A site restored into a new directory keeps its project name and its ports,
+ * so nothing on this daemon may already use them. The site the backup was
+ * taken from is the usual one, and it is named, never stopped.
+ */
+async function refuseTaken(io: Io, root: string, manifest: BackupManifest): Promise<void> {
+    const project = await listContainers(io.docker, {
+        all: true,
+        labels: [`com.docker.compose.project=${manifest.site.project}`],
+    });
+    if (project.length > 0) {
+        throw new CliError(
+            `the Compose project ${manifest.site.project} already has containers on this host (${project
+                .map((container) => container.name)
+                .slice(0, 4)
+                .join(', ')}).\n` +
+                '  A restored site keeps its project name. If the site this backup was taken from is still\n' +
+                '  here, take it down first, in its directory: docker compose down. Nothing was stopped.\n' +
+                '  Nothing has been changed.',
+        );
+    }
+    const settings = env.toRecord(readIfExists(join(root, SITE_FILES_DIR, ENV_FILE)) ?? '');
+    const keys = ['GHOST_PORT', 'MAILPIT_PORT'];
+    if (manifest.site.mode === 'production') {
+        keys.push('HTTP_PORT', 'HTTPS_PORT');
+    }
+    const wanted = keys
+        .map((key) => Number(settings[key]))
+        .filter((port) => Number.isInteger(port) && port > 0);
+    const running = await listContainers(io.docker);
+    const stopped = await stoppedSiteContainers(io.docker);
+    const lines: string[] = [];
+    for (const container of [...running, ...stopped]) {
+        for (const port of container.publishedPorts.filter((each) => wanted.includes(each))) {
+            lines.push(
+                `port ${port} is already ${running.includes(container) ? 'in use by' : 'taken by the stopped'} Docker container ${container.name}`,
+            );
+        }
+    }
+    const ghostPort = Number(settings.GHOST_PORT);
+    if (lines.length === 0 && Number.isInteger(ghostPort) && (await io.hostListens(ghostPort))) {
+        lines.push(`port ${ghostPort} is already in use on this host by something outside Docker`);
+    }
+    if (lines.length > 0) {
+        throw new CliError(
+            `${lines.join('\n  ')}\n` +
+                '  The restored site publishes the ports its backup records. Free them first. Nothing was\n' +
+                '  stopped. Nothing has been changed.',
+        );
+    }
+}
+
+/** Replacing a site is never a surprise: it is asked, or --yes says so. */
+async function confirm(io: Io, dir: string, manifest: BackupManifest, yes: boolean) {
+    if (yes) {
+        return;
+    }
+    const question =
+        `Replace the site in ${dir} with the backup taken ${manifest.createdAt}? ` +
+        'Its current content and database are kept aside until the restore is verified, then removed.';
+    if (io.prompt === null) {
+        throw new UsageError(
+            `restoring replaces the site in ${dir}: its database and content become the backup's.\n` +
+                '  Run it again with --yes to go ahead. Nothing has been changed.',
+        );
+    }
+    const answer = await io.prompt.choose(question, [
+        { name: 'No, change nothing', value: 'no' },
+        { name: 'Yes, restore the backup over this site', value: 'yes' },
+    ]);
+    if (answer !== 'yes') {
+        throw new CliError('the restore was cancelled. Nothing has been changed.');
+    }
+}
+
+/** A checkout runs its own files, so it must be at the commit the backup's site ran. */
+async function refuseOtherCommit(io: Io, dir: string, manifest: BackupManifest): Promise<void> {
+    const head = await git(io, dir, ['rev-parse', '--verify', 'HEAD']);
+    if (!head.ok) {
+        throw new CliError(
+            `git cannot read the checkout in ${dir}: ${head.stderr || 'no answer'}. Nothing has been changed.`,
+        );
+    }
+    if (manifest.site.commit !== null && head.stdout.trim() !== manifest.site.commit) {
+        throw new CliError(
+            `the backup's site ran commit ${manifest.site.commit.slice(0, 12)}, and this checkout is at ${head.stdout.trim().slice(0, 12)}.\n` +
+                `  Check that commit out first: git checkout ${manifest.site.commit}\n` +
+                '  then run the restore again. Nothing has been changed.',
+        );
+    }
+}
+
+/** The image by its exact reference, pulled when the daemon does not hold it. */
+async function ensureImage(io: Io, reference: string): Promise<void> {
+    // `name:tag@sha256:...` is found, and pulled, by its digest alone.
+    const at = reference.indexOf('@');
+    const { repository, tag } =
+        at === -1
+            ? splitReference(reference)
+            : {
+                  repository: splitReference(reference.slice(0, at)).repository,
+                  tag: reference.slice(at + 1),
+              };
+    const exact = at === -1 ? reference : `${repository}@${tag}`;
+    if ((await inspectImage(io.docker, exact)) !== null) {
+        return;
+    }
+    try {
+        await pullImage(io.docker, repository, tag);
+    } catch (error) {
+        if (error instanceof DaemonError) {
+            throw new CliError(
+                `${reference}, which the backup records, could not be pulled: ${error.message}. Nothing has been changed.`,
+            );
+        }
+        throw error;
+    }
+}
+
+// --- Replacing the site -----------------------------------------------------------
+
+/**
+ * Stops the site, then moves its files and data aside. The data belongs to
+ * the containers' users, so it is moved as root, in a short-lived container
+ * that does only that.
+ */
+async function setAside(io: Io, context: Context, dir: string): Promise<void> {
+    heading(io, 'Setting the current site aside');
+    const down = await io.busy('Stopping the site', () =>
+        compose(io, dir, ['down', '--remove-orphans', '--timeout', '20'], {
+            timeoutMs: 300_000,
+            env: { COMPOSE_PROFILES: ALL_PROFILES },
+        }),
+    );
+    if (down.exitCode !== 0) {
+        throw new CliError(`the site could not be stopped: ${composeError(down, 2)}`);
+    }
+    ok(io, 'stopped', 'its containers removed; its volumes, such as Caddy’s certificates, kept');
+
+    const aside = join(dir, RESTORE_DIR);
+    mkdirSync(join(aside, 'files'), { recursive: true, mode: 0o700 });
+    mkdirSync(join(aside, 'data'), { mode: 0o700 });
+    const data = DATA_DIRS.filter((path) => existsSync(join(dir, path)));
+    if (data.length > 0) {
+        if (context.image === null) {
+            throw new CliError(
+                'the launcher did not say which image this is, so the data cannot be moved aside',
+            );
+        }
+        const moved = await io.busy('Moving the data aside', () =>
+            runOnce(io.docker, {
+                image: context.image!,
+                entrypoint: ['mv', '--'],
+                cmd: [...data.map((path) => `/site/${path}`), `/site/${RESTORE_DIR}/data/`],
+                binds: [{ source: dir, target: '/site' }],
+                user: '0:0',
+                network: 'none',
+                timeoutMs: 600_000,
+            }),
+        );
+        if (moved.status !== 0) {
+            throw new CliError(
+                `the data could not be moved aside: ${(moved.stderr || moved.stdout).trim() || `mv exited ${moved.status}`}`,
+            );
+        }
+    }
+    const metadata = readMetadata(dir);
+    const files = [
+        ...OPERATOR_FILES,
+        ...(metadata.state === 'present' && metadata.metadata.source === 'image'
+            ? Object.keys(metadata.metadata.payload)
+            : []),
+    ];
+    for (const path of new Set(files)) {
+        const source = join(dir, path);
+        if (existsSync(source)) {
+            cpSync(source, join(aside, 'files', path), {
+                recursive: true,
+                preserveTimestamps: true,
+            });
+            // The stack files of the release the site ran are replaced by the
+            // backup's; the operator's directories are emptied, then refilled.
+            rmSync(source, { recursive: true, force: true });
+        }
+    }
+    ok(
+        io,
+        RESTORE_DIR,
+        `${data.join(' and ')} and the site's files, kept until the restore is verified`,
+    );
+}
+
+/** The backup's files at their places, with this directory as the site's own. */
+function writeSiteFiles(io: Io, root: string, dir: string, manifest: BackupManifest): void {
+    const files = backupSiteFiles(manifest);
+    for (const file of files) {
+        const target = join(dir, file);
+        mkdirSync(dirname(target), { recursive: true, mode: 0o755 });
+        cpSync(join(root, SITE_FILES_DIR, file), target, { preserveTimestamps: true });
+    }
+    const envPath = join(dir, ENV_FILE);
+    const text = readIfExists(envPath);
+    if (text === undefined) {
+        throw new CliError(`the backup holds no ${ENV_FILE}`);
+    }
+    if (env.get(text, 'PROJECT_DIR') !== dir) {
+        atomicWrite(envPath, env.set(text, 'PROJECT_DIR', dir));
+    }
+    const metadata = readMetadata(dir);
+    if (metadata.state === 'present' && metadata.metadata.site.dir !== dir) {
+        writeMetadata(dir, {
+            ...metadata.metadata,
+            site: { ...metadata.metadata.site, dir },
+        });
+    }
+    ok(
+        io,
+        'files',
+        `${files.length} files: configuration, metadata, Caddy${files.includes(LAUNCHER) ? ', the stack and its launcher' : ''}`,
+    );
+}
+
+/** The images the backup records are the ones Compose now resolves: the site is pinned to them. */
+async function checkImages(io: Io, dir: string, manifest: BackupManifest): Promise<void> {
+    const resolved = await io.busy('Resolving the Compose project', () => composeConfig(io, dir));
+    if (!resolved.ok) {
+        throw new CliError(`Compose cannot resolve the restored project: ${resolved.reason}`);
+    }
+    const differ: string[] = [];
+    for (const [service, image] of Object.entries(manifest.images)) {
+        const now = resolved.project.services[service]?.image;
+        if (now !== image) {
+            differ.push(
+                `${service}: the backup records ${image}, Compose resolves ${now ?? 'nothing'}`,
+            );
+        }
+    }
+    if (differ.length > 0) {
+        throw new CliError(
+            `the restored site does not run the images its backup records:\n${differ.map((line) => `  ${line}`).join('\n')}`,
+        );
+    }
+    ok(io, 'pinned', 'Compose resolves every image the backup records');
+}
+
+async function restoreContent(
+    io: Io,
+    root: string,
+    dir: string,
+    manifest: BackupManifest,
+): Promise<void> {
+    for (const data of DATA_DIRS) {
+        mkdirSync(join(dir, data), { recursive: true, mode: 0o755 });
+    }
+    const content = join(dir, DATA_DIRS[0]);
+    await io.busy(`Unpacking the content into ${DATA_DIRS[0]}`, () =>
+        tar.x({
+            file: join(root, manifest.content.file),
+            cwd: content,
+            strict: true,
+            preserveOwner: false,
+        }),
+    );
+    ok(io, 'content', `${manifest.content.entries} entries in ${DATA_DIRS[0]}`);
+}
+
+/**
+ * A fresh MySQL, whose first start creates the site's databases and user,
+ * then each dump loaded as that user and its rows counted.
+ */
+async function restoreDatabases(
+    io: Io,
+    root: string,
+    dir: string,
+    manifest: BackupManifest,
+): Promise<void> {
+    const db = await io.busy('Starting a new database', () =>
+        compose(
+            io,
+            dir,
+            ['up', '--detach', '--wait', '--wait-timeout', String(READY_SECONDS), 'db'],
+            {
+                timeoutMs: (READY_SECONDS + 900) * 1000,
+            },
+        ),
+    );
+    if (db.exitCode !== 0) {
+        throw new CliError(`the database did not become ready: ${composeError(db)}`);
+    }
+    const profiles = readSettings(dir)?.get('COMPOSE_PROFILES') ?? '';
+    for (const database of manifest.databases) {
+        const mysql = siteMysql(io, dir, profiles, database.name);
+        const file = createReadStream(join(root, database.file));
+        const input = file.pipe(new DefinerFilter());
+        let unreadable: Error | null = null;
+        file.on('error', (error) => {
+            unreadable ??= error;
+            input.destroy(error);
+        });
+        const load = await io.busy(`Loading the ${database.name} database`, () =>
+            mysql.run(input, [], LOAD_MS),
+        );
+        input.destroy();
+        if (unreadable !== null) {
+            throw new CliError(
+                `${database.file} could not be read: ${(unreadable as Error).message}`,
+            );
+        }
+        if (load.exitCode !== 0) {
+            throw new CliError(
+                `the ${database.name} database could not be loaded. MySQL said:\n  ${composeError(load, 4).replaceAll('\n', '\n  ')}`,
+            );
+        }
+        const tables = Object.keys(database.tables);
+        if (tables.length > 0) {
+            const counted = await mysql.run(rowCountQuery(tables), BATCH);
+            if (counted.exitCode !== 0) {
+                throw new CliError(
+                    `the ${database.name} database's tables could not be counted: ${composeError(counted)}`,
+                );
+            }
+            const mismatches = rowMismatches(database.tables, counted.stdout, 'the backup');
+            if (mismatches.length > 0) {
+                throw new CliError(
+                    `the loaded ${database.name} database does not match the backup:\n${mismatches.map((line) => `  ${line}`).join('\n')}`,
+                );
+            }
+        }
+        ok(
+            io,
+            database.name,
+            `loaded; every table's rows match the backup (${tables.length} tables)`,
+        );
+    }
+}
+
+// --- The outcome ----------------------------------------------------------------
+
+/** The site as it was is no longer needed once the restore is verified. */
+async function removeAside(io: Io, context: Context, dir: string): Promise<void> {
+    const aside = join(dir, RESTORE_DIR);
+    if (context.image !== null) {
+        await runOnce(io.docker, {
+            image: context.image,
+            entrypoint: ['rm', '-rf', '--'],
+            cmd: [`/site/${RESTORE_DIR}`],
+            binds: [{ source: dir, target: '/site' }],
+            user: '0:0',
+            network: 'none',
+            timeoutMs: 600_000,
+        });
+    }
+    try {
+        rmSync(aside, { recursive: true, force: true });
+    } catch {
+        // Reported below.
+    }
+    if (existsSync(aside)) {
+        printChecks(io, [
+            {
+                status: 'warn',
+                label: RESTORE_DIR,
+                detail: `the site as it was before the restore could not be removed from ${aside}; remove it with sudo`,
+            },
+        ]);
+    }
+}
+
+function needsOperator(io: Io, dir: string, target: Target, error: unknown): never {
+    io.stderr(
+        `\n${error instanceof CliError ? `error: ${error.message}` : `error: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`}\n`,
+    );
+    const aside = join(dir, RESTORE_DIR);
+    io.stderr(
+        (target === 'over'
+            ? [
+                  '',
+                  'The restore did not complete, and the site needs you. It is stopped.',
+                  `The site as it was before the restore is in ${aside}:`,
+                  '  files/   its configuration, metadata and stack files',
+                  '  data/    its data/ghost and data/mysql',
+                  'To put it back, in the site directory:',
+                  '  1. docker compose down',
+                  `  2. sudo rm -rf data/ghost data/mysql && sudo mv ${RESTORE_DIR}/data/* data/`,
+                  `  3. cp -a ${RESTORE_DIR}/files/. .`,
+                  '  4. docker compose up -d, then ./ghost-docker check',
+                  `  5. sudo rm -rf ${RESTORE_DIR}`,
+                  `Or fix what failed, then remove ${RESTORE_DIR} only once you no longer need it, and restore again.`,
+                  '',
+              ]
+            : [
+                  '',
+                  `The restore into ${dir} did not complete, and needs you. Nothing else was changed.`,
+                  'To try again, restore into a new, empty directory, or empty this one first:',
+                  '  docker compose down, then remove what the restore wrote (data/ needs sudo: MySQL owns part of it).',
+                  '',
+              ]
+        ).join('\n'),
+    );
+    throw new CliError('the restore failed, and the site needs the operator.');
+}
+
+function summarize(
+    io: Io,
+    dir: string,
+    root: string,
+    manifest: BackupManifest,
+    target: Target,
+): void {
+    io.stdout(
+        [
+            '',
+            `Restored ${manifest.site.url} from ${root}${target === 'fresh' ? `, into ${dir}` : ''}.`,
+            '',
+            ...manifest.databases.map(
+                (database) =>
+                    `  ${database.name.padEnd(12)} ${Object.keys(database.tables).length} tables, rows as backed up`,
+            ),
+            `  ${'content'.padEnd(12)} ${manifest.content.entries} entries`,
+            `  ${'ghost'.padEnd(12)} ${manifest.images.ghost ?? 'as recorded'}`,
+            ...(manifest.notIncluded.length > 0
+                ? [
+                      '',
+                      'Not in the backup, as it records:',
+                      ...manifest.notIncluded.map((line) => `  ${line}`),
+                  ]
+                : []),
+            '',
+        ].join('\n'),
+    );
+}

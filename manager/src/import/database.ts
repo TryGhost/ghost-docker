@@ -1,7 +1,7 @@
-// The site's database, as an import loads and checks it.
+// The site's database, as an import or a restore loads and checks it.
 //
 // The database is always loaded as the site's own MySQL user, never as root,
-// so whatever a dump contains can affect nothing but that site's database.
+// so whatever a dump contains can affect nothing but that site's databases.
 import { createReadStream } from 'node:fs';
 import { join } from 'node:path';
 import { Transform, type Readable, type TransformCallback } from 'node:stream';
@@ -15,7 +15,7 @@ import type { Io } from '../io.ts';
  * the container's own environment, not an argument.
  */
 const CLIENT =
-    'MYSQL_PWD="$MYSQL_PASSWORD" exec mysql --default-character-set=utf8mb4 -h 127.0.0.1 -u"$MYSQL_USER" "$@" "$MYSQL_DATABASE"';
+    'MYSQL_PWD="$MYSQL_PASSWORD" exec mysql --default-character-set=utf8mb4 -h 127.0.0.1 -u"$MYSQL_USER" "$@" "${DB:-$MYSQL_DATABASE}"';
 
 export interface Mysql {
     /** Runs SQL from `input` as the site's user. */
@@ -26,14 +26,32 @@ export interface Mysql {
     ) => Promise<ComposeResult>;
 }
 
-/** The site's database, through Compose with the profiles given. */
-export const siteMysql = (io: Io, dir: string, profiles: string): Mysql => ({
+/**
+ * The site's database, through Compose with the profiles given: Ghost's, or
+ * another the site's user owns, such as ActivityPub's.
+ */
+export const siteMysql = (io: Io, dir: string, profiles: string, database?: string): Mysql => ({
     run: (input, args = [], timeoutMs = 60_000) =>
-        compose(io, dir, ['exec', '-T', 'db', 'sh', '-c', CLIENT, 'mysql', ...args], {
-            env: { COMPOSE_PROFILES: profiles },
-            input,
-            timeoutMs,
-        }),
+        compose(
+            io,
+            dir,
+            [
+                'exec',
+                '-T',
+                ...(database === undefined ? [] : ['-e', `DB=${database}`]),
+                'db',
+                'sh',
+                '-c',
+                CLIENT,
+                'mysql',
+                ...args,
+            ],
+            {
+                env: { COMPOSE_PROFILES: profiles },
+                input,
+                timeoutMs,
+            },
+        ),
 });
 
 /** `--batch --skip-column-names`: tab-separated rows, nothing else. */
@@ -44,12 +62,14 @@ export const rowCountQuery = (tables: readonly string[]): string =>
     `${tables.map((table) => `SELECT '${table}', COUNT(*) FROM \`${table}\``).join(' UNION ALL ')};\n`;
 
 /**
- * Each table whose count in the database differs from the bundle's record,
- * as a sentence. `output` is the batch output of rowCountQuery.
+ * Each table whose count in the database differs from the record, as a
+ * sentence. `output` is the batch output of rowCountQuery; `source` names
+ * what recorded the counts.
  */
 export function rowMismatches(
     expected: Readonly<Record<string, number>>,
     output: string,
+    source = 'the bundle',
 ): string[] {
     const actual = new Map<string, number>();
     for (const line of output.split('\n')) {
@@ -62,7 +82,7 @@ export function rowMismatches(
         .filter(([table, count]) => actual.get(table) !== count)
         .map(
             ([table, count]) =>
-                `${table}: the bundle records ${count} rows, the database has ${actual.get(table) ?? 'none'}`,
+                `${table}: ${source} records ${count} rows, the database has ${actual.get(table) ?? 'none'}`,
         );
 }
 
