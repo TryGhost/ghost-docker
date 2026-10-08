@@ -1297,7 +1297,7 @@ explicit `--release` with the served launcher after each release. Decisions made
 while building it:
 
 - **No release-please** (§2.7). The Release workflow and
-  `manager/scripts/release.ts` cut releases as Ghost and Ghost-CLI do, and
+  `scripts/release.ts` cut releases as Ghost and Ghost-CLI do, and
   the commit skill gained their release-note emojis. A tag pushed with
   `GITHUB_TOKEN` starts no workflow, so the release workflow calls the image
   and launcher workflows itself; a release tag pushed by hand still publishes
@@ -1308,6 +1308,10 @@ while building it:
   a patch to an older line never moves `beta` backwards. A release tag is
   refused if the image already exists. The launcher is served only from the
   newest release.
+- **The release tooling is its own package**, `scripts/`, outside the
+  manager and its image: only tag validation and ordering are the
+  manager's (`manager/src/release.ts`). Both order releases with semver,
+  behind a check that accepts only the published formats.
 - **GitHub Pages deploys from Actions**, not a `gh-pages` branch: each deploy
   is the whole site built from the release, and there is no branch anyone
   could push to by hand. The custom domain lives in the repository's Pages

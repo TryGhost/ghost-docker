@@ -49,7 +49,7 @@ intermediate commits where practical.
 ### Release-note emojis
 
 Releases are cut as Ghost's and Ghost-CLI's are (the Release workflow and
-`manager/scripts/release.ts`), from the squash commits since the last
+`scripts/release.ts`), from the squash commits since the last
 release. A leading emoji opts a commit into the generated release notes. Add
 one only for a change that matters to someone running a site, and write the
 summary from their side:

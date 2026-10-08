@@ -52,11 +52,17 @@ jobs:
         with:
           node-version: "26"
 
+      - name: The release scripts' dependencies
+        working-directory: scripts
+        run: |
+          npm install -g corepack@0.36.0 && corepack enable
+          pnpm install --frozen-lockfile --prod
+
       - name: Is it the newest release?
         id: newest
         run: |
           set -euo pipefail
-          if node manager/scripts/release.ts moving "$TAG" | grep -qx beta; then
+          if node scripts/release.ts moving "$TAG" | grep -qx beta; then
             echo "newest=true" >>"$GITHUB_OUTPUT"
           else
             echo "newest=false" >>"$GITHUB_OUTPUT"

@@ -43,7 +43,7 @@ import {
     sha256,
     stackDir,
 } from '../payload.ts';
-import { compareReleases, parseRelease } from '../release.ts';
+import { compareReleases, isRelease } from '../release.ts';
 import { failed, printChecks } from '../report.ts';
 import {
     META_FILE,
@@ -332,17 +332,15 @@ function imageDirection(from: Stack, to: Stack): Direction | { unordered: string
     if (from.image !== null && from.image === to.image) {
         return 'current';
     }
-    const previous = from.version === null ? null : parseRelease(from.version);
-    const next = to.version === null ? null : parseRelease(to.version);
-    if (previous === null) {
+    if (from.version === null || !isRelease(from.version)) {
         return 'newer';
     }
-    if (next === null) {
+    if (to.version === null || !isRelease(to.version)) {
         return {
             unordered: `this manager is ${describeStack(to)}, which is not a release, so it cannot be told apart from a downgrade of ${from.version}`,
         };
     }
-    const order = compareReleases(next, previous);
+    const order = compareReleases(to.version, from.version);
     return order > 0 ? 'newer' : order === 0 ? 'current' : 'downgrade';
 }
 

@@ -77,9 +77,10 @@ delivers it. `docs/install.md` describes what exists.
   `src/undo.ts` records what an installation created and removes it on
   failure; an import keeps that record in its marker file.
 - Releases (`src/release.ts`): only `vX.Y.Z` and `vX.Y.Z-beta.N`, ordered
-  numerically. The Release workflow cuts them as Ghost and Ghost-CLI do
-  (`manager/scripts/release.ts`: ✨ commits make a minor, anything else a
-  patch; release-note emojis select the notes), then publishes the image, its
+  by semver. The manager holds only that; cutting releases is `scripts/`, a
+  package of its own that is not in the image. The Release workflow cuts them
+  as Ghost and Ghost-CLI do (`scripts/release.ts`: ✨ commits make a minor,
+  anything else a patch; release-note emojis select the notes), then publishes the image, its
   moving `beta`/`stable` tags (`image.yml`), and the launcher to GitHub Pages as
   `https://docker.ghost.org/install.sh` (`launcher.yml`). Every release is a
   beta until S6b.
@@ -150,6 +151,7 @@ tests/e2e/launcher.sh         # stand-in docker, then the real image
 tests/e2e/install.sh          # real installs; binds 80/443, pulls images
 tests/e2e/import.sh           # Ghost-CLI sites exported and imported; needs Node
 tests/e2e/update.sh           # updates between locally built releases, and a clone's commits
+cd scripts && pnpm install && pnpm run typecheck && pnpm test   # the release tooling
 ```
 
 Unit tests fake the daemon at the transport (`test/helpers.ts`: `api`, `run`

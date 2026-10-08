@@ -48,6 +48,7 @@ Linux. There is no native Windows launcher.
 | [`docs/configuration.md`](docs/configuration.md) | The configuration contract: the two files, value encoding, site modes, metadata |
 | [`docs/caddy.md`](docs/caddy.md) | The site's routes, and how to change them |
 | [`docs/bundle-v1.md`](docs/bundle-v1.md) | The Ghost-CLI migration bundle format |
+| [`scripts/`](scripts) | Release tooling the workflows run: cutting a release, moving tags, release notes |
 | [`pages/`](pages) | The front page of docker.ghost.org, published with each release beside `install.sh` |
 | [`docs/ghost-cli-replacement.md`](docs/ghost-cli-replacement.md) | The plan: architecture, contracts, and steps |
 
@@ -85,7 +86,7 @@ tests/e2e/update.sh          # real updates between releases built here, and a c
 ```
 
 Releases are cut by the Release workflow (Actions → Release → Run workflow),
-as Ghost's and Ghost-CLI's are; see [docs/install.md](docs/install.md#releases).
+with [`scripts/release.ts`](scripts/release.ts), as Ghost's and Ghost-CLI's are; see [docs/install.md](docs/install.md#releases).
 
 ## IPv6 networking
 

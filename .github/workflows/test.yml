@@ -36,6 +36,25 @@ jobs:
       - run: pnpm run typecheck
       - run: pnpm test
 
+  # The release tooling the workflows run, a package of its own.
+  scripts:
+    name: Release scripts (types, unit tests)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: scripts
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: "26"
+
+      - run: npm install -g corepack@0.36.0 && corepack enable
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run typecheck
+      - run: pnpm test
+
   # The real thing on Linux, where file ownership is real: the image is built
   # from the checkout, started by the launcher, and what it writes into the
   # site directory has to belong to the runner's user.

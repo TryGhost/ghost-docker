@@ -92,6 +92,13 @@ jobs:
           printf 'Published `%s:%s`\n\n`%s@%s`\n' "$image" "$tag" "$image" "$digest" >>"$GITHUB_STEP_SUMMARY"
           printf 'image=%s\ntag=%s\ndigest=%s\n' "$image" "$tag" "$digest" >>"$GITHUB_OUTPUT"
 
+      - name: The release scripts' dependencies
+        if: env.RELEASE != ''
+        working-directory: scripts
+        run: |
+          npm install -g corepack@0.36.0 && corepack enable
+          pnpm install --frozen-lockfile --prod
+
       - name: Move the channels it is the newest release on
         if: env.RELEASE != ''
         env:
@@ -99,7 +106,7 @@ jobs:
           DIGEST: ${{ steps.build.outputs.digest }}
         run: |
           set -euo pipefail
-          for channel in $(node manager/scripts/release.ts moving "$RELEASE"); do
+          for channel in $(node scripts/release.ts moving "$RELEASE"); do
             docker buildx imagetools create --tag "$IMAGE:$channel" "$IMAGE@$DIGEST"
             printf '\nMoved `%s:%s` to it\n' "$IMAGE" "$channel" >>"$GITHUB_STEP_SUMMARY"
           done

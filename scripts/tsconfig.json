@@ -10,5 +10,5 @@
     "noUncheckedIndexedAccess": true,
     "types": ["node"]
   },
-  "include": ["src/**/*.ts", "test/**/*.ts"]
+  "include": ["*.ts", "lib/**/*.ts", "test/**/*.ts"]
 }

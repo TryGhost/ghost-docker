@@ -5,7 +5,7 @@ run-name: "Release — ${{ inputs.bump-type }}${{ inputs.stable && ', stable' ||
 # next version comes from the commits since the last release (a ✨ feature is
 # a minor, anything else, dependency updates included, a patch), and the
 # release notes from the commits that carry a release-note emoji. See
-# manager/scripts/release.ts.
+# scripts/release.ts.
 #
 #   tag        vX.Y.Z-beta.N (or vX.Y.Z with `stable`) at the head of next-docker
 #   image      ghcr.io/tryghost/ghost-docker:<tag>, and `beta`/`stable` when it is
@@ -64,12 +64,11 @@ jobs:
         with:
           node-version: "26"
 
-      - name: Unit tests
-        working-directory: manager
+      - name: Tests
         run: |
           npm install -g corepack@0.36.0 && corepack enable
-          pnpm install --frozen-lockfile
-          pnpm test
+          (cd manager && pnpm install --frozen-lockfile && pnpm test)
+          (cd scripts && pnpm install --frozen-lockfile && pnpm test)
 
       - name: Tag and push
         id: cut
@@ -84,10 +83,10 @@ jobs:
           args=(cut --bump "$BUMP")
           [[ $STABLE != true ]] || args+=(--stable)
           [[ $DRY_RUN != true ]] || args+=(--dry-run)
-          tag=$(node manager/scripts/release.ts "${args[@]}")
+          tag=$(node scripts/release.ts "${args[@]}")
           {
             printf '## %s%s\n\n' "$tag" "$([[ $DRY_RUN == true ]] && printf ' (dry run, not pushed)')"
-            node manager/scripts/release.ts notes "$tag"
+            node scripts/release.ts notes "$tag"
           } >>"$GITHUB_STEP_SUMMARY"
 
   image:
@@ -117,13 +116,19 @@ jobs:
         with:
           node-version: "26"
 
+      - name: The release scripts' dependencies
+        working-directory: scripts
+        run: |
+          npm install -g corepack@0.36.0 && corepack enable
+          pnpm install --frozen-lockfile --prod
+
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.tag.outputs.tag }}
         run: |
           set -euo pipefail
-          node manager/scripts/release.ts notes "$TAG" >"$RUNNER_TEMP/notes.md"
+          node scripts/release.ts notes "$TAG" >"$RUNNER_TEMP/notes.md"
           prerelease=()
           [[ $TAG != *-beta.* ]] || prerelease=(--prerelease)
           gh release create "$TAG" --verify-tag --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md" "${prerelease[@]}"

@@ -18,6 +18,7 @@ caddy/custom/*.caddy
 caddy/global/*.caddy
 docs
 pages
+scripts
 tests
 manager/test
 *.md

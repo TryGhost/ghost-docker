@@ -1,13 +1,13 @@
 // Cuts and describes releases of the stack, for the release workflows. Run by
-// Node directly, which strips the types; the rules are manager/src/release.ts.
+// Node directly, which strips the types; the rules are lib/release.ts.
 //
-//   node manager/scripts/release.ts cut [--bump auto|patch|minor|major] [--stable] [--dry-run]
+//   node scripts/release.ts cut [--bump auto|patch|minor|major] [--stable] [--dry-run]
 //       Tag the next release at HEAD and push the tag. Every release is a beta
 //       unless --stable. Prints the tag, and writes `tag=` to $GITHUB_OUTPUT.
-//   node manager/scripts/release.ts moving vX.Y.Z[-beta.N]
+//   node scripts/release.ts moving vX.Y.Z[-beta.N]
 //       The moving image tags (stable, beta) the release takes: the channels
 //       on which it is the newest release.
-//   node manager/scripts/release.ts notes vX.Y.Z[-beta.N]
+//   node scripts/release.ts notes vX.Y.Z[-beta.N]
 //       Its release notes, from the commits since the release before it.
 //
 // Like Ghost's and Ghost-CLI's release scripts, the bump is worked out from
@@ -18,16 +18,15 @@ import { appendFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import {
     BUMPS,
-    compareReleases,
     isRelease,
     movingTags,
     newest,
     nextRelease,
-    parseRelease,
+    previousRelease,
     releaseNotes,
     resolveBump,
     type Bump,
-} from '../src/release.ts';
+} from './lib/release.ts';
 
 /** git in the checkout the script is run from. */
 const git = (...args: string[]): string =>
@@ -48,19 +47,6 @@ const commits = (range: string | null, format = '%s'): string[] =>
     )
         .split('\n')
         .filter(Boolean);
-
-/** The release before `tag`: the newest older one, and for a release, the newest older release. */
-function previousRelease(tag: string): string | null {
-    const release = parseRelease(tag)!;
-    const older = releaseTags().filter((other) => {
-        const candidate = parseRelease(other)!;
-        return (
-            compareReleases(candidate, release) < 0 &&
-            (release.beta !== null || candidate.beta === null)
-        );
-    });
-    return newest(older, release.beta === null ? 'stable' : 'beta');
-}
 
 function cut(args: string[]): void {
     const { values } = parseArgs({
@@ -123,7 +109,7 @@ function main(): void {
             if (!isRelease(tag)) {
                 throw new Error('usage: release.ts notes vX.Y.Z[-beta.N]');
             }
-            const previous = previousRelease(tag);
+            const previous = previousRelease(tag, releaseTags());
             const lines = commits(previous === null ? tag : `${previous}..${tag}`, '* %s - %an');
             process.stdout.write(releaseNotes(lines, previous, tag));
             return;
