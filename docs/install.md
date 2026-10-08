@@ -33,6 +33,7 @@ ghost-docker install [--local | --domain example.com [--admin-domain admin.examp
                      [--port 2368] [--version 6.3.1] [--with activitypub]
                      [--no-prompt] [--no-start]
 ghost-docker install --import BUNDLE [--port 2368] [--no-prompt] [--no-start]
+ghost-docker install --migrate[=PATH] [--dir PATH] [--port 2368] [--no-prompt] [--no-start]
 ```
 
 | Option | Meaning |
@@ -47,6 +48,7 @@ ghost-docker install --import BUNDLE [--port 2368] [--no-prompt] [--no-start]
 | `--no-prompt` | Never ask: every input must then be an option. |
 | `--no-start` | Write the configuration and routes; create no containers. |
 | `--import BUNDLE` | Import a local Ghost-CLI site from the bundle `ghost migrate-export` made; see [Importing a Ghost-CLI site](#importing-a-ghost-cli-site). |
+| `--migrate[=PATH]` | Export the local Ghost-CLI site in the current directory, or PATH, and import it; see [Migrating in one command](#migrating-in-one-command). |
 
 With neither `--local` nor `--domain`, `install` asks which kind of site, and
 for a production site its domain. It asks only at a terminal, including when
@@ -56,10 +58,8 @@ silent default. Every question has an option, so a script never needs to answer
 one.
 
 Exit statuses: `0` installed, `1` failed, `2` a usage error. Options the plan
-documents for later steps (`--migrate` in S5c, `--channel` and `--ref` in S6a,
-`--with supervisor` in S8) do not exist yet, and are usage errors like any
-unknown option. Until `--migrate`, `ghost migrate-export` makes the bundle that
-`--import` takes.
+documents for later steps (`--channel` and `--ref` in S6a, `--with supervisor`
+in S8) do not exist yet, and are usage errors like any unknown option.
 
 ### The ACME email
 
@@ -222,6 +222,59 @@ Refused, each with a message that says so:
 
 See the [plan](ghost-cli-replacement.md) for where each lands, and
 [bundle-v1.md](bundle-v1.md) for the bundle contract.
+
+### Migrating in one command
+
+`--migrate` does both halves from inside the Ghost-CLI site:
+
+```bash
+cd ~/sites/my-blog
+curl -fsSL https://raw.githubusercontent.com/TryGhost/ghost-docker/next-docker/ghost-docker | bash -s -- install --migrate
+```
+
+or `./ghost-docker install --migrate="$HOME/sites/my-blog"` from a launcher you
+already have. The launcher runs `ghost migrate-export` on this host, because
+that is where Ghost-CLI and the site are, and passes the bundle to
+`install --import`; the import is exactly the one above. It needs Ghost-CLI
+1.33.0 or later on the PATH (`ghost --version`), and works in WSL2 only for a
+Ghost-CLI site inside WSL2: a site on native Windows is exported there with
+`ghost migrate-export` and imported from WSL2 with `--import`.
+
+- **The source is stopped, and stays stopped.** The export is a final one
+  (`--leave-stopped`): a running source is stopped for the copy and left
+  stopped, so it cannot take writes the copy will not have, and a stopped one
+  is never started. `ghost start` in the source brings it back. Nothing else in
+  the source changes, and nothing removes it.
+- **Its port and address.** The Docker site is published on the source's own
+  port (`server.port` in its `config.development.json`) when that is free once
+  the source has stopped, so it answers at the same `http://localhost:PORT`.
+  `--port` chooses another; when something else holds the source's port the
+  first free one is used, and the launcher says so.
+- **Where things go.** The Docker site is a new directory beside the source,
+  `my-blog-docker`, unless `--dir` names another; it must be new or empty, and
+  not inside the source. The bundle is written to a private directory beside
+  them, `ghost-migration-my-blog.XXXXXX/bundle`, and kept after the import,
+  with its path printed: it holds the site's configuration, secrets included,
+  so remove it once you no longer need it.
+- **One question.** At a terminal, including under `curl | bash`, the launcher
+  says what it will do and asks once; the exporter's own beta prompt is then
+  skipped (`--force`). `--no-prompt` asks nothing, and is required without a
+  terminal.
+- **A failure puts the source back.** If the export or the import fails and
+  the source was running beforehand, the launcher runs `ghost start` there and
+  says so; the directory it made for the Docker site is removed. After a failed
+  import the bundle is kept, so `install --import BUNDLE` can retry without
+  exporting again.
+- **Data MySQL would refuse.** When the exporter refuses a SQLite site because
+  some values would not load into MySQL, it lists them; fix them in the source
+  and run `--migrate` again, or move the site through Ghost Admin with
+  `ghost migrate-export --sqlite-format portable` (see the `portable` refusal
+  above).
+
+Refused before anything changes: a directory without a `.ghost-cli` file, a
+Ghost-CLI older than 1.33.0, a source still on Ghost 5 (run `ghost update`
+there first), a production installation (until S5e), a site directory that is
+not empty, and `--migrate` with `--import`.
 
 ## Ports, and your existing proxy
 

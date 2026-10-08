@@ -1264,8 +1264,16 @@ same directory succeeds; `--no-start` leaves nothing running. Unit tests cover
 every refusal in `tests/import.test.mjs`.
 
 **S5c — Local `--migrate`.** Deps: S5b. Implement "`--migrate`" in §2.4 for
-local installations. The export half is in both launchers, the import half is
+local installations. The export half is in the launcher, the import half is
 S5b.
+
+Status: implemented in `ghost-docker`. The refusals, the confirmation, the
+port and the restore after failure are tested against a stand-in Ghost-CLI in
+`tests/e2e/launcher.sh`; `tests/e2e/import.sh` migrates its real SQLite and
+MySQL sources, the second through the launcher piped to bash. One addition to
+the contract below: an export that fails also restarts a source that was
+running, because `--leave-stopped` leaves it stopped after an export failure
+too.
 
 Acceptance: run from inside a local SQLite and a local MySQL Ghost-CLI install,
 directly and through the served launcher; a non-install directory, a Ghost-CLI
