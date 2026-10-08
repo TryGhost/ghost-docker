@@ -139,8 +139,10 @@ jobs:
     needs:
       - shellcheck
       - manager
+      - scripts
       - launcher-linux
       - install-linux
+      - update-linux
       - import-linux
       - launcher-macos
     if: always()
