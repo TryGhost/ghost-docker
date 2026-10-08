@@ -1,6 +1,8 @@
 // What every command about an installed site starts with.
+import { z } from 'zod';
+import { refused } from '../command.ts';
 import { loadContext, type Context } from '../context.ts';
-import { CliError, UsageError } from '../errors.ts';
+import { CliError } from '../errors.ts';
 import type { Io } from '../io.ts';
 import type { Metadata } from '../meta.ts';
 import { channelOf, CHANNELS, isRelease, type Channel } from '../release.ts';
@@ -58,22 +60,23 @@ export interface Requested {
     readonly flag: string;
 }
 
-export function requestedRelease(
-    channel: string | undefined,
+/** `--channel`: stable or beta. */
+export const channelOption = (brief: string) =>
+    z.enum(CHANNELS, refused('must be stable or beta')).optional().describe(brief);
+
+/** An exact release: install's `--release`, update's `--to`. */
+export const releaseOption = (brief: string) =>
+    z
+        .string()
+        .refine(isRelease, refused('must be a release, vX.Y.Z or vX.Y.Z-beta.N'))
+        .optional()
+        .describe(brief);
+
+export const requestedRelease = (
+    channel: Channel | undefined,
     ref: string | undefined,
     flag: string,
-): Requested {
-    if (channel !== undefined && ref !== undefined) {
-        throw new UsageError(`choose --channel or ${flag}, not both`);
-    }
-    if (channel !== undefined && !(CHANNELS as readonly string[]).includes(channel)) {
-        throw new UsageError(`--channel must be stable or beta: got '${channel}'`);
-    }
-    if (ref !== undefined && !isRelease(ref)) {
-        throw new UsageError(`${flag} must be a release, vX.Y.Z or vX.Y.Z-beta.N: got '${ref}'`);
-    }
-    return { channel: (channel as Channel | undefined) ?? null, ref: ref ?? null, flag };
-}
+): Requested => ({ channel: channel ?? null, ref: ref ?? null, flag });
 
 /** This manager's own release, and the channel a site it writes follows. */
 export interface ManagerRelease {

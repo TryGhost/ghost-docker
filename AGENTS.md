@@ -45,12 +45,14 @@ delivers it. `docs/install.md` describes what exists.
 - `manager/` is the CLI: TypeScript run directly by Node (types stripped, no
   build step, so `erasableSyntaxOnly`), with dependencies installed by pnpm
   (version pinned in `package.json`; `npm i -g corepack && corepack enable`
-  provides it). Arguments are parsed by Node's own `util.parseArgs`
-  (strict; zod only where a value needs validating): `src/cli.ts` holds the
-  dispatch table (each command's kebab-case options with their briefs, its
-  positional arguments and its handler), renders help from it and maps errors to
-  exit codes. Handlers get option values camelCased and return the exit
-  status. `src/commands/` holds what each command does, `src/context.ts` the
+  provides it). A command's options are a zod object keyed in camelCase,
+  each with its brief as `.describe()` (`src/command.ts`): the command line
+  (`--admin-domain`, a boolean as a flag) is derived from it and parsed by
+  Node's own `util.parseArgs` (strict), then the values by the schema, which
+  refuses a bad value or combination as a usage error. `src/cli.ts` holds the
+  dispatch table (each command's options, its positional arguments and its
+  handler), renders help from it and maps errors to exit codes. Handlers get
+  the schema's output and return the exit status. `src/commands/` holds what each command does, `src/context.ts` the
   `GD_*` environment the launcher passes, `src/io.ts` the seam tests
   substitute. Programs are run with execa, the daemon is spoken to directly (below).
 - The manager talks to the daemon over the **Engine API** on the mounted

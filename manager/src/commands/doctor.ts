@@ -6,7 +6,8 @@
 import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
-import { defineCommand } from '../command.ts';
+import { z } from 'zod';
+import { defineCommand, flag } from '../command.ts';
 import { loadContext, type Context } from '../context.ts';
 import { composeVersion } from '../compose.ts';
 import { daemonInfo, runOnce, type DaemonResult } from '../docker/client.ts';
@@ -31,13 +32,10 @@ export const RECOMMENDED = { diskMb: 5120, memoryMb: 1024 } as const;
 
 export const doctorCommand = defineCommand({
     brief: 'Report what the manager can see: Docker, the platform, the site directory and who owns what is written there.',
-    options: {
-        json: { type: 'boolean', brief: 'Machine-readable output.' },
-        'keep-probe': {
-            type: 'boolean',
-            brief: 'Leave the probe file so its ownership can be inspected from the host.',
-        },
-    },
+    options: z.object({
+        json: flag('Machine-readable output.'),
+        keepProbe: flag('Leave the probe file so its ownership can be inspected from the host.'),
+    }),
     // A report with an error in it is not a failed command, so it returns
     // the status rather than throwing.
     async run({ json, keepProbe }, _positionals, io) {

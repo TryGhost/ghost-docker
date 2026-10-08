@@ -26,7 +26,8 @@ import { existsSync, readdirSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { ACME_EMAIL, isHostname, SITE_FILE, writeRoutes } from '../caddy.ts';
 import { compose } from '../compose.ts';
-import { defineCommand, type Options, type Values } from '../command.ts';
+import { z } from 'zod';
+import { defineCommand, flag, refused } from '../command.ts';
 import { validate } from '../config.ts';
 import { loadContext, type Context } from '../context.ts';
 import { listContainers, stoppedSiteContainers } from '../docker/client.ts';
@@ -34,7 +35,7 @@ import * as env from '../env.ts';
 import { CliError, EXIT, UsageError } from '../errors.ts';
 import { atomicWrite, PRIVATE } from '../fs.ts';
 import { resolveGhost, type ResolvedGhost } from '../ghost.ts';
-import { clearUnfinishedImport, Importing, refuseImportOptions } from '../import.ts';
+import { clearUnfinishedImport, Importing, importConflict } from '../import.ts';
 import type { Io, Prompter } from '../io.ts';
 import { SCHEMA_VERSION, writeMetadata } from '../meta.ts';
 import {
@@ -60,7 +61,14 @@ import {
 } from '../site.ts';
 import { ALL_PROFILES, Created } from '../undo.ts';
 import { verifyIngress } from '../verify.ts';
-import { releaseOf, requestedRelease, type ManagerRelease, type Requested } from './common.ts';
+import {
+    channelOption,
+    releaseOf,
+    releaseOption,
+    requestedRelease,
+    type ManagerRelease,
+    type Requested,
+} from './common.ts';
 import { collect } from './doctor.ts';
 
 /** Where a local site's port search starts, and how far it goes. */
@@ -72,59 +80,115 @@ const PRODUCTION_PORTS = { http: 80, https: 443 } as const;
 /** Compose waits this long for health checks; pulls and builds come before it. */
 export const READY_TIMEOUT_SECONDS = 600;
 
-const parsePort = (input: string): number => {
-    if (!/^\d+$/.test(input) || Number(input) < 1 || Number(input) > 65_535) {
-        throw new UsageError(`--port must be a port number: got '${input}'`);
+/** The services `--with` can name. */
+const OPTIONAL_SERVICES = ['activitypub', 'mailpit'];
+
+/** `--with a,b`: each service once. Whether it suits the site's mode is plan's to say. */
+const services = z.string().transform((list, ctx) => {
+    const refuse = (message: string) => {
+        ctx.addIssue({ code: 'custom', message, input: list });
+        return z.NEVER;
+    };
+    const named: string[] = [];
+    for (const service of list.split(',').map((item) => item.trim())) {
+        if (service === '' || named.includes(service)) {
+            continue;
+        }
+        if (service === 'local' || service === 'production') {
+            return refuse(
+                'selects optional services; the site mode comes from --local or --domain',
+            );
+        }
+        if (service === 'analytics') {
+            // Its tinybird-login job is an interactive browser login, and
+            // Ghost waits for the Tinybird jobs, so it cannot start here.
+            return refuse(
+                'analytics is set up after installation: its Tinybird login is interactive.\n' +
+                    '  Install without it, then follow TINYBIRD.md.',
+            );
+        }
+        if (!OPTIONAL_SERVICES.includes(service)) {
+            return refuse(
+                `names an unknown optional service: ${service} (${OPTIONAL_SERVICES.join(', ')})`,
+            );
+        }
+        named.push(service);
     }
-    return Number(input);
-};
+    return named;
+});
 
-const options = {
-    local: { type: 'boolean', brief: 'A local site: Ghost and MySQL on 127.0.0.1:PORT.' },
-    domain: {
-        type: 'string',
-        brief: 'A production site on this domain: Ghost, MySQL and Caddy with HTTPS.',
-    },
-    'admin-domain': {
-        type: 'string',
-        brief: 'Serve Ghost Admin on a separate domain. Production only.',
-    },
-    email: {
-        type: 'string',
-        brief: 'The ACME account email Let’s Encrypt sends expiry and incident notices to. Production only.',
-    },
-    port: {
-        type: 'string',
-        brief: 'The loopback port Ghost is published on. Default: the first at or above 2368 that no container publishes.',
-    },
-    version: {
-        type: 'string',
-        brief: 'A Ghost version (6.3.1) or image tag (6-alpine). Resolved to an exact digest.',
-    },
-    with: {
-        type: 'string',
-        brief: 'Optional per-site services: activitypub, and mailpit for a local site.',
-    },
-    import: {
-        type: 'string',
-        brief: 'Import a local Ghost-CLI site from the bundle `ghost migrate-export` made: a directory, .tgz, .tar or .zip.',
-    },
-    channel: {
-        type: 'string',
-        brief: 'Install the newest release on this channel: stable or beta. The launcher resolves it.',
-    },
-    release: {
-        type: 'string',
-        brief: 'Install this release, vX.Y.Z or vX.Y.Z-beta.N. The launcher resolves it.',
-    },
-    'no-prompt': { type: 'boolean', brief: 'Never ask: every input must be an option.' },
-    'no-start': {
-        type: 'boolean',
-        brief: 'Write the configuration and routes; start nothing.',
-    },
-} as const satisfies Options;
+const hostname = z
+    .string()
+    .refine(isHostname, refused('must be a hostname, not a URL'))
+    .transform((value) => value.toLowerCase());
 
-type Flags = Values<typeof options>;
+const options = z
+    .object({
+        local: flag('A local site: Ghost and MySQL on 127.0.0.1:PORT.'),
+        domain: hostname
+            .optional()
+            .describe('A production site on this domain: Ghost, MySQL and Caddy with HTTPS.'),
+        adminDomain: hostname
+            .optional()
+            .describe('Serve Ghost Admin on a separate domain. Production only.'),
+        email: z
+            .string()
+            .regex(ACME_EMAIL, refused('must be an email address'))
+            .optional()
+            .describe(
+                'The ACME account email Let’s Encrypt sends expiry and incident notices to. Production only.',
+            ),
+        port: z
+            .string()
+            .refine(
+                (input) => /^\d+$/.test(input) && Number(input) >= 1 && Number(input) <= 65_535,
+                refused('must be a port number'),
+            )
+            .transform(Number)
+            .optional()
+            .describe(
+                'The loopback port Ghost is published on. Default: the first at or above 2368 that no container publishes.',
+            ),
+        version: z
+            .string()
+            .optional()
+            .describe(
+                'A Ghost version (6.3.1) or image tag (6-alpine). Resolved to an exact digest.',
+            ),
+        with: services
+            .default([])
+            .describe('Optional per-site services: activitypub, and mailpit for a local site.'),
+        import: z
+            .string()
+            .min(1, { error: 'needs the path of a migration bundle' })
+            .optional()
+            .describe(
+                'Import a local Ghost-CLI site from the bundle `ghost migrate-export` made: a directory, .tgz, .tar or .zip.',
+            ),
+        channel: channelOption(
+            'Install the newest release on this channel: stable or beta. The launcher resolves it.',
+        ),
+        release: releaseOption(
+            'Install this release, vX.Y.Z or vX.Y.Z-beta.N. The launcher resolves it.',
+        ),
+        noPrompt: flag('Never ask: every input must be an option.'),
+        noStart: flag('Write the configuration and routes; start nothing.'),
+    })
+    .superRefine((flags, ctx) => {
+        const conflict =
+            (flags.local && flags.domain !== undefined
+                ? 'choose one site mode: --local, or --domain example.com, not both'
+                : null) ??
+            (flags.channel !== undefined && flags.release !== undefined
+                ? 'choose --channel or --release, not both'
+                : null) ??
+            (flags.import === undefined ? null : importConflict(flags));
+        if (conflict !== null) {
+            ctx.addIssue({ code: 'custom', message: conflict });
+        }
+    });
+
+type Flags = z.output<typeof options>;
 
 // --- What to install ---------------------------------------------------------
 
@@ -138,9 +202,6 @@ interface Plan {
 
 /** What the options ask for, and at a terminal, what they leave out. */
 async function plan(flags: Flags, prompt: Prompter | null): Promise<Plan> {
-    if (flags.local && flags.domain !== undefined) {
-        throw new UsageError('choose one site mode: --local, or --domain example.com, not both');
-    }
     const ask = flags.noPrompt ? null : prompt;
     let mode: SiteMode | null = flags.local
         ? 'local'
@@ -158,77 +219,35 @@ async function plan(flags: Flags, prompt: Prompter | null): Promise<Plan> {
     }
     let domain = flags.domain ?? '';
     if (mode === 'production' && domain === '') {
-        domain = await ask!.text('Its domain (example.com):', (answer) =>
-            isHostname(answer) ? null : 'a hostname such as example.com, not a URL',
-        );
+        domain = (
+            await ask!.text('Its domain (example.com):', (answer) =>
+                isHostname(answer) ? null : 'a hostname such as example.com, not a URL',
+            )
+        ).toLowerCase();
     }
 
     const adminDomain = flags.adminDomain ?? '';
     const email = flags.email ?? '';
     if (mode === 'local') {
-        for (const [flag, value] of [
+        for (const [option, value] of [
             ['--admin-domain', flags.adminDomain],
             ['--email', flags.email],
         ] as const) {
             if (value !== undefined) {
-                throw new UsageError(`${flag} applies to production sites only`);
+                throw new UsageError(`${option} applies to production sites only`);
             }
         }
     } else {
-        for (const [flag, value] of [
-            ['--domain', domain],
-            ['--admin-domain', adminDomain],
-        ] as const) {
-            if (value !== '' && !isHostname(value)) {
-                throw new UsageError(`${flag} must be a hostname, not a URL: got '${value}'`);
-            }
-        }
-        domain = domain.toLowerCase();
-        if (adminDomain !== '' && adminDomain.toLowerCase() === domain) {
+        if (adminDomain !== '' && adminDomain === domain) {
             throw new UsageError('--admin-domain must differ from --domain');
         }
-        if (email !== '' && !ACME_EMAIL.test(email)) {
-            throw new UsageError(`--email must be an email address: got '${email}'`);
-        }
-    }
-
-    const services = optionalServices(flags.with, mode);
-    return { mode, domain, adminDomain: adminDomain.toLowerCase(), email, services };
-}
-
-/** The services --with names, for a site of this mode. */
-export function optionalServices(list: string | undefined, mode: SiteMode): string[] {
-    const services: string[] = [];
-    for (const service of (list ?? '').split(',').map((item) => item.trim())) {
-        if (service === '') {
-            continue;
-        }
-        if (service === 'local' || service === 'production') {
-            throw new UsageError(
-                '--with selects optional services; the site mode comes from --local or --domain',
-            );
-        }
-        if (service === 'analytics') {
-            // Its tinybird-login job is an interactive browser login, and
-            // Ghost waits for the Tinybird jobs, so it cannot start here.
-            throw new UsageError(
-                '--with analytics is set up after installation: its Tinybird login is interactive.\n' +
-                    '  Install without it, then follow TINYBIRD.md.',
-            );
-        }
-        if (service !== 'activitypub' && service !== 'mailpit') {
-            throw new UsageError(`unknown optional service: ${service} (activitypub, mailpit)`);
-        }
-        if (service === 'mailpit' && mode === 'production') {
+        if (flags.with.includes('mailpit')) {
             throw new UsageError(
                 "--with mailpit is for local sites only: it would catch a production site's real mail",
             );
         }
-        if (!services.includes(service)) {
-            services.push(service);
-        }
     }
-    return services;
+    return { mode, domain, adminDomain, email, services: flags.with };
 }
 
 // --- Identity -----------------------------------------------------------------
@@ -309,12 +328,8 @@ export const installCommand = defineCommand({
     brief: 'Install a local or production site into the site directory, start it, and verify it. See docs/install.md.',
     options,
     async run(flags, _positionals, io) {
-        // 1. Refusals. Before anything is looked at: a bad port is a usage error.
-        const requestedPort = flags.port === undefined ? undefined : parsePort(flags.port);
+        // 1. Refusals. The options were checked as they were parsed.
         const release = requestedRelease(flags.channel, flags.release, '--release');
-        if (flags.import !== undefined) {
-            refuseImportOptions(flags);
-        }
         const context = loadContext(io.env);
         const dir = context.siteDir;
         if (io.cwd() !== dir) {
@@ -330,7 +345,7 @@ export const installCommand = defineCommand({
             flags.import === undefined ? null : await Importing.read(io, dir, flags.import, flags);
         let site: Site;
         try {
-            site = await prepare(target, flags, requestedPort, release, importing);
+            site = await prepare(target, flags, release, importing);
         } catch (error) {
             importing?.abandon();
             throw error;
@@ -384,20 +399,19 @@ function refuseOccupied(io: Io, context: Context, dir: string): Target {
 
 // --- Before anything is written -----------------------------------------------
 
-/** An import is of a local site, with no optional services but Mailpit (refuseImportOptions). */
+/** An import is of a local site, with no optional services but Mailpit (importConflict). */
 const imported = (flags: Flags): Plan => ({
     mode: 'local',
     domain: '',
     adminDomain: '',
     email: '',
-    services: optionalServices(flags.with, 'local'),
+    services: flags.with,
 });
 
 /** Decides everything about the site, changing nothing. */
 async function prepare(
     target: Target,
     flags: Flags,
-    requestedPort: number | undefined,
     requested: Requested,
     importing: Importing | null,
 ): Promise<Site> {
@@ -409,7 +423,7 @@ async function prepare(
     const { port, mailpitPort } = await sitePorts(
         io,
         intent.mode,
-        requestedPort,
+        flags.port,
         intent.services.includes('mailpit'),
     );
 

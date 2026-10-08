@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, test } from 'node:test';
+import { z } from 'zod';
+import { flagsOf } from '../src/command.ts';
 import { harness, type Harness } from './helpers.ts';
 
 let h: Harness;
@@ -37,6 +39,14 @@ describe('exit statuses', () => {
             assert.match(result.stdout, /ghost-docker doctor \(--json\) \(--keep-probe\)/);
             assert.match(result.stdout, /--keep-probe +Leave the probe file/);
         }
+    });
+
+    test('help spells each option of the schema in kebab-case, with a value when it takes one', async () => {
+        const result = await h.run('install', '--help');
+        assert.equal(result.code, 0);
+        assert.match(result.stdout, /\(--admin-domain <value>\)/);
+        assert.match(result.stdout, /\(--no-prompt\)/);
+        assert.match(result.stdout, /--port <value> +The loopback port/);
     });
 
     test('asking for help anywhere on the line wins over what else is wrong with it', async () => {
@@ -142,5 +152,32 @@ describe('a manager started without the launcher', () => {
     test('an identity that is not a number is refused', async () => {
         h.env.GD_UID = 'root';
         assert.match((await h.run('doctor')).stderr, /GD_UID/);
+    });
+});
+
+describe('options from a schema', () => {
+    test('unwrap to what parseArgs reads', () => {
+        const flags = flagsOf(
+            z.object({
+                keepProbe: z.boolean().default(false).describe('Keep it.'),
+                port: z.string().transform(Number).optional().describe('A port.'),
+                tag: z.array(z.string()).optional().describe('Tags.'),
+            }),
+        );
+        assert.deepEqual(flags, [
+            {
+                name: 'keep-probe',
+                key: 'keepProbe',
+                type: 'boolean',
+                multiple: false,
+                brief: 'Keep it.',
+            },
+            { name: 'port', key: 'port', type: 'string', multiple: false, brief: 'A port.' },
+            { name: 'tag', key: 'tag', type: 'string', multiple: true, brief: 'Tags.' },
+        ]);
+    });
+
+    test('an option without a brief is a bug in its definition', () => {
+        assert.throws(() => flagsOf(z.object({ quiet: z.boolean() })), /--quiet has no brief/);
     });
 });

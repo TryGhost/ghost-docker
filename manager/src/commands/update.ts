@@ -27,7 +27,8 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { compose, composeConfig, composeError } from '../compose.ts';
-import { defineCommand, type Options } from '../command.ts';
+import { z } from 'zod';
+import { defineCommand, flag } from '../command.ts';
 import { validate } from '../config.ts';
 import type { Context } from '../context.ts';
 import { CliError, EXIT, UsageError } from '../errors.ts';
@@ -55,23 +56,27 @@ import {
 } from '../site.ts';
 import { verifyIngress } from '../verify.ts';
 import { atLeast, MINIMUM } from '../versions.ts';
-import { installedSite, releaseOf, requestedRelease, type ManagerRelease } from './common.ts';
+import {
+    channelOption,
+    installedSite,
+    releaseOf,
+    releaseOption,
+    requestedRelease,
+    type ManagerRelease,
+} from './common.ts';
 import { READY_TIMEOUT_SECONDS } from './install.ts';
 
-const options = {
-    check: {
-        type: 'boolean',
-        brief: 'Say whether there is an update and what it would change; change nothing.',
-    },
-    channel: {
-        type: 'string',
-        brief: 'Update to the newest release on this channel, stable or beta, and follow it from now on. Default: the channel the site follows.',
-    },
-    to: {
-        type: 'string',
-        brief: 'Update to this release, vX.Y.Z or vX.Y.Z-beta.N.',
-    },
-} as const satisfies Options;
+const options = z
+    .object({
+        check: flag('Say whether there is an update and what it would change; change nothing.'),
+        channel: channelOption(
+            'Update to the newest release on this channel, stable or beta, and follow it from now on. Default: the channel the site follows.',
+        ),
+        to: releaseOption('Update to this release, vX.Y.Z or vX.Y.Z-beta.N.'),
+    })
+    .refine((flags) => flags.channel === undefined || flags.to === undefined, {
+        error: 'choose --channel or --to, not both',
+    });
 
 /** Where the edited copy of a site's launcher is kept when the launcher is replaced. */
 export const EDITED_LAUNCHER = `${LAUNCHER}.edited`;

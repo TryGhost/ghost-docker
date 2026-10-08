@@ -41,41 +41,35 @@ export const INCOMPLETE_PROFILE = 'import-incomplete';
 
 // --- What install calls --------------------------------------------------------
 
-/** Options that cannot be combined with --import in this release. */
-export function refuseImportOptions(flags: {
-    import?: string;
+/** Why these options cannot be combined with --import in this release, if they cannot. */
+export function importConflict(flags: {
     domain?: string;
     adminDomain?: string;
     email?: string;
-    with?: string;
-}): void {
-    if (flags.import === '') {
-        throw new UsageError('--import needs the path of a migration bundle');
-    }
+    with: readonly string[];
+}): string | null {
     for (const [option, value] of [
         ['--domain', flags.domain],
         ['--admin-domain', flags.adminDomain],
         ['--email', flags.email],
     ] as const) {
         if (value !== undefined) {
-            throw new UsageError(
+            return (
                 `${option} cannot be combined with --import: this release imports local sites.\n` +
-                    '  Production import and cutover come in a later release (plan step S5e).',
+                '  Production import and cutover come in a later release (plan step S5e).'
             );
         }
     }
     // Mailpit only replaces the mail transport; anything else would change
     // what the imported site is.
-    const others = (flags.with ?? '')
-        .split(',')
-        .map((item) => item.trim())
-        .filter((item) => item !== '' && item !== 'mailpit');
-    if (flags.with !== undefined && others.length > 0) {
-        throw new UsageError(
+    const others = flags.with.filter((service) => service !== 'mailpit');
+    if (others.length > 0) {
+        return (
             `--with ${others.join(',')} cannot be combined with --import; only mailpit can. Import the\n` +
-                '  site first, then enable optional services; see docs/configuration.md.',
+            '  site first, then enable optional services; see docs/configuration.md.'
         );
     }
+    return null;
 }
 
 /**

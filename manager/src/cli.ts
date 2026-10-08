@@ -3,7 +3,8 @@
 // `run` is the whole CLI as a function: arguments and an Io in, an exit status
 // out. main.ts is the only caller that touches the real process.
 import { parseArgs } from 'node:util';
-import { defineCommand, type Command } from './command.ts';
+import { z } from 'zod';
+import { defineCommand, flagsOf, type Command } from './command.ts';
 import { getCommand, setCommand, validateCommand } from './commands/config.ts';
 import { doctorCommand } from './commands/doctor.ts';
 import { installCommand } from './commands/install.ts';
@@ -79,7 +80,7 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
             return EXIT.ok;
         }
         const { values, positionals } = parse(name, command, rest);
-        return await command.run(camelKeys(values), positionals, io);
+        return await command.run(values, positionals, io);
     } catch (error) {
         io.stderr(`${describe(error)}\n`);
         return error instanceof CliError ? error.exitCode : EXIT.failure;
@@ -103,15 +104,18 @@ function lookup(name: string): Command {
 const subcommands = (name: string): string[] =>
     Object.keys(COMMANDS).filter((key) => key.startsWith(`${name} `));
 
+/** The line parsed against the command's flags, then its values against its schema. */
 function parse(name: string, command: Command, args: string[]) {
     const usage = (message: string) =>
         new UsageError(`${message}\nRun ghost-docker ${name} --help for its options.`);
+    const flags = flagsOf(command.options);
     let parsed;
     try {
         parsed = parseArgs({
             args,
-            // parseArgs ignores the `brief` each option carries.
-            options: command.options ?? {},
+            options: Object.fromEntries(
+                flags.map(({ name, type, multiple }) => [name, { type, multiple }]),
+            ),
             strict: true,
             allowPositionals: true,
         });
@@ -128,16 +132,20 @@ function parse(name: string, command: Command, args: string[]) {
             `too many arguments: expected at most ${most}, got ${parsed.positionals.join(' ')}`,
         );
     }
-    return parsed;
-}
-
-const camelKeys = <T>(values: Record<string, T>): Record<string, T> =>
-    Object.fromEntries(
-        Object.entries(values).map(([key, value]) => [
-            key.replace(/-(\w)/g, (_, letter: string) => letter.toUpperCase()),
-            value,
-        ]),
+    const given = parsed.values as Record<string, unknown>;
+    const input = Object.fromEntries(
+        flags.filter((flag) => flag.name in given).map((flag) => [flag.key, given[flag.name]]),
     );
+    const result = (command.options ?? z.object({})).safeParse(input);
+    if (!result.success) {
+        // The first issue: an option's own reads `--option ...`, a
+        // combination of options reads as its message alone.
+        const [issue] = result.error.issues;
+        const flag = flags.find((candidate) => candidate.key === issue?.path[0]);
+        throw new UsageError(flag ? `--${flag.name} ${issue!.message}` : issue!.message);
+    }
+    return { values: result.data, positionals: parsed.positionals };
+}
 
 /** How errors read: ours by their message, anything else as a bug to report. */
 const describe = (error: unknown): string => {
@@ -186,17 +194,17 @@ function groupHelp(name: string): string {
 
 function usageLine(name: string): string {
     const command = COMMANDS[name];
-    const parts = Object.entries(command?.options ?? {}).map(([flag, option]) =>
-        option.type === 'string' ? `(--${flag} <value>)` : `(--${flag})`,
+    const parts = flagsOf(command?.options).map((flag) =>
+        flag.type === 'string' ? `(--${flag.name} <value>)` : `(--${flag.name})`,
     );
     parts.push(...(command?.positionals ?? []).map((positional) => `[<${positional}>]`));
     return [name, ...parts].join(' ');
 }
 
 function commandHelp(name: string, command: Command): string {
-    const flags = Object.entries(command.options ?? {}).map(([flag, option]): [string, string] => [
-        `${option.short ? `-${option.short}` : '  '} --${flag}${option.type === 'string' ? ' <value>' : ''}`,
-        option.brief,
+    const flags = flagsOf(command.options).map((flag): [string, string] => [
+        `   --${flag.name}${flag.type === 'string' ? ' <value>' : ''}`,
+        flag.brief,
     ]);
     return (
         'USAGE\n' +
