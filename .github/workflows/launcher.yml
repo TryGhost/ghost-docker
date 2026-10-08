@@ -1,0 +1,29 @@
+name: "Served launcher"
+
+# A stand-in, like release.yml: it registers next-docker's workflow of the
+# same name, which deploys docker.ghost.org, so that it can be run again by
+# hand:
+#
+#   gh workflow run launcher.yml --ref next-docker -f tag=vX.Y.Z-beta.N
+#
+# Run on main, it does nothing but say so. It is replaced when next-docker
+# merges into main.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The release whose launcher to serve
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  refuse:
+    name: The launcher is served from next-docker
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "::error::Run this workflow on next-docker: gh workflow run launcher.yml --ref next-docker -f tag=..."
+          exit 1

@@ -1,0 +1,42 @@
+name: Release
+
+# A stand-in. GitHub dispatches only workflows whose file is on the default
+# branch, and releases are cut from next-docker, whose own release.yml is the
+# real workflow. This file registers it, so that it can be run:
+#
+#   gh workflow run release.yml --ref next-docker
+#
+# or Actions → Release → Run workflow, choosing next-docker. Run on main, it
+# does nothing but say so. It is replaced when next-docker merges into main.
+on:
+  workflow_dispatch:
+    inputs:
+      bump-type:
+        description: Version bump
+        type: choice
+        options:
+          - auto
+          - patch
+          - minor
+          - major
+        default: auto
+      stable:
+        description: A release rather than a beta
+        type: boolean
+        default: false
+      dry-run:
+        description: Work out the release without tagging or publishing anything
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  refuse:
+    name: Releases are cut from next-docker
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "::error::Run this workflow on next-docker: gh workflow run release.yml --ref next-docker"
+          exit 1
