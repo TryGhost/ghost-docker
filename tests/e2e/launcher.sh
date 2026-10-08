@@ -222,6 +222,20 @@ expect_run_arg "$WORK/missing.tgz"
 run_args | grep -q ':ro$' && fail "a bundle that does not exist was mounted" "$(run_args)"
 ok "resolved, mounted read-only and passed by that path; a missing one is left to the manager"
 
+step "A backup to restore is mounted read-only, unless it is in the site"
+mkdir -p "$WORK/elsewhere/backups/2026-10-09T10-00-00Z" "$SITE/backups/2026-10-09T11-00-00Z"
+(cd "$WORK" && with_fake ok env ${fake_socket_env[@]+"${fake_socket_env[@]}"} GD_IMAGE=example/manager:1 \
+    "$BASH_BIN" "$LAUNCHER" --dir "$SITE" restore --yes elsewhere/backups/2026-10-09T10-00-00Z &&
+    expect_run_arg "$WORK/elsewhere/backups/2026-10-09T10-00-00Z:$WORK/elsewhere/backups/2026-10-09T10-00-00Z:ro" &&
+    expect_run_arg "$WORK/elsewhere/backups/2026-10-09T10-00-00Z" &&
+    expect_run_arg "--yes")
+(cd "$SITE" && with_fake ok env ${fake_socket_env[@]+"${fake_socket_env[@]}"} GD_IMAGE=example/manager:1 \
+    "$BASH_BIN" "$LAUNCHER" restore backups/2026-10-09T11-00-00Z &&
+    expect_run_arg "$SITE/backups/2026-10-09T11-00-00Z")
+run_args | grep -q ':ro$' && fail "a backup inside the site was mounted again" "$(run_args)"
+rm -rf "$WORK/elsewhere" "$SITE/backups"
+ok "one outside the site is mounted at its own path; one inside it is passed by its path"
+
 step "Rootless Docker"
 with_fake rootless env ${fake_socket_env[@]+"${fake_socket_env[@]}"} GD_IMAGE=example/manager:1 \
     "$BASH_BIN" "$LAUNCHER" --dir "$SITE" version

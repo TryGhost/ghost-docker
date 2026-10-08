@@ -290,7 +290,7 @@ class Snapshot {
  * manager runs as, but git's ownership check does not know that from inside
  * a container.
  */
-async function git(io: Io, dir: string, args: readonly string[]) {
+export async function git(io: Io, dir: string, args: readonly string[]) {
     const result = await io.exec({ timeout: 60_000 })`git -c safe.directory=* -C ${dir} ${args}`;
     return {
         ok: result.exitCode === 0,
@@ -624,7 +624,7 @@ async function apply(update: Update): Promise<number> {
     return EXIT.ok;
 }
 
-async function upAndWait(io: Io, dir: string, spinner: string): Promise<void> {
+export async function upAndWait(io: Io, dir: string, spinner: string): Promise<void> {
     const up = await io.busy(spinner, () =>
         compose(
             io,

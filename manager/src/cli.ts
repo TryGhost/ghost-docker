@@ -5,6 +5,7 @@
 import { parseArgs } from 'node:util';
 import { z } from 'zod';
 import { defineCommand, flagsOf, type Command } from './command.ts';
+import { backupCommand, restoreCommand } from './commands/backup.ts';
 import { getCommand, setCommand, validateCommand } from './commands/config.ts';
 import { doctorCommand } from './commands/doctor.ts';
 import { installCommand } from './commands/install.ts';
@@ -24,6 +25,8 @@ const COMMANDS: Record<string, Command> = {
     info: infoCommand,
     list: listCommand,
     update: updateCommand,
+    backup: backupCommand,
+    restore: restoreCommand,
     version: versionCommand,
     doctor: doctorCommand,
     help: defineCommand({

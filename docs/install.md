@@ -373,6 +373,8 @@ offered; for a private name, put `tls internal` in a `caddy/custom/` file.
 ./ghost-docker list       # every ghost-docker container on this host, stopped ones included
 ./ghost-docker config get|set|validate
 ./ghost-docker update     # to a newer release of the stack; see below
+./ghost-docker backup     # the databases, content and configuration, into backups/
+./ghost-docker restore backups/<backup>
 ```
 
 The routes are a file you edit (`caddy/sites/site.caddy`), followed by
@@ -465,6 +467,93 @@ operator's files are put back and the previous commit, recorded in the
 metadata, is checked out again with a detached HEAD; the launcher keeps the
 manager image built from it as `ghost-docker:checkout-<commit>`. `--to` and
 `--channel` do not apply.
+
+## backup and restore
+
+```text
+ghost-docker backup
+ghost-docker restore [--yes] <backup>
+```
+
+### backup
+
+`backup` writes one directory under `backups/` in the site, named by when it
+was taken (`backups/2026-10-09T14-03-22Z`), private (`0700`, its files
+`0600`), and kept until you remove it. Nothing is rotated or pruned. Copy
+backups off the host to keep them safe.
+
+| Path in the backup | What it is |
+| --- | --- |
+| `manifest.json` | What the backup holds: the site, the exact image of each service, every table's row count, a SHA-256 of every file, and what is not included. |
+| `database/ghost.sql` | A `mysqldump` of Ghost's database, taken as the site's own database user in one consistent snapshot. |
+| `database/activitypub.sql` | ActivityPub's database, when the `activitypub` profile is on. |
+| `content.tar.gz` | The content directory, `data/ghost`: images, media, files, themes, settings. |
+| `site/` | `.env`, `ghost.env`, `.ghost-docker.json`, `compose.override.yml`, `caddy/sites/`, `caddy/custom/`, `caddy/global/` and, for a site installed from the image, the stack's files and the launcher the site ran. |
+
+A backup is **checked** before it counts as one: every dump is loaded into a
+scratch MySQL, in a throwaway container of the site's own MySQL image, with
+the same number of tables as the site's database and, for Ghost's, a
+migration history; the content archive is listed. Until then it is written
+as `backups/.<name>.partial`, and a failure removes that. **A dump that fails
+is an error, not a backup:** `backup` exits `1` and leaves nothing in
+`backups/`.
+
+The site keeps running. If its database was not running, it is started for
+the dump and stopped again. What a backup cannot hold is named in its
+manifest and in the summary: Caddy's certificates, which Caddy obtains again
+when the site starts; the Tinybird workspace and analytics data outside the
+site; Mailpit's inbox.
+
+A site whose `.env` moves the data (`UPLOAD_LOCATION`,
+`MYSQL_DATA_LOCATION`) is refused rather than half backed up.
+
+### restore
+
+`restore` takes a backup's directory, and works in two places:
+
+- **Over its own site**, the directory it was taken from (the same Compose
+  project name). This replaces the site, so it asks first; `--yes` answers for
+  it, and without a terminal it is required.
+- **Into a new, empty directory**, on this host or another, for example
+  `./ghost-docker --dir /srv/new-site restore /srv/old-site/backups/<backup>`.
+  A backup outside the site directory is mounted read-only by the launcher.
+  The site keeps its project name and ports, so nothing on the host may already
+  use them: when the site the backup was taken from is still here, take it
+  down first (`docker compose down` in its directory). A backup of a clone
+  restores into a clone checked out at the commit the backup records.
+
+In order:
+
+1. **Refusals.** The backup is read whole: its manifest, every file against
+   its checksum, the archive listed. Another site's directory, a directory
+   with data in it, another operation holding the lock, and a restore that
+   did not finish are refused. In a new directory, containers of the same
+   project and busy ports are refused, named, and never stopped. Nothing has
+   changed.
+2. **The lock**, then every image the backup records is pulled before anything
+   stops.
+3. **Over the site:** it is stopped (`docker compose down`; volumes, such as
+   Caddy's certificates, are kept), and its files, `data/ghost` and
+   `data/mysql` are moved aside into `.ghost-docker-restore/`.
+4. **The backup's files** are written, with the directory's own path in
+   `PROJECT_DIR` and the metadata, and Compose must resolve exactly the images
+   the backup records: the site is pinned to them. The content is unpacked
+   into `data/ghost`.
+5. **The databases.** MySQL starts on an empty data directory, which creates
+   the site's databases and user from the restored `.env`; each dump is loaded
+   as the site's user, and every table's rows must match the manifest.
+6. **Start and verify.** `up --wait`, then the site is verified through its
+   ingress as `check` does. `.ghost-docker-restore/` is removed.
+
+The outcome is **restored**, or **the site needs you**, with what failed and
+what to do. A restore that fails part-way does not put the old site back by
+itself: over a site, the site as it was is in `.ghost-docker-restore/`
+(`files/` and `data/`), with the steps to put it back; `check` reports the
+directory until it is removed, and another restore is refused while it is
+there. Removing it needs `sudo`, because MySQL owns part of it.
+
+Exit statuses, for both: `0` done; `1` refused or failed; `2` a usage error,
+or a restore over a site without `--yes` and no terminal to ask.
 
 ## Windows
 

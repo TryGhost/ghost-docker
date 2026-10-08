@@ -201,10 +201,15 @@ resolved Ghost image and digest, selected profiles, checksums of the files the
 manager wrote, and completed migrations. Its schema
 is specified in §2.2 of [the plan](ghost-cli-replacement.md). It is gitignored,
 mode `0600`, and machine generated — do not hand-edit it. Operations that
-change a running site hold `.ghost-docker.lock` while they run (`update` now;
-backup, restore and Ghost upgrades as they land), and an update keeps what it
-would put back in `.ghost-docker-update/` until it finishes; see
-[update](install.md#update).
+change a running site hold `.ghost-docker.lock` while they run (`update`,
+`backup` and `restore` now; Ghost upgrades when they land). An update keeps
+what it would put back in `.ghost-docker-update/` until it finishes, and a
+restore over a site keeps the site as it was in `.ghost-docker-restore/`
+until it is verified; see [update](install.md#update) and
+[backup and restore](install.md#backup-and-restore). Backups are directories
+under `backups/`, private and gitignored, kept until the operator removes
+them. A backup holds a copy of this file; restoring into a new directory
+rewrites `site.dir` (and `PROJECT_DIR` in `.env`) to that directory.
 
 ```json
 {

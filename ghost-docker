@@ -69,8 +69,10 @@ with_deadline() {
 # --- Options that belong to the launcher ------------------------------------
 
 site_dir=""
-# The --import argument's index in args, when there is one.
+# The index in args of a path to mount: --import's bundle, or restore's backup.
 bundle_at=""
+# The first word that is not an option: the command.
+command_word=""
 channel=""
 release=""
 declare -a args=()
@@ -113,7 +115,16 @@ while (($#)); do
             bundle_at=${#args[@]}
             args+=("${1#*=}")
             ;;
-        *) args+=("$1") ;;
+        *)
+            # restore's backup: the argument after the command, mounted
+            # like a bundle when it is outside the site.
+            if [[ $command_word == restore && -z $bundle_at && $1 != -* ]]; then
+                bundle_at=${#args[@]}
+            elif [[ -z $command_word && $1 != -* ]]; then
+                command_word=$1
+            fi
+            args+=("$1")
+            ;;
     esac
     shift
 done
@@ -198,11 +209,11 @@ if [[ $host_os == Linux ]]; then
     [[ -S $socket ]] || die "the Docker socket was not found at $socket."
 fi
 
-# --- A bundle to import -----------------------------------------------------
+# --- A bundle to import, or a backup to restore --------------------------------
 #
 # Mounted read-only, at its own resolved absolute path, like the site
-# directory. A path that does not exist is passed on as given, for the
-# manager to report.
+# directory, unless it is inside the site, which is mounted already. A path
+# that does not exist is passed on as given, for the manager to report.
 declare -a bundle_mount=()
 bundle=${bundle_at:+${args[bundle_at]}}
 if [[ -n $bundle && -e $bundle ]]; then
@@ -211,7 +222,10 @@ if [[ -n $bundle && -e $bundle ]]; then
     else
         bundle="$(CDPATH='' cd -- "$(dirname -- "$bundle")" && pwd -P)/$(basename -- "$bundle")"
     fi
-    bundle_mount=(--volume "$bundle:$bundle:ro")
+    case $bundle/ in
+        "$site_dir"/*) ;;
+        *) bundle_mount=(--volume "$bundle:$bundle:ro") ;;
+    esac
     args[bundle_at]=$bundle
 fi
 

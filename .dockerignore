@@ -12,6 +12,8 @@ ghost.env
 .ghost-docker-probe
 .ghost-docker.lock
 .ghost-docker-update
+.ghost-docker-restore
+backups
 .import
 caddy/sites/*.caddy
 caddy/custom/*.caddy

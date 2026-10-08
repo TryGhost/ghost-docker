@@ -97,6 +97,19 @@ jobs:
       - name: Update end to end
         run: tests/e2e/update.sh
 
+  # Real backups and restores on Docker Engine: a local site with ActivityPub
+  # backed up, restored over itself and into a new directory, the lock
+  # refusing a second operation, and a dump that fails.
+  backup-linux:
+    name: Backup and restore on Linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Backup and restore end to end
+        run: tests/e2e/backup.sh
+
   # Real Ghost-CLI sites, on SQLite and MySQL, exported with the released
   # exporter and imported through the launcher. Ghost-CLI runs on the host, so
   # this needs Node there too; the runner's own mysqldump serves the exporter.
@@ -143,6 +156,7 @@ jobs:
       - launcher-linux
       - install-linux
       - update-linux
+      - backup-linux
       - import-linux
       - launcher-macos
     if: always()

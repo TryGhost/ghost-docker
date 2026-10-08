@@ -82,6 +82,10 @@ ghost.env
 # Held while an operation changes the site, and an unfinished update's copies
 .ghost-docker.lock
 .ghost-docker-update/
+# Backups, kept until the operator removes them, and what a restore over the
+# site keeps of it until the restore is verified
+backups/
+.ghost-docker-restore/
 # A bundle import in progress: its marker and its private staging copy
 .ghost-docker-import
 .import/

@@ -14,6 +14,10 @@ export const COMPOSE_OVERRIDE_FILE = 'compose.override.yml';
 export const LOCK_FILE = '.ghost-docker.lock';
 /** What an update keeps to put back if it fails, removed when it succeeds. */
 export const UPDATE_DIR = '.ghost-docker-update';
+/** Where `backup` writes, one directory per backup; kept until the operator removes them. */
+export const BACKUPS_DIR = 'backups';
+/** What a restore over a site keeps of it until the restore is verified. */
+export const RESTORE_DIR = '.ghost-docker-restore';
 /**
  * Files and directories that belong to the operator: an update keeps a copy
  * of them, and a checkout of another ref never touches them (plan §2.7).

@@ -1,4 +1,6 @@
 // `check`, `info` and `list`: what a site, or this host, looks like now.
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { defineCommand } from '../command.ts';
 import { compose, composeError, composePs } from '../compose.ts';
 import { validate } from '../config.ts';
@@ -9,7 +11,7 @@ import type { Io } from '../io.ts';
 import { describeLock, readLock } from '../lock.ts';
 import { describeMetadata, readMetadata } from '../meta.ts';
 import { failed, printChecks, type Check } from '../report.ts';
-import { hasProfile, readSettings } from '../site.ts';
+import { hasProfile, readSettings, RESTORE_DIR } from '../site.ts';
 import { verifyIngress } from '../verify.ts';
 import { installedSite } from './common.ts';
 import { collect } from './doctor.ts';
@@ -50,6 +52,18 @@ export async function check(io: Io): Promise<number> {
         };
         printChecks(io, [held]);
         all.push(held);
+    }
+    // A restore over the site that did not finish keeps the site as it was here.
+    if (existsSync(join(site.dir, RESTORE_DIR))) {
+        const aside: Check = {
+            status: 'warn',
+            label: RESTORE_DIR,
+            detail:
+                `${join(site.dir, RESTORE_DIR)} holds the site as it was before a restore that did not finish.\n` +
+                'Once the site is as it should be, remove it (with sudo: MySQL owns part of it).',
+        };
+        printChecks(io, [aside]);
+        all.push(aside);
     }
 
     const host = await io.busy('Checking Docker and the site directory', () =>
