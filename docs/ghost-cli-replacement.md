@@ -44,7 +44,7 @@ dependencies and the contracts in §2 before implementing it.
 | Windows | Through WSL2 only, which is Linux: Docker Desktop's WSL2 backend puts `docker` and its socket inside the distro, and the launcher runs there unchanged. No native launcher; §2.10 records the design to use if one is ever wanted. |
 | Versions | Resolve and persist an exact Ghost image version on installation. Ghost upgrades and stack updates are separate operations. Record resolved image digests for recovery. |
 | Installation | Scriptable `install`, with a flag for every prompt. Local mode uses MySQL too. |
-| Migration | Ghost-CLI exports a bundle (`ghost migrate-export`, Ghost-CLI 1.33.0+); the manager imports it. Three kinds: `mysql-dump` (MySQL sources), `mysql-data` (default for local SQLite sources: data-only MySQL inserts loaded into a schema Ghost creates), and `portable` (an explicit SQLite fallback through the Admin API). The manager does not import `portable` bundles: their content JSON and members CSV are imported through Ghost Admin on the new site, as anyone moving a Ghost site by hand does today. `--migrate` runs the export and the import in one command. The legacy `scripts/migrate.sh` stays on `main`, where it works, and is not carried onto this branch, whose layout it does not understand; it disappears from `main` when this branch merges, which S12 allows only after production import (S5e) has passed its tests. |
+| Migration | Ghost-CLI exports a bundle (`ghost migrate-export`, Ghost-CLI 1.33.0+); the manager imports it. Three kinds: `mysql-dump` (MySQL sources), `mysql-data` (default for local SQLite sources: data-only MySQL inserts loaded into a schema Ghost creates), and `portable` (an explicit SQLite fallback through the Admin API). The manager does not import `portable` bundles: their content JSON and members CSV are imported through Ghost Admin on the new site, as anyone moving a Ghost site by hand does today. Moving a site is documented, not wrapped: `ghost stop`, `ghost migrate-export`, `install --import` on the source's port. The legacy `scripts/migrate.sh` stays on `main`, where it works, and is not carried onto this branch, whose layout it does not understand; it disappears from `main` when this branch merges, which S12 allows only after production import (S5e) has passed its tests. |
 | Upgrades | Optional supervisor using a file exchange and the Docker socket. Ship a tested host-driven upgrade first, then reuse its recovery contract in the supervisor. Both are commands of the manager. |
 | UX | Standard Compose commands for daily operation; `./ghost-docker` for installation, diagnosis, configuration, migration, backup/restore, and upgrades. No wrapper binary named `ghost`. |
 | Configuration | `.env` contains Compose/operator settings; `ghost.env` contains only Ghost application settings. Do not pass the whole `.env` into Ghost. A mounted Ghost JSON config file was evaluated as a replacement for `ghost.env` and rejected; see §2.1. |
@@ -362,50 +362,29 @@ switch (step 9).
 A production import differs only in step 9 and in its URLs: separate admin URLs,
 and an existing proxy holding 80 and 443 on the same server.
 
-#### `--migrate`
+#### Moving a local site
 
-`--migrate` is a wrapper: detect a Ghost-CLI installation, run
-`ghost migrate-export`, and hand the resulting bundle to the `--import` path. It
-adds no import logic of its own, so both entry points share one tested
-implementation. The export half runs in the launcher, on the host, because that
-is where Ghost-CLI and the source site are; the import half is the manager's.
-The launcher mounts the bundle read-only for it.
+There is no `--migrate` command. Moving a local Ghost-CLI site to Docker is
+documented as three steps in `docs/install.md`, "Moving a site to Docker":
 
-- Source selection: the current directory by default, or `--migrate=PATH`. The
-  directory must contain a `.ghost-cli` file. Require Ghost-CLI 1.33.0 or later
-  from the output of `ghost --version`; the version recorded in `.ghost-cli` is
-  the last one used, not the one installed. Report a Ghost 5.x source before
-  running anything, with the `ghost update` instruction.
-- Locations: the exporter refuses an output path inside the installation or its
-  content directory, and a site directory created under the current directory
-  would be inside the source. With `--migrate`, default the site directory to a
-  sibling of the source directory and write the bundle to a private directory
-  outside both; `--dir` overrides the site directory. Keep the bundle after a
-  successful import and print its path.
-- Mode: taken from the manifest's `sourceInstallType`; `--local`/`--domain` are
-  not required for a local source.
-- Prompts: under `curl | bash` stdin is the script, so the exporter runs with
-  the terminal attached. The launcher asks for its own confirmation once and passes
-  `--force` to skip the exporter's beta prompt; with `--no-prompt` the operator
-  must have requested migration explicitly and `--force --no-prompt` is passed.
-- Source lifecycle: `--migrate` never starts or restarts the source Ghost. A
-  `mysql-data` or `mysql-dump` export needs Ghost stopped, not running, so the
-  export is run with `--leave-stopped`: a running source is stopped and stays
-  stopped, and a source that was already stopped is never started. The Docker
-  site therefore takes the source's own port and URL when that port is free,
-  and `--port` overrides the choice. If the import then fails and the source
-  was running beforehand, start it again with `ghost start` so the operator is
-  back where they began; say so either way.
-- Export failure: surface the exporter's message unchanged. When `mysql-data`
-  validation refuses the source, say how to move the site through Ghost Admin
-  instead (as for a `portable` bundle above); never fall back on its own.
-- Scope: local installations first (S5c). On a production installation
-  `--migrate` refuses with a pointer to the manual export/import procedure until
-  production cutover is implemented (S5e), because an existing proxy holds ports
-  80/443 and the cutover rules above apply.
-- The source installation is never modified beyond what `ghost migrate-export`
-  itself does, and is never removed. After a successful migration it is left
-  stopped and intact; `ghost start` there brings it back.
+1. `ghost stop` in the source. The exporter never starts a source that was
+   stopped, so the bundle is the source's final state and nothing writes to
+   the source afterwards. No `--leave-stopped` is needed.
+2. `ghost migrate-export --output PATH`, with PATH outside the installation
+   (the exporter refuses one inside it).
+3. `install --import PATH --port PORT` in a new directory beside the source,
+   with the source's own `server.port`, now free. If it fails, it removes
+   what it created; `ghost start` in the source puts the operator back where
+   they began.
+
+A launcher wrapper was built for S5c and dropped before it merged (PR #344).
+Over these three commands it added a confirmation, a default directory and
+port, and a restart on failure that was needed only because it stopped the
+source itself. It cost about 280 lines of host bash in a launcher that is
+meant to hold no logic, and it parsed Ghost-CLI's output (the version line,
+the exporter's messages, `.ghostpid`). Ghost-CLI's own exporter is the right
+place to say what to run next, since it knows the site's port; it will print
+the next steps once more of the plan has landed.
 
 ### 2.5 Backup, upgrade, and recovery
 
@@ -615,7 +594,7 @@ ghost-docker install [--local | --domain example.com [--admin-domain admin.examp
                      [--dir PATH] [--port 2368] [--version 6.3.1]
                      [--channel stable|beta] [--ref vX.Y.Z]
                      [--with analytics,activitypub,supervisor]
-                     [--import BUNDLE | --migrate[=PATH]] [--no-start]
+                     [--import BUNDLE] [--no-start]
 ghost-docker check | info | list
 ghost-docker config get|set|validate ...
 ghost-docker update | backup | restore | upgrade      (as their steps land)
@@ -724,7 +703,7 @@ naming the port, and the container holding it when Docker knows one. Bringing yo
 Installation writes configuration, renders routing, initializes permissions and
 metadata, then verifies readiness before publishing the Admin URL. `--no-start`
 must not start application services. Imported sites follow the isolated flow in
-§2.4; `--migrate` is the same flow preceded by a Ghost-CLI export.
+§2.4.
 
 `list` includes stopped containers (`docker ps -a` with labels) and states what
 cannot be discovered without a registry. `check` works for single-site installs
@@ -837,8 +816,6 @@ Keep it to a few hundred lines and to exactly these jobs:
   repository, an image built from it.
 - Start it: `docker run` with the Docker socket, the site directory, the caller's
   identity and a terminal, following the contract below.
-- Run `ghost migrate-export` for `--migrate`, because Ghost-CLI lives on the host
-  and not in the image.
 - Pass the manager's exit status through unchanged.
 
 Anything that could be a manager command is one; the launcher gains no logic
@@ -908,8 +885,7 @@ and gid to pass, and a site directory that can be mounted at its own path.
 Nothing above is special-cased for it. A migration from a Ghost-CLI install on
 native Windows still works, in two steps: `ghost migrate-export` in the
 Windows shell, then `install --import` from WSL2 with the bundle under
-`/mnt/c/`. Only `--migrate`, which runs Ghost-CLI itself, does not cross that
-boundary, and the documentation says so.
+`/mnt/c/`.
 
 A native Windows launcher was built during N2 and removed before it merged.
 It had to assume three things nobody had verified: that the Docker Desktop
@@ -994,7 +970,7 @@ intent, not the bash.
 | Milestone | Outcome | Steps |
 | --- | --- | --- |
 | M0 Foundation | A manager image and launchers exist, and `install` works for local and production sites. | N1, N2, N3 |
-| M1 Local sites | A theme developer or migration-tool author moves each local Ghost-CLI site to Docker with one command. Local mode runs Ghost and MySQL with no Caddy. | S5b, S5c |
+| M1 Local sites | A theme developer or migration-tool author moves each local Ghost-CLI site to Docker with the documented steps. Local mode runs Ghost and MySQL with no Caddy. | S5b, S5c |
 | M2 Tagged single-site production | Production installs from a tagged release at `docker.ghost.org`, updates between releases, has backup/restore, imports a production Ghost-CLI site, and migrates the pre-`next-docker` layout. | S6a, S4, S5e, S6b, S12 |
 | M3 Multi-site | Several sites on one host behind one shared Caddy, each with its own MySQL. | S13 |
 | M4 One-click Admin updates | Ghost Admin requests an upgrade that the host executes and recovers. | S7, S8, S9, S10 |
@@ -1008,7 +984,7 @@ N3 install, config, caddy, check               needs N2
 
 M1
 S5b local import                               needs N3
-S5c local --migrate                            needs S5b
+S5c moving a local site, documented           needs S5b
 
 M2
 S6a releases, served launcher, update          needs N3
@@ -1222,8 +1198,8 @@ Status: implemented and released in Ghost-CLI 1.33.0 (PR #2333).
 
 ### S5 — Bundle import and migration cutover
 
-Repo: ghost-docker. Implement §2.4 as `install --import` and `install
---migrate`. Three parts; each is its own pull request. (S5a, syncing the contract
+Repo: ghost-docker. Implement §2.4 as `install --import`, and document
+moving a site with it. Three parts; each is its own pull request. (S5a, syncing the contract
 with the released exporter, is done.)
 
 **S5b — Local import.** Deps: N3. Not S4; see "Local imports" in §2.4. Import
@@ -1263,23 +1239,21 @@ dump and tampered row counts each leave the directory as it was; a re-run in the
 same directory succeeds; `--no-start` leaves nothing running. Unit tests cover
 every refusal in `tests/import.test.mjs`.
 
-**S5c — Local `--migrate`.** Deps: S5b. Implement "`--migrate`" in §2.4 for
-local installations. The export half is in both launchers, the import half is
-S5b.
+**S5c — Moving a local site, documented.** Deps: S5b. "Moving a local
+site" in §2.4: stop, export, import on the source's port, written up in
+`docs/install.md`. No command.
 
-Acceptance: run from inside a local SQLite and a local MySQL Ghost-CLI install,
-directly and through the served launcher; a non-install directory, a Ghost-CLI
-older than 1.33.0, a Ghost 5.x source and a production install are each refused
-before any change; the source is stopped by the export and never started; the
-Docker site takes the source's port; after a failed import a source that was
-running is running again; exporter failure is surfaced, with the Ghost Admin
-route when `mysql-data` validation refuses the source.
+Status: done. `tests/e2e/import.sh` follows the documented steps for its real
+SQLite and MySQL sources: the stopped source is not started by the export,
+and the Docker site answers on the source's port. A launcher `--migrate` was
+built and dropped (§2.4 says why). Ghost-CLI printing these steps after an
+export is a later change in Ghost-CLI.
 
 **S5e — Production import and cutover.** Deps: S5b. Production bundles
 (`sourceInstallType: production`): separate admin URLs, the same-server case
 with an existing proxy on 80/443, and the documented cutover of §2.4 step 9.
-Extends `--migrate` to production installations, where it exports with
-`--leave-stopped`.
+Documents the production move the same way, with the source stopped
+before the final export.
 
 Acceptance: a same-server migration with an existing proxy on 80/443, and a
 cross-host migration following the documented cutover. This part is what

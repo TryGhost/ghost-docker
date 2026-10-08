@@ -258,6 +258,41 @@ selected list. Opt into an override file with `GD_COMPOSE_OVERRIDES`:
 GD_COMPOSE_OVERRIDES=compose.ipv6.yml ./ghost-docker check
 ```
 
+## Your own Compose overrides
+
+For local changes the stack does not offer, such as an extra mount or a
+different published address, put a `compose.override.yml` in the site
+directory. It is yours: installation never writes one and updates never
+touch it, and a clone's `.gitignore` leaves it out.
+
+Plain `docker compose` in the site directory merges `compose.override.yml`
+into `compose.yml` on its own, so `docker compose up -d` uses it with nothing
+else to set. The manager does not: it names its files with `-f`, which turns
+that merging off. Give the file to it as well, so that `./ghost-docker check`
+looks at the site you run:
+
+```bash
+GD_COMPOSE_OVERRIDES=compose.override.yml ./ghost-docker check
+```
+
+An override is a manual customization: when a stack update changes a service
+your file also changes, read both. To develop a theme against a local site,
+mount its folder over the copy in the content directory. Read-only keeps the
+container's user from writing into your folder:
+
+```yaml
+# compose.override.yml
+services:
+  ghost:
+    volumes:
+      - /Users/me/code/my-theme:/home/ghost/content/themes/my-theme:ro
+```
+
+The path inside the container is `GHOST_CONTENT_PATH` (`/home/ghost/content`
+for the default image) followed by `themes/<name>`; activate the theme in
+Ghost Admin as usual, and `docker compose restart ghost` when a change does
+not show.
+
 ## Ghost image layout
 
 The default `GHOST_VERSION` is a `next` variant, which installs Ghost directly

@@ -9,7 +9,9 @@
 # MySQL site (a `mysql-dump` bundle). Nothing is hand-written except the
 # deliberately broken copies. Every import runs through the launcher and the
 # manager image built from this checkout, into an empty directory, as an
-# operator without a checkout would run it.
+# operator without a checkout would run it. Last, each source is moved the
+# way docs/install.md says to move one: stopped, exported, imported on its
+# own port.
 #
 # This installs Ghost twice on the host and starts several containers; it
 # takes several minutes. It needs Docker, Node (for Ghost-CLI), jq and curl,
@@ -162,6 +164,38 @@ expect_untouched() {
     [[ -z $(ls -A "$site") ]] || fail "the failed import left files behind" "$(ls -A "$site")"
     [[ -z $(containers_of "$site" -a) ]] || fail "the failed import left containers behind"
     ok "the directory is as it was"
+}
+
+# source_running SOURCE -- Ghost-CLI's local process manager has it running.
+source_running() {
+    local pid
+    pid=$(cat "$1/.ghostpid" 2>/dev/null) && kill -0 "$pid" 2>/dev/null
+}
+
+# move_source SOURCE PORT SLUG TITLE
+# "Moving a site to Docker" in docs/install.md, step by step: stop the
+# source, export it, import the bundle on the source's own port.
+move_source() {
+    local source=$1 source_port=$2 slug=$3 title=$4 moved bundle
+    moved=$source-docker
+    bundle=$source-bundle
+    source_running "$source" || fail "the source is not running to begin with"
+    (cd "$source" && "${GHOST_CLI[@]}" stop) >"$source.stop.log" 2>&1 ||
+        fail "ghost stop failed" "$(tail -40 "$source.stop.log")"
+    source_running "$source" && fail "the source is still running after ghost stop"
+    (cd "$source" && "${GHOST_CLI[@]}" migrate-export --force --no-prompt --output "$bundle") \
+        >"$source.final-export.log" 2>&1 || fail "the final export failed" "$(tail -40 "$source.final-export.log")"
+    source_running "$source" && fail "the export started the stopped source"
+    ok "stopped, and exported without being started"
+
+    mkdir "$moved"
+    DESTINATIONS+=("$moved")
+    run_import "$moved" --import "$bundle" --port "$source_port"
+    expect_success "the import"
+    [[ $(setting "$moved" GHOST_PORT) == "$source_port" ]] || fail "the Docker site is not on the source's port"
+    ok "imported on the source's port, $source_port"
+    expect_imported "$moved" "$slug" "$title"
+    compose_in "$moved" down >/dev/null 2>&1
 }
 
 # tree_digest DIR -> one digest of every file under it
@@ -397,6 +431,9 @@ expect_output 'Removing what an earlier, unfinished import left behind'
 expect_imported "$site" "$SQLITE_SLUG" "SQLite source"
 compose_in "$site" down >/dev/null 2>&1
 
+step "Move the SQLite site as docs/install.md describes"
+move_source "$WORK/source-sqlite" "$SQLITE_PORT" "$SQLITE_SLUG" "SQLite source"
+
 # --- A local MySQL site ------------------------------------------------------
 
 if ! command -v mysqldump >/dev/null 2>&1; then
@@ -446,5 +483,9 @@ if grep -qv '^ghost@' <<<"$definers"; then
     fail "a view is defined by an account other than the site's" "$definers"
 fi
 ok "views belong to the site's database user"
+compose_in "$site" down >/dev/null 2>&1
+
+step "Move the MySQL site as docs/install.md describes"
+move_source "$WORK/source-mysql" "$MYSQL_SITE_PORT" "$MYSQL_SLUG" "MySQL source"
 
 printf '\nAll checks passed.\n'

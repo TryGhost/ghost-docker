@@ -56,10 +56,8 @@ silent default. Every question has an option, so a script never needs to answer
 one.
 
 Exit statuses: `0` installed, `1` failed, `2` a usage error. Options the plan
-documents for later steps (`--migrate` in S5c, `--channel` and `--ref` in S6a,
-`--with supervisor` in S8) do not exist yet, and are usage errors like any
-unknown option. Until `--migrate`, `ghost migrate-export` makes the bundle that
-`--import` takes.
+documents for later steps (`--channel` and `--ref` in S6a, `--with supervisor`
+in S8) do not exist yet, and are usage errors like any unknown option.
 
 ### The ACME email
 
@@ -222,6 +220,52 @@ Refused, each with a message that says so:
 
 See the [plan](ghost-cli-replacement.md) for where each lands, and
 [bundle-v1.md](bundle-v1.md) for the bundle contract.
+
+### Moving a site to Docker
+
+The commands above copy a site and leave the source running beside the copy.
+To move it instead, so that the Docker site takes over the source's address
+and nothing is written to the source after it was copied, stop the source
+first:
+
+```bash
+cd ~/sites/my-blog
+ghost stop
+ghost migrate-export --output ../my-blog-bundle
+mkdir ../my-blog-docker && cd ../my-blog-docker
+curl -fsSLO https://raw.githubusercontent.com/TryGhost/ghost-docker/next-docker/ghost-docker && chmod +x ghost-docker
+./ghost-docker install --import ../my-blog-bundle --port 2368
+```
+
+- **Stop first.** The exporter stops a running site while it copies, and
+  starts it again afterwards; it never starts a site that was stopped. Stopped
+  first, the source stays stopped, so the copy is its final state.
+- **The same address.** `--port` takes the source's port, which is
+  `server.port` in its `config.development.json` (2368 unless it was
+  installed with another). With the source stopped, the port is free, and the
+  Docker site answers at the same `http://localhost:PORT`.
+- **Outside the source.** The exporter refuses an output path inside the
+  installation, and the Docker site's directory belongs beside it too, not in
+  it.
+- **If the import fails**, it removes what it created, and `ghost start` in
+  the source brings the source back as it was. The bundle is unchanged, so
+  the import can be run again from it.
+- **Afterwards** the source is stopped and intact. Nothing removes it;
+  `ghost start` there brings it back. The bundle holds the site's
+  configuration, secrets included: remove it once you no longer need it.
+- **A theme you develop through a link** in `content/themes/` arrives as a
+  copy: the exporter follows the link and copies the folder, so edits there
+  no longer reach the site. To keep developing it, mount the folder yourself
+  with a `compose.override.yml`; see [Your own Compose
+  overrides](configuration.md#your-own-compose-overrides).
+
+Exporting needs Ghost-CLI 1.33.0 or later (`ghost --version`) and a source
+on Ghost 6; on Ghost 5, run `ghost update` there first. When the exporter
+refuses a SQLite site because some values would not load into MySQL, it lists
+them: fix them in the source and export again, or move the site through Ghost
+Admin with `ghost migrate-export --sqlite-format portable` (see the
+`portable` refusal above). A Ghost-CLI site on native Windows is exported
+there and imported from WSL2, with the bundle under `/mnt/c/`.
 
 ## Ports, and your existing proxy
 

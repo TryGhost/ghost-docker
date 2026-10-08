@@ -24,7 +24,7 @@ Branches:
 
 ## Current state
 
-Steps N1–N3 and S5b: the stack's files and contracts, the launcher and
+Steps N1–N3, S5b and S5c: the stack's files and contracts, the launcher and
 manager image, and the first real commands: `install` (local and production,
 from the image or a clone, and `--import` of a local Ghost-CLI site's bundle),
 `config get|set|validate`, `check`, `info`, `list`, plus `version`, `doctor`
@@ -36,6 +36,8 @@ delivers it. `docs/install.md` describes what exists.
 - `ghost-docker` (bash) is the only host code. It checks Docker, chooses the
   image, and `docker run`s it (plan §2.10). Add no logic to it that the
   manager could hold. Windows is WSL2 only; there is no native launcher.
+  There is no `--migrate`: moving a Ghost-CLI site is documented as
+  `ghost stop`, `ghost migrate-export`, `install --import` (S5c).
 - `manager/` is the CLI: TypeScript run directly by Node (types stripped, no
   build step, so `erasableSyntaxOnly`), with dependencies installed by pnpm
   (version pinned in `package.json`; `npm i -g corepack && corepack enable`
