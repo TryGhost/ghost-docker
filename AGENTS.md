@@ -137,6 +137,11 @@ Unit tests fake the daemon at the transport (`test/helpers.ts`: `api`, `run`
 and `containers` for the Engine API, `composeRun` for Compose); `test/site.ts`
 makes a site directory from the repository's own files.
 
+## Commits
+
+Commit messages follow [.agents/skills/commit/SKILL.md](.agents/skills/commit/SKILL.md)
+(also reachable as `.claude/skills/commit`).
+
 ## Common commands
 
 ```bash
