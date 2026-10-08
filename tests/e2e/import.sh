@@ -9,10 +9,9 @@
 # MySQL site (a `mysql-dump` bundle). Nothing is hand-written except the
 # deliberately broken copies. Every import runs through the launcher and the
 # manager image built from this checkout, into an empty directory, as an
-# operator without a checkout would run it. Last, each source is moved with
-# `install --migrate`, which runs the same exporter from inside the source:
-# the SQLite one with the launcher as a file, the MySQL one piped to bash as
-# the served launcher is.
+# operator without a checkout would run it. Last, each source is moved the
+# way docs/install.md says to move one: stopped, exported, imported on its
+# own port.
 #
 # This installs Ghost twice on the host and starts several containers; it
 # takes several minutes. It needs Docker, Node (for Ghost-CLI), jq and curl,
@@ -167,22 +166,36 @@ expect_untouched() {
     ok "the directory is as it was"
 }
 
-# run_migrate SOURCE ARGS... -> sets OUT and RC, never exits
-# `install --migrate` from inside SOURCE, with Ghost-CLI as `ghost` on the PATH.
-run_migrate() {
-    local source=$1
-    shift
-    set +e
-    OUT=$(cd "$source" && PATH="$GHOST_SHIM:$PATH" GD_IMAGE=$IMAGE \
-        "$ALONE/ghost-docker" install --migrate --no-prompt "$@" 2>&1 </dev/null)
-    RC=$?
-    set -e
-}
-
 # source_running SOURCE -- Ghost-CLI's local process manager has it running.
 source_running() {
     local pid
     pid=$(cat "$1/.ghostpid" 2>/dev/null) && kill -0 "$pid" 2>/dev/null
+}
+
+# move_source SOURCE PORT SLUG TITLE
+# "Moving a site to Docker" in docs/install.md, step by step: stop the
+# source, export it, import the bundle on the source's own port.
+move_source() {
+    local source=$1 source_port=$2 slug=$3 title=$4 moved bundle
+    moved=$source-docker
+    bundle=$source-bundle
+    source_running "$source" || fail "the source is not running to begin with"
+    (cd "$source" && "${GHOST_CLI[@]}" stop) >"$source.stop.log" 2>&1 ||
+        fail "ghost stop failed" "$(tail -40 "$source.stop.log")"
+    source_running "$source" && fail "the source is still running after ghost stop"
+    (cd "$source" && "${GHOST_CLI[@]}" migrate-export --force --no-prompt --output "$bundle") \
+        >"$source.final-export.log" 2>&1 || fail "the final export failed" "$(tail -40 "$source.final-export.log")"
+    source_running "$source" && fail "the export started the stopped source"
+    ok "stopped, and exported without being started"
+
+    mkdir "$moved"
+    DESTINATIONS+=("$moved")
+    run_import "$moved" --import "$bundle" --port "$source_port"
+    expect_success "the import"
+    [[ $(setting "$moved" GHOST_PORT) == "$source_port" ]] || fail "the Docker site is not on the source's port"
+    ok "imported on the source's port, $source_port"
+    expect_imported "$moved" "$slug" "$title"
+    compose_in "$moved" down >/dev/null 2>&1
 }
 
 # tree_digest DIR -> one digest of every file under it
@@ -318,11 +331,6 @@ docker build --quiet --file "$ROOT/manager/Dockerfile" --tag "$IMAGE" "$ROOT" >/
 ALONE=$WORK/launcher-only
 mkdir -p "$ALONE" "$WORK/sites"
 cp "$ROOT/ghost-docker" "$ALONE/ghost-docker"
-# --migrate runs `ghost`; this one is the exporter under test.
-GHOST_SHIM=$WORK/ghost-bin
-mkdir "$GHOST_SHIM"
-printf '#!/usr/bin/env bash\nexec %s "$@"\n' "$(printf '%q ' "${GHOST_CLI[@]}")" >"$GHOST_SHIM/ghost"
-chmod +x "$GHOST_SHIM/ghost"
 
 # The source is installed at the version the default image ships, so the
 # import never depends on an image for a release published minutes ago.
@@ -423,32 +431,8 @@ expect_output 'Removing what an earlier, unfinished import left behind'
 expect_imported "$site" "$SQLITE_SLUG" "SQLite source"
 compose_in "$site" down >/dev/null 2>&1
 
-step "--migrate: a failed import starts the running source again"
-source_running "$WORK/source-sqlite" || fail "the SQLite source is not running before --migrate"
-migrated=$WORK/source-sqlite-docker
-DESTINATIONS+=("$migrated")
-# Refused by the manager after the export, which has stopped the source by then.
-run_migrate "$WORK/source-sqlite" --version 6.0.0
-[[ $RC -eq 2 ]] || fail "the import with a mismatched --version exited $RC, expected 2" "$OUT"
-expect_output 'leave-stopped'
-expect_output 'running again'
-source_running "$WORK/source-sqlite" || fail "the source is not running again" "$OUT"
-[[ $(http_status "$SQLITE_BASE/ghost/api/admin/site/") == 200 ]] || fail "the source does not answer"
-[[ ! -e $migrated ]] || fail "the site directory --migrate made was left behind" "$(ls -A "$migrated")"
-ok "the source runs again, and the directory is gone"
-
-step "--migrate a running local SQLite site"
-run_migrate "$WORK/source-sqlite"
-expect_success "the migration"
-expect_output 'Migration bundle \(mysql-data\) saved'
-expect_output 'every count matches the bundle'
-expect_output 'The bundle is kept in '
-source_running "$WORK/source-sqlite" && fail "the source is running after --migrate"
-[[ $(setting "$migrated" GHOST_PORT) == "$SQLITE_PORT" ]] || fail "the Docker site did not take the source's port"
-ok "the source is stopped, and the Docker site has its port, $SQLITE_PORT"
-expect_imported "$migrated" "$SQLITE_SLUG" "SQLite source"
-compose_in "$migrated" down >/dev/null 2>&1
-ok "the site answers at the source's own address"
+step "Move the SQLite site as docs/install.md describes"
+move_source "$WORK/source-sqlite" "$SQLITE_PORT" "$SQLITE_SLUG" "SQLite source"
 
 # --- A local MySQL site ------------------------------------------------------
 
@@ -501,20 +485,7 @@ fi
 ok "views belong to the site's database user"
 compose_in "$site" down >/dev/null 2>&1
 
-step "--migrate a running local MySQL site, with the launcher piped to bash"
-source_running "$WORK/source-mysql" || fail "the MySQL source is not running before --migrate"
-migrated=$WORK/source-mysql-docker
-DESTINATIONS+=("$migrated")
-set +e
-OUT=$(cd "$WORK/source-mysql" && PATH="$GHOST_SHIM:$PATH" GD_IMAGE=$IMAGE \
-    bash -s -- install --migrate --no-prompt <"$ALONE/ghost-docker" 2>&1)
-RC=$?
-set -e
-expect_success "the migration"
-expect_output 'Migration bundle \(mysql-dump\) saved'
-source_running "$WORK/source-mysql" && fail "the source is running after --migrate"
-[[ $(setting "$migrated" GHOST_PORT) == "$MYSQL_SITE_PORT" ]] || fail "the Docker site did not take the source's port"
-ok "the source is stopped, and the Docker site has its port, $MYSQL_SITE_PORT"
-expect_imported "$migrated" "$MYSQL_SLUG" "MySQL source"
+step "Move the MySQL site as docs/install.md describes"
+move_source "$WORK/source-mysql" "$MYSQL_SITE_PORT" "$MYSQL_SLUG" "MySQL source"
 
 printf '\nAll checks passed.\n'

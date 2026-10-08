@@ -12,13 +12,6 @@
 #
 #   --dir PATH   The site directory. Default: the current directory.
 #
-#   ghost-docker install --migrate[=PATH] [install options]
-#
-# moves a local Ghost-CLI site (the current directory, or PATH) into a new
-# Docker site beside it. It is the one command with work on the host, because
-# Ghost-CLI and the source site are here and not in the image: this script runs
-# `ghost migrate-export` there, then hands the bundle to `install --import`.
-#
 # Which image runs, first match wins:
 #
 #   GD_IMAGE           an image you name
@@ -67,18 +60,9 @@ with_deadline() {
 site_dir=""
 # The --import argument's index in args, when there is one.
 bundle_at=""
-# The Ghost-CLI site --migrate exports, when it is given. The option is the
-# launcher's alone: the manager is given the bundle, as --import.
-migrate_source=""
-migrating=0
 declare -a args=()
 while (($#)); do
     case $1 in
-        --migrate) migrating=1 migrate_source=$PWD ;;
-        --migrate=*)
-            [[ -n ${1#*=} ]] || die "--migrate=PATH needs a path; plain --migrate uses the current directory" 2
-            migrating=1 migrate_source=${1#*=}
-            ;;
         --dir)
             [[ ${2:-} ]] || die "--dir needs a path" 2
             site_dir=$2
@@ -143,188 +127,6 @@ with_deadline "$GD_DOCKER_TIMEOUT" docker compose version >/dev/null 2>&1 </dev/
 rootless=0
 case $security in *rootless*) rootless=1 ;; esac
 
-# --- A Ghost-CLI site to migrate --------------------------------------------
-#
-# Everything that can refuse is checked before anything changes, the source
-# least of all: the export stops it. docs/ghost-cli-replacement.md §2.4,
-# "--migrate", is the contract.
-
-readonly MIN_GHOST_CLI=1.33.0
-
-# version_at_least VERSION MINIMUM -- both X.Y.Z
-version_at_least() {
-    local -a have want
-    local i
-    IFS=. read -ra have <<<"$1"
-    IFS=. read -ra want <<<"$2"
-    for i in 0 1 2; do
-        ((10#${have[i]:-0} == 10#${want[i]:-0})) || return $((10#${have[i]:-0} < 10#${want[i]:-0}))
-    done
-}
-
-# source_facts DIR -> `key=value` lines read from a Ghost-CLI installation's
-# own files. Node is there: Ghost-CLI runs on it. The environment is chosen as
-# Ghost-CLI chooses it: production when that configuration exists.
-source_facts() {
-    node - "$1" <<'NODE'
-const fs = require('node:fs');
-const path = require('node:path');
-const dir = process.argv[2];
-const read = (file) => {
-    try {
-        return JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8'));
-    } catch {
-        return null;
-    }
-};
-const cli = read('.ghost-cli') ?? {};
-const environment = fs.existsSync(path.join(dir, 'config.production.json')) ? 'production' : 'development';
-const config = read(`config.${environment}.json`) ?? {};
-const facts = {
-    version: cli['active-version'] ?? read('current/package.json')?.version ?? '',
-    environment,
-    process: config.process ?? 'local',
-    port: config.server?.port ?? '',
-};
-for (const [key, value] of Object.entries(facts)) {
-    console.log(`${key}=${String(value).replace(/\s/g, '')}`);
-}
-NODE
-}
-
-# Whether Ghost-CLI's local process manager has the site running: its pid file
-# names a live process.
-source_running() {
-    local pid
-    pid=$(cat -- "$migrate_source/.ghostpid" 2>/dev/null) || return 1
-    [[ $pid =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null
-}
-
-# Whether anything accepts connections on a loopback port.
-port_in_use() {
-    (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null
-}
-
-# After a failure: the operator is put back where they began.
-restore_source() {
-    if ((!source_was_running)); then
-        printf 'The source site in %s was not running before, and is still stopped.\n' "$migrate_source" >&2
-        return
-    fi
-    printf '\nStarting the source site again, because it was running before: ghost start in %s\n' "$migrate_source" >&2
-    if (cd -- "$migrate_source" && ghost start) </dev/null >&2; then
-        printf 'The source site is running again, as it was.\n' >&2
-    else
-        printf "error: the source site could not be started. Run \`ghost start\` in %s.\n" "$migrate_source" >&2
-    fi
-}
-
-no_prompt=0
-port_given=0
-source_was_running=0
-created_site_dir=0
-if ((migrating)); then
-    [[ ${args[0]:-} == install ]] ||
-        die "--migrate is an option of install: ghost-docker install --migrate[=PATH]" 2
-    for arg in "${args[@]}"; do
-        case $arg in
-            --import | --import=*)
-                die "choose one: --import BUNDLE, or --migrate to export a Ghost-CLI site first" 2
-                ;;
-            --no-prompt) no_prompt=1 ;;
-            --port | --port=*) port_given=1 ;;
-        esac
-    done
-
-    [[ -d $migrate_source ]] || die "$migrate_source is not a directory. Nothing has been changed." 2
-    migrate_source=$(CDPATH='' cd -- "$migrate_source" && pwd -P)
-    [[ -f $migrate_source/.ghost-cli ]] ||
-        die "$migrate_source is not a Ghost-CLI installation: it has no .ghost-cli file.
-  Run this from the site's directory, or name it with --migrate=PATH. Nothing has been changed."
-
-    # `.ghost-cli` records the version last used there, not the one installed.
-    update_cli="Update it with \`npm install -g ghost-cli@latest\`, then run this again. Nothing has been changed."
-    command -v ghost >/dev/null 2>&1 ||
-        die "--migrate runs \`ghost migrate-export\` from Ghost-CLI $MIN_GHOST_CLI or later, and \`ghost\` is not on the PATH.
-  $update_cli"
-    # Run away from any installation, which would otherwise be inspected too.
-    cli_version=$( (cd / && ghost --version) </dev/null 2>/dev/null |
-        sed -n 's/^Ghost-CLI version: *\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -n 1) || true
-    if [[ -z $cli_version ]] || ! version_at_least "$cli_version" "$MIN_GHOST_CLI"; then
-        die "--migrate needs Ghost-CLI $MIN_GHOST_CLI or later, which has \`ghost migrate-export\`; this host has ${cli_version:-a version that \`ghost --version\` does not report}.
-  $update_cli"
-    fi
-
-    source_version="" source_process="" source_port=""
-    while IFS='=' read -r key value; do
-        case $key in
-            version) source_version=$value ;;
-            process) source_process=$value ;;
-            port) source_port=$value ;;
-        esac
-    done < <(source_facts "$migrate_source")
-
-    if [[ $source_process != local ]]; then
-        die "$migrate_source is a production installation (process manager: $source_process).
-  --migrate moves local installations in this release; production import and cutover
-  come in a later release (plan step S5e). Until then a production site stays on
-  Ghost-CLI, or moves with scripts/migrate.sh on the main branch. Nothing has been changed."
-    fi
-    case $source_version in
-        [0-5].*)
-            die "$migrate_source runs Ghost $source_version, and migration needs Ghost 6.
-  Run \`ghost update\` there first, then run this again. Nothing has been changed."
-            ;;
-    esac
-
-    # Beside the source, not in it: the exporter refuses an output inside the
-    # installation, and so the Docker site is kept out of it too.
-    [[ -n $site_dir ]] || site_dir="$(dirname -- "$migrate_source")/$(basename -- "$migrate_source")-docker"
-    if [[ -d $site_dir ]]; then
-        site_dir=$(CDPATH='' cd -- "$site_dir" && pwd -P)
-    else
-        [[ -d $(dirname -- "$site_dir") ]] ||
-            die "$(dirname -- "$site_dir") does not exist, so the site directory $site_dir cannot be made there." 2
-        site_dir="$(CDPATH='' cd -- "$(dirname -- "$site_dir")" && pwd -P)/$(basename -- "$site_dir")"
-    fi
-    case $site_dir/ in
-        "$migrate_source"/*)
-            die "the site directory $site_dir is inside the Ghost-CLI installation.
-  Choose one outside it with --dir, or leave --dir out to use one beside it. Nothing has been changed." 2
-            ;;
-    esac
-    if [[ -d $site_dir && -n $(ls -A -- "$site_dir") ]]; then
-        die "$site_dir is not empty. A migrated site is installed into a new, empty directory.
-  Name another with --dir. Nothing has been changed."
-    fi
-
-    source_running && source_was_running=1
-    printf 'Migrating the Ghost-CLI site in %s (Ghost %s)\n' "$migrate_source" "${source_version:-of unknown version}"
-    printf '  into a new Docker site in %s.\n' "$site_dir"
-    if ((source_was_running)); then
-        printf '  It is running now. The export stops it and leaves it stopped, so the Docker site\n'
-        printf '%s\n' "  can take its port; \`ghost start\` there brings it back. Nothing else in it changes."
-    else
-        printf '  It is stopped, and stays stopped. Nothing in it changes.\n'
-    fi
-    if ((!no_prompt)); then
-        (exec </dev/tty) 2>/dev/null ||
-            die "--migrate asks before it stops the source site, and there is no terminal to ask at.
-  Pass --no-prompt to go ahead without asking." 2
-        printf 'Continue? [y/N] '
-        answer=""
-        read -r answer </dev/tty || true
-        case $answer in
-            [yY] | [yY][eE][sS]) ;;
-            *) die "nothing was done." ;;
-        esac
-    fi
-    if [[ ! -d $site_dir ]]; then
-        mkdir -- "$site_dir"
-        created_site_dir=1
-    fi
-fi
-
 # --- The site directory -----------------------------------------------------
 
 [[ -n $site_dir ]] || site_dir=$PWD
@@ -357,6 +159,23 @@ if [[ $host_os == Linux ]]; then
     [[ -S $socket ]] || die "the Docker socket was not found at $socket."
 fi
 
+# --- A bundle to import -----------------------------------------------------
+#
+# Mounted read-only, at its own resolved absolute path, like the site
+# directory. A path that does not exist is passed on as given, for the
+# manager to report.
+declare -a bundle_mount=()
+bundle=${bundle_at:+${args[bundle_at]}}
+if [[ -n $bundle && -e $bundle ]]; then
+    if [[ -d $bundle ]]; then
+        bundle=$(CDPATH='' cd -- "$bundle" && pwd -P)
+    else
+        bundle="$(CDPATH='' cd -- "$(dirname -- "$bundle")" && pwd -P)/$(basename -- "$bundle")"
+    fi
+    bundle_mount=(--volume "$bundle:$bundle:ro")
+    args[bundle_at]=$bundle
+fi
+
 # --- Which image ------------------------------------------------------------
 
 # Empty when this script is being read from a pipe (`curl ... | bash`): there is
@@ -367,7 +186,8 @@ if [[ -n ${BASH_SOURCE[0]:-} && -f ${BASH_SOURCE[0]} ]]; then
 fi
 source_kind=image
 # A channel is a tag that moves, and `docker run` would otherwise keep using
-# whichever copy of it this host pulled first.
+# whichever copy of it this host pulled first. Docker's progress goes to
+# stderr, so a long pull is visibly happening.
 declare -a pull=()
 if [[ -n ${GD_IMAGE:-} ]]; then
     image=$GD_IMAGE
@@ -392,81 +212,7 @@ elif [[ -n $script_dir && -f $script_dir/manager/Dockerfile && -f $script_dir/co
     fi
 else
     image="$GD_REGISTRY_IMAGE:${GD_CHANNEL:-edge}"
-    pull=(--pull always --quiet)
-fi
-
-# --- The export, for --migrate -----------------------------------------------
-#
-# Last before the manager, so a host that cannot run it has refused already:
-# from here the source is stopped. The bundle goes into a private directory
-# beside the source, outside both sites, and is kept: after a failed import it
-# can be imported again with --import, without stopping anything.
-
-migrate_bundle=""
-if ((migrating)); then
-    bundle_home=$(mktemp -d "$(dirname -- "$migrate_source")/ghost-migration-$(basename -- "$migrate_source").XXXXXX")
-    migrate_bundle=$bundle_home/bundle
-    export_log=$bundle_home/export.log
-    declare -a exporter=(ghost migrate-export --output "$migrate_bundle" --leave-stopped --force)
-    ((!no_prompt)) || exporter+=(--no-prompt)
-    printf '\nExporting the source site: %s\n' "${exporter[*]}"
-    # The exporter's own output, unchanged, and a copy to read its reason from.
-    export_rc=0
-    if (exec </dev/tty) 2>/dev/null; then
-        (cd -- "$migrate_source" && "${exporter[@]}") </dev/tty 2>&1 | tee "$export_log" || export_rc=${PIPESTATUS[0]}
-    else
-        (cd -- "$migrate_source" && "${exporter[@]}") </dev/null 2>&1 | tee "$export_log" || export_rc=${PIPESTATUS[0]}
-    fi
-    # The exporter exits 0 when its confirmation is declined, with no bundle.
-    if ((export_rc == 0)) && [[ ! -f $migrate_bundle/manifest.json ]]; then
-        export_rc=1
-    fi
-    if ((export_rc != 0)); then
-        printf '\n%s\n' "error: \`ghost migrate-export\` did not make a bundle; its output is above." >&2
-        if grep -q 'values MySQL would reject' "$export_log"; then
-            printf '%s\n' \
-                '  This SQLite site holds data MySQL would refuse, so it cannot move as a database.' \
-                '  Either fix those rows in the source and run this again, or move the site through' \
-                '  Ghost Admin: in the source, run' \
-                '    ghost migrate-export --sqlite-format portable --output PATH' \
-                "  then \`./ghost-docker install --import PATH\`, which says how to finish it." >&2
-        fi
-        rm -rf -- "$bundle_home"
-        ((!created_site_dir)) || rmdir -- "$site_dir" 2>/dev/null || true
-        restore_source
-        exit 1
-    fi
-    rm -f -- "$export_log"
-
-    # The source's port, now that the export has stopped it, unless something
-    # else holds it; the manager then chooses the first free one.
-    if ((!port_given)) && [[ $source_port =~ ^[0-9]+$ ]]; then
-        if port_in_use "$source_port"; then
-            printf '\nPort %s, the source site'"'"'s, is in use by something else, so the Docker site takes another.\n' "$source_port"
-        else
-            args+=(--port "$source_port")
-        fi
-    fi
-    args+=(--import)
-    bundle_at=${#args[@]}
-    args+=("$migrate_bundle")
-fi
-
-# --- A bundle to import -----------------------------------------------------
-#
-# Mounted read-only, at its own resolved absolute path, like the site
-# directory. A path that does not exist is passed on as given, for the
-# manager to report.
-declare -a bundle_mount=()
-bundle=${bundle_at:+${args[bundle_at]}}
-if [[ -n $bundle && -e $bundle ]]; then
-    if [[ -d $bundle ]]; then
-        bundle=$(CDPATH='' cd -- "$bundle" && pwd -P)
-    else
-        bundle="$(CDPATH='' cd -- "$(dirname -- "$bundle")" && pwd -P)/$(basename -- "$bundle")"
-    fi
-    bundle_mount=(--volume "$bundle:$bundle:ro")
-    args[bundle_at]=$bundle
+    pull=(--pull always)
 fi
 
 # --- Run it -----------------------------------------------------------------
@@ -493,33 +239,13 @@ declare -a run=(
 run+=(${bundle_mount[@]+"${bundle_mount[@]}"})
 
 # A terminal is attached when there is one, including when this script was
-# piped from curl and stdin is therefore the script itself. The manager
-# replaces this script, so its status is ours, except after a migration's
-# export, when a failure has the source to put back.
-declare -a launch=(exec)
-((!migrating)) || launch=()
-manager_rc=0
+# piped from curl and stdin is therefore the script itself.
 if [[ -t 0 && -t 1 ]]; then
     run+=(--interactive --tty)
-    "${launch[@]}" "${run[@]}" "$image" ${args[@]+"${args[@]}"} || manager_rc=$?
+    exec "${run[@]}" "$image" ${args[@]+"${args[@]}"}
 elif [[ -t 1 ]] && (exec </dev/tty) 2>/dev/null; then
     run+=(--interactive --tty)
-    "${launch[@]}" "${run[@]}" "$image" ${args[@]+"${args[@]}"} </dev/tty || manager_rc=$?
+    exec "${run[@]}" "$image" ${args[@]+"${args[@]}"} </dev/tty
 else
-    "${launch[@]}" "${run[@]}" "$image" ${args[@]+"${args[@]}"} </dev/null || manager_rc=$?
+    exec "${run[@]}" "$image" ${args[@]+"${args[@]}"} </dev/null
 fi
-
-# Only a migration gets here.
-if ((manager_rc == 0)); then
-    printf '%s
-' \
-        "The source site in $migrate_source is stopped and intact; \`ghost start\` there brings it back." \
-        "The bundle is kept in $migrate_bundle. It holds the site's configuration, secrets" \
-        "included: remove it once you no longer need it."
-    exit 0
-fi
-printf '\nThe import did not finish. The bundle is kept in %s;\n' "$migrate_bundle" >&2
-printf '  to try again without exporting, run install --import %s\n' "$migrate_bundle" >&2
-((!created_site_dir)) || rmdir -- "$site_dir" 2>/dev/null || true
-restore_source
-exit "$manager_rc"

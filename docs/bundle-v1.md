@@ -26,9 +26,9 @@ Status of the work:
   implemented as `./ghost-docker install --import BUNDLE`. The manifest schema
   is `manager/src/bundle/manifest.ts`, a zod schema that depends on nothing
   else so that the exporter can share it.
-- Local `--migrate`: **S5c**, implemented in the launcher as
-  `ghost-docker install --migrate[=PATH]`, which runs `ghost migrate-export
-  --leave-stopped` on the host and hands the bundle to `--import`.
+- Moving a local site: **S5c**, documented rather than automated ("Moving a
+  site to Docker" in `docs/install.md`): `ghost stop`, `ghost migrate-export`,
+  then `install --import` on the source's port.
 - **S5e** (production import and cutover): not yet implemented. `portable` bundles are not imported by the manager;
   their content JSON and members CSV are imported through Ghost Admin (plan
   §2.4).
@@ -302,8 +302,8 @@ the Docker importer.
 ## Remaining S5 work
 
 Local `mysql-dump` and `mysql-data` bundles import into a fresh site
-directory (S5b), and `--migrate` runs the export and the import in one
-command (S5c). Still to come: S5e adds production import and the documented
+directory (S5b), and moving a local site is documented as stop, export,
+import (S5c). Still to come: S5e adds production import and the documented
 cutover. See §2.4 and S5 of
 [the plan](ghost-cli-replacement.md).
 
