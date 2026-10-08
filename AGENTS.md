@@ -101,7 +101,9 @@ delivers it. `docs/install.md` describes what exists.
   a round trip through real containers. See "Value encoding" in
   `docs/configuration.md`.
 - Compose is invoked with `--project-directory` and an explicit `-f`, never
-  `-C`, and without an inherited `COMPOSE_FILE`.
+  `-C`, and without an inherited `COMPOSE_FILE`. The site's
+  `compose.override.yml`, when there is one, is added after `compose.yml`
+  (`composeFiles` in `src/compose.ts`), as plain Compose would.
 - A site directory must be mounted into the manager at its own absolute host
   path, because the daemon resolves bind mounts on the host.
 - A Ghost version is resolved to a digest and pinned (`GHOST_IMAGE_REF`).

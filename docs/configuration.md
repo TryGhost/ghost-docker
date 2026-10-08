@@ -252,7 +252,11 @@ docker compose --project-directory "$DIR" -f "$DIR/compose.yml" ...
 
 `--project-directory`, never `-C`. `COMPOSE_FILE` is unset by the manager,
 because it changes override auto-loading, and an explicit `-f` replaces the
-selected list. Opt into an override file with `GD_COMPOSE_OVERRIDES`:
+selected list. The manager adds the site's `compose.override.yml` after
+`compose.yml` when it exists, which is what plain `docker compose` does on its
+own, so the two run the same site (see [Your own Compose
+overrides](#your-own-compose-overrides)). Opt into any other override file
+with `GD_COMPOSE_OVERRIDES`:
 
 ```bash
 GD_COMPOSE_OVERRIDES=compose.ipv6.yml ./ghost-docker check
@@ -266,14 +270,10 @@ directory. It is yours: installation never writes one and updates never
 touch it, and a clone's `.gitignore` leaves it out.
 
 Plain `docker compose` in the site directory merges `compose.override.yml`
-into `compose.yml` on its own, so `docker compose up -d` uses it with nothing
-else to set. The manager does not: it names its files with `-f`, which turns
-that merging off. Give the file to it as well, so that `./ghost-docker check`
-looks at the site you run:
-
-```bash
-GD_COMPOSE_OVERRIDES=compose.override.yml ./ghost-docker check
-```
+into `compose.yml` on its own, and every `./ghost-docker` command adds it the
+same way, so both run the site with your changes and nothing has to be set.
+That includes installation: a `compose.override.yml` already in a new site
+directory is used from the first start.
 
 An override is a manual customization: when a stack update changes a service
 your file also changes, read both. To develop a theme against a local site,

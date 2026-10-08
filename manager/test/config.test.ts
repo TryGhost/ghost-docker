@@ -276,6 +276,20 @@ test('GD_COMPOSE_OVERRIDES adds -f files after compose.yml, relative to the site
     ]);
 });
 
+test('the site’s compose.override.yml is used when it exists, before GD_COMPOSE_OVERRIDES, and once', async () => {
+    makeSite(h, LOCAL, { mail__transport: 'SMTP' });
+    writeFileSync(join(h.dir, 'compose.override.yml'), 'services: {}\n');
+    h.env.GD_COMPOSE_OVERRIDES = 'compose.override.yml,compose.ipv6.yml';
+    await h.run('config', 'validate');
+    const call = h.calls.find((args) => args.includes('config') && args.includes('json'))!;
+    const files = call.flatMap((arg, index) => (call[index - 1] === '-f' ? [arg] : []));
+    assert.deepEqual(files, [
+        join(h.dir, 'compose.yml'),
+        join(h.dir, 'compose.override.yml'),
+        join(h.dir, 'compose.ipv6.yml'),
+    ]);
+});
+
 test('Compose gets only what it needs of the manager’s environment, so .env is what it interpolates', () => {
     const environment = composeEnvironment(
         {

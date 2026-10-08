@@ -7,14 +7,16 @@
 // inherited, because it changes override auto-loading; nor are the other
 // COMPOSE_* settings, which belong to the site's own `.env`, nor anything else
 // of the manager's own environment, which Compose would interpolate over
-// `.env`. Overrides are opted into with GD_COMPOSE_OVERRIDES
-// (docs/configuration.md).
+// `.env`. The site's compose.override.yml is used when it exists, as plain
+// `docker compose` uses it, and other overrides are opted into with
+// GD_COMPOSE_OVERRIDES (docs/configuration.md).
+import { existsSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import type { Readable } from 'node:stream';
 import { z } from 'zod';
 import type { Io } from './io.ts';
 import type { Exec } from './process.ts';
-import { COMPOSE_FILE } from './site.ts';
+import { COMPOSE_FILE, COMPOSE_OVERRIDE_FILE } from './site.ts';
 
 /** The version of the Compose client in this image. */
 export async function composeVersion(exec: Exec): Promise<string | null> {
@@ -39,12 +41,19 @@ export interface ComposeOptions {
     readonly input?: string | Readable;
 }
 
-/** The `-f` list: compose.yml, then each override, relative to the site. */
+/**
+ * The `-f` list: compose.yml, the site's compose.override.yml when there is
+ * one, then each override GD_COMPOSE_OVERRIDES names, relative to the site.
+ */
 export function composeFiles(dir: string, overrides = ''): string[] {
     const files = [join(dir, COMPOSE_FILE)];
+    if (existsSync(join(dir, COMPOSE_OVERRIDE_FILE))) {
+        files.push(join(dir, COMPOSE_OVERRIDE_FILE));
+    }
     for (const override of overrides.split(',').map((item) => item.trim())) {
-        if (override) {
-            files.push(isAbsolute(override) ? override : join(dir, override));
+        const file = isAbsolute(override) ? override : join(dir, override);
+        if (override && !files.includes(file)) {
+            files.push(file);
         }
     }
     return files.flatMap((file) => ['-f', file]);

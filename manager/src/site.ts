@@ -8,6 +8,8 @@ export const ENV_EXAMPLE_FILE = '.env.example';
 export const GHOST_ENV_FILE = 'ghost.env';
 export const META_FILE = '.ghost-docker.json';
 export const COMPOSE_FILE = 'compose.yml';
+/** The operator's own overrides; plain Compose merges it, so the manager does too. */
+export const COMPOSE_OVERRIDE_FILE = 'compose.override.yml';
 
 /**
  * The bind-mounted data directories, at compose.yml's defaults
