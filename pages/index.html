@@ -1,0 +1,103 @@
+<!doctype html>
+<!--
+  The page at https://docker.ghost.org/, published to gh-pages beside install.sh
+  by .github/workflows/launcher.yml. {{RELEASE}} becomes the release it was
+  published from. Plain HTML, nothing loaded from elsewhere.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ghost on Docker</title>
+<meta name="description" content="Self-host Ghost with Docker Compose: install a site with one command.">
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #ffffff;
+    --fg: #15171a;
+    --muted: #5d6670;
+    --code-bg: #f1f3f4;
+    --border: #e3e6e8;
+    --accent: #ff1a75;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #15171a;
+      --fg: #eceef0;
+      --muted: #9aa3ab;
+      --code-bg: #23262b;
+      --border: #30343a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  main { max-width: 720px; margin: 0 auto; padding: 48px 16px 64px; }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 8px; }
+  h2 { font-size: 1.15rem; margin: 40px 0 8px; }
+  p, li { color: var(--fg); }
+  .lede { color: var(--muted); margin-top: 0; }
+  a { color: var(--accent); }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+    overflow-x: auto;
+    font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.92em; }
+  .note {
+    border-left: 3px solid var(--accent);
+    padding: 4px 0 4px 14px;
+    color: var(--muted);
+  }
+  footer { margin-top: 48px; color: var(--muted); font-size: 0.9rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Ghost on Docker</h1>
+  <p class="lede">Self-host Ghost with Docker Compose: Ghost, MySQL and Caddy with automatic HTTPS, installed and kept up to date by one launcher.</p>
+
+  <p class="note">This is a beta. For a supported setup today, use the
+    <a href="https://github.com/TryGhost/ghost-docker/tree/main">main branch of ghost-docker</a>
+    or <a href="https://ghost.org/docs/install/">Ghost-CLI</a>.</p>
+
+  <h2>Requirements</h2>
+  <ul>
+    <li>Docker Engine 25.0 or later with the Compose plugin 2.24 or later, and bash.</li>
+    <li>Linux for a production site. Local sites also run on Docker Desktop, OrbStack and WSL2 on Windows.</li>
+  </ul>
+
+  <h2>A production site</h2>
+  <p>Ports 80 and 443 must be free. Make an empty directory for the site and run, from inside it:</p>
+  <pre><code>curl -fsSL https://docker.ghost.org/install.sh | bash -s -- install --domain example.com --email you@example.com</code></pre>
+  <p>Then point the domain's DNS at this host. Caddy obtains a certificate once it does, and <code>./ghost-docker check</code> reports it.</p>
+
+  <h2>A local site</h2>
+  <p>For themes, and for trying Ghost, on <code>127.0.0.1</code>:</p>
+  <pre><code>mkdir ~/my-site &amp;&amp; cd ~/my-site
+curl -fsSL https://docker.ghost.org/install.sh | bash -s -- install --local</code></pre>
+
+  <h2>Afterwards</h2>
+  <p>Installation writes a launcher into the site directory. Every later command runs from there:</p>
+  <pre><code>./ghost-docker check     # diagnose the site
+./ghost-docker update    # a newer release of the stack; Ghost is unchanged
+docker compose logs -f ghost</code></pre>
+
+  <h2>More</h2>
+  <ul>
+    <li><a href="https://github.com/TryGhost/ghost-docker/blob/next-docker/docs/install.md">Installation guide</a>: every option, releases and channels, updates, and moving a Ghost-CLI site to Docker.</li>
+    <li><a href="https://github.com/TryGhost/ghost-docker/blob/next-docker/docs/configuration.md">Configuration</a>.</li>
+    <li><a href="https://docker.ghost.org/install.sh">install.sh</a>: the launcher itself. Read it before you run it.</li>
+  </ul>
+
+  <footer>Served from release {{RELEASE}} of <a href="https://github.com/TryGhost/ghost-docker">TryGhost/ghost-docker</a>.</footer>
+</main>
+</body>
+</html>

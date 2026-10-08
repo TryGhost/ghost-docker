@@ -38,6 +38,8 @@ export interface Daemon {
         env: Record<string, string>,
         input?: string,
     ) => ProgramResult | undefined;
+    /** `git ...`, as the manager runs it in a checkout; undefined: git is not installed. */
+    gitRun?: (args: string[]) => ProgramResult | undefined;
     /**
      * Any other request, answered before the defaults: return undefined to
      * fall through. A one-shot container is a `POST /containers/create`
@@ -181,6 +183,11 @@ export function harness(): Harness {
                     : (state.daemon.hostPorts ?? []).includes(port),
             exec: fakeExec((command, args, options) => {
                 state.calls.push([command, ...args]);
+                if (command === 'git') {
+                    return (
+                        state.daemon.gitRun?.(args) ?? failed(undefined, `spawn ${command} ENOENT`)
+                    );
+                }
                 if (command !== 'docker-compose') {
                     return failed(undefined, `spawn ${command} ENOENT`);
                 }

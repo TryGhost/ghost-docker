@@ -24,11 +24,12 @@ Branches:
 
 ## Current state
 
-Steps N1–N3, S5b and S5c: the stack's files and contracts, the launcher and
-manager image, and the first real commands: `install` (local and production,
-from the image or a clone, and `--import` of a local Ghost-CLI site's bundle),
-`config get|set|validate`, `check`, `info`, `list`, plus `version`, `doctor`
-and `help`. Every other `./ghost-docker ...` command or
+Steps N1–N3, S5b, S5c and S6a: the stack's files and contracts, the launcher
+and manager image, releases, and the commands: `install` (local and
+production, from the image or a clone, from a channel or a release, and
+`--import` of a local Ghost-CLI site's bundle), `update` (between releases, or
+commits of a clone), `config get|set|validate`, `check`, `info`, `list`, plus
+`version`, `doctor` and `help`. Every other `./ghost-docker ...` command or
 option in the documents is the planned interface: it does not exist until its
 step lands (an unknown command or option exits 2), and the plan says which step
 delivers it. `docs/install.md` describes what exists.
@@ -37,7 +38,10 @@ delivers it. `docs/install.md` describes what exists.
   image, and `docker run`s it (plan §2.10). Add no logic to it that the
   manager could hold. Windows is WSL2 only; there is no native launcher.
   There is no `--migrate`: moving a Ghost-CLI site is documented as
-  `ghost stop`, `ghost migrate-export`, `install --import` (S5c).
+  `ghost stop`, `ghost migrate-export`, `install --import` (S5c). It reads
+  `--channel`, `--release` and `--to` to choose the image (and passes them on);
+  `update` from a pinned site runs the newest release on the site's channel
+  (`GD_PINNED_CHANNEL`), not its pin.
 - `manager/` is the CLI: TypeScript run directly by Node (types stripped, no
   build step, so `erasableSyntaxOnly`), with dependencies installed by pnpm
   (version pinned in `package.json`; `npm i -g corepack && corepack enable`
@@ -72,6 +76,18 @@ delivers it. `docs/install.md` describes what exists.
   `src/import/database.ts` (the client, the DEFINER filter, row counts).
   `src/undo.ts` records what an installation created and removes it on
   failure; an import keeps that record in its marker file.
+- Releases (`src/release.ts`): only `vX.Y.Z` and `vX.Y.Z-beta.N`, ordered
+  numerically. The Release workflow cuts them as Ghost and Ghost-CLI do
+  (`manager/scripts/release.ts`: ✨ commits make a minor, anything else a
+  patch; release-note emojis select the notes), then publishes the image, its
+  moving `beta`/`stable` tags (`image.yml`), and the launcher to gh-pages as
+  `https://docker.ghost.org/install.sh` (`launcher.yml`). Every release is a
+  beta until S6b.
+- `src/commands/update.ts` moves a site to the release it runs as: snapshot
+  in `.ghost-docker-update/`, managed files by checksum (an edited one is kept
+  beside `<file>.new`), validate, pull, `up --wait`, verify, and on failure
+  put back and report restored or needs-the-operator. In a clone it checks
+  the previous commit out instead. `src/lock.ts` is the site lock (§2.2).
 - The manager verifies a site from inside its own containers
   (`src/verify.ts`): `127.0.0.1` in the manager is the manager, and it cannot
   reach the host's ports.
@@ -133,6 +149,7 @@ pnpm run format:check && pnpm run lint && pnpm run typecheck && pnpm test
 tests/e2e/launcher.sh         # stand-in docker, then the real image
 tests/e2e/install.sh          # real installs; binds 80/443, pulls images
 tests/e2e/import.sh           # Ghost-CLI sites exported and imported; needs Node
+tests/e2e/update.sh           # updates between locally built releases, and a clone's commits
 ```
 
 Unit tests fake the daemon at the transport (`test/helpers.ts`: `api`, `run`

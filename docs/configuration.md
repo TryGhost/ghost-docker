@@ -193,26 +193,31 @@ contract.
 
 ## Installation metadata
 
-`.ghost-docker.json` records the schema version, installation time, mode,
-release channel, how the stack was installed (from the image or a clone),
-installed stack version/commit/ref and manager image, project identity,
+`.ghost-docker.json` records the schema version, installation and last update
+time, mode, release channel, how the stack was installed (from the image or a
+clone), installed stack version/commit/ref and manager image and the ones
+before the last update, project identity,
 resolved Ghost image and digest, selected profiles, checksums of the files the
 manager wrote, and completed migrations. Its schema
 is specified in §2.2 of [the plan](ghost-cli-replacement.md). It is gitignored,
-mode `0600`, and machine generated — do not hand-edit it. Durable operation
-journals for in-progress work and recovery state are separate files, and land
-with backup/restore in S4.
+mode `0600`, and machine generated — do not hand-edit it. Operations that
+change a running site hold `.ghost-docker.lock` while they run (`update` now;
+backup, restore and Ghost upgrades as they land), and an update keeps what it
+would put back in `.ghost-docker-update/` until it finishes; see
+[update](install.md#update).
 
 ```json
 {
   "schemaVersion": 1,
   "installedAt": "2026-09-03T09:12:44Z",
+  "updatedAt": "2026-10-08T15:02:10Z",
   "mode": "production",
   "channel": "stable",
   "source": "image",
   "stack": {
     "version": "v1.2.3", "commit": "…", "ref": "v1.2.3",
-    "image": "ghcr.io/tryghost/ghost-docker@sha256:…"
+    "image": "ghcr.io/tryghost/ghost-docker@sha256:…",
+    "previous": { "version": "v1.2.2", "commit": "…", "image": "ghcr.io/tryghost/ghost-docker@sha256:…" }
   },
   "site": {
     "project": "ghost-example-com", "dir": "/opt/ghost/example.com",
@@ -234,7 +239,10 @@ place. `stack.image` is the manager image the site's launcher is pinned to:
 a repository digest, or, for an image only this host holds, its ID. `payload`
 is the SHA-256 of every file `install` wrote from the image, so that an update
 can tell a file nobody edited from one somebody did (plan §2.7); it is empty
-in clone mode, where Git already knows.
+in clone mode, where Git already knows. `update` records the checksums of the
+release it moved to, `stack.previous` (what the site ran before, which a failed
+update recovers to) and `updatedAt`; both are `null` until the first update.
+`channel` is the channel `update` follows by default.
 
 A field that was not supplied is `null` rather than an empty string, so "not
 known" and "deliberately empty" stay distinguishable. The digest is the

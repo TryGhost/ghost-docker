@@ -35,6 +35,11 @@ COPY --from=deps /usr/local/bin/node /usr/local/bin/node
 # added, which su-exec cannot do for a uid that has no passwd entry.
 RUN apk add --no-cache setpriv
 
+# A site that is a checkout of the repository is updated by checking out a
+# newer ref; when that update fails, the manager checks the previous commit
+# out again, and refuses to start on a tree with local changes.
+RUN apk add --no-cache git
+
 # The manager talks to the daemon over the Engine API on the mounted socket.
 # Compose has no API and is run as a program: the plugin binary also runs on
 # its own as `docker-compose`, so the Docker CLI itself is not needed.

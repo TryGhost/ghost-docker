@@ -65,6 +65,19 @@ jobs:
       - name: Install end to end
         run: tests/e2e/install.sh
 
+  # Real updates on Docker Engine: between three releases built from this
+  # checkout (one that does not validate), and between two commits of a clone
+  # (one whose Ghost never becomes healthy).
+  update-linux:
+    name: Update on Linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Update end to end
+        run: tests/e2e/update.sh
+
   # Real Ghost-CLI sites, on SQLite and MySQL, exported with the released
   # exporter and imported through the launcher. Ghost-CLI runs on the host, so
   # this needs Node there too; the runner's own mysqldump serves the exporter.

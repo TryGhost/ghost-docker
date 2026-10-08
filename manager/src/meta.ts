@@ -21,6 +21,8 @@ const nullable = z.string().min(1).nullable();
 export const metadataSchema = z.strictObject({
     schemaVersion: z.literal(SCHEMA_VERSION),
     installedAt: z.iso.datetime(),
+    /** When `update` last completed; null until it has. */
+    updatedAt: z.iso.datetime().nullable().default(null),
     mode: z.enum(SITE_MODES),
     channel: z.enum(['stable', 'beta', 'edge']).nullable(),
     // `image`: the payload was written from the manager image. `checkout`: the
@@ -32,6 +34,14 @@ export const metadataSchema = z.strictObject({
         ref: nullable,
         /** The manager image that installed the site, as the site's launcher runs it. */
         image: nullable,
+        /**
+         * What the site ran before its last update: the release, commit and
+         * manager image an update recovers to. Null until the first update.
+         */
+        previous: z
+            .strictObject({ version: nullable, commit: nullable, image: nullable })
+            .nullable()
+            .default(null),
     }),
     site: z.strictObject({
         project: z.string().min(1),
@@ -57,6 +67,8 @@ export const metadataSchema = z.strictObject({
 });
 
 export type Metadata = z.infer<typeof metadataSchema>;
+/** A document to write: fields with defaults may be left out. */
+export type MetadataInput = z.input<typeof metadataSchema>;
 
 export type MetadataRead =
     | { state: 'absent' }
@@ -102,7 +114,7 @@ export function readMetadata(dir: string): MetadataRead {
 }
 
 /** Validated before it is written, so a bad document never replaces a good one. */
-export function writeMetadata(dir: string, metadata: Metadata): void {
+export function writeMetadata(dir: string, metadata: MetadataInput): void {
     const valid = metadataSchema.parse(metadata);
     atomicWrite(metaPath(dir), `${JSON.stringify(sortKeys(valid), null, 2)}\n`, PRIVATE);
 }
@@ -134,11 +146,17 @@ export function describeMetadata(read: MetadataRead): string[] {
     const unknown = (value: string | null) => value ?? 'unknown';
     return [
         `installed      ${m.installedAt}`,
+        ...(m.updatedAt ? [`updated        ${m.updatedAt}`] : []),
         `mode           ${m.mode}`,
         `source         ${m.source === 'checkout' ? 'a checkout of the repository' : 'the manager image'}`,
         `channel        ${unknown(m.channel)}`,
         `stack          ${unknown(m.stack.version)}${m.stack.commit ? ` (${m.stack.commit.slice(0, 12)})` : ''}`,
         ...(m.stack.image ? [`manager image  ${m.stack.image}`] : []),
+        ...(m.stack.previous
+            ? [
+                  `previous       ${unknown(m.stack.previous.version)}${m.stack.previous.commit ? ` (${m.stack.previous.commit.slice(0, 12)})` : ''}`,
+              ]
+            : []),
         `project        ${m.site.project}`,
         `directory      ${m.site.dir}`,
         `url            ${m.site.url}`,

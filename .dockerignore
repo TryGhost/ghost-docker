@@ -10,11 +10,14 @@ ghost.env
 .ghost-docker.json
 .ghost-docker-import
 .ghost-docker-probe
+.ghost-docker.lock
+.ghost-docker-update
 .import
 caddy/sites/*.caddy
 caddy/custom/*.caddy
 caddy/global/*.caddy
 docs
+pages
 tests
 manager/test
 *.md

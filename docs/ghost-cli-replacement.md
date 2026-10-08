@@ -230,7 +230,7 @@ identity, the resolved Ghost image, a checksum of every file written from the im
 (§2.7), and completed migrations. An installation that predates metadata must be
 supported explicitly.
 
-Backup, restore, Ghost upgrade and stack update take a lock file in the site
+Backup, restore, Ghost upgrade and stack update take a lock file (`.ghost-docker.lock`) in the site
 directory for the length of the operation, so two of them cannot run on one site
 at once. A lock left behind by a crashed run names its operation and start time;
 `check` reports it and how to remove it, and nothing removes it automatically.
@@ -507,11 +507,17 @@ belongs with service image distribution (S14). Tags:
 | `stable`, `beta` | The newest release on that channel. Moving. Used only to *resolve* a release. |
 | `edge` | Built from the development branch on every push. Not a release. |
 
-Release-please manages releases. Configure dependency changes explicitly as
-releasable patches; do not assume `chore(deps)` does that by default. Specify beta
-release mechanics and test version selection rather than using lexical sorting.
-Until the legacy migration exists (S6b) every release is a beta, and `main` keeps
-the pre-`next-docker` layout that existing installations update with `git pull`.
+Releases are cut as Ghost's and Ghost-CLI's are: a Release workflow, run by
+hand, works out the next version from the squash commits since the last
+release (a ✨ feature makes it a minor; anything else, dependency updates
+included, a patch), tags `next-docker`, and publishes the image, its moving
+tags, the GitHub release (notes from the commits that carry a release-note
+emoji) and the served launcher. release-please was planned and not used: it
+reads only Conventional Commits, and this repository's titles are past-tense
+sentences, so it would have found nothing to release. Version selection is
+numeric and tested, never lexical. Until the legacy migration exists (S6b)
+every release is a beta, and `main` keeps the pre-`next-docker` layout that
+existing installations update with `git pull`.
 
 Rules:
 
@@ -562,14 +568,17 @@ Flow:
 2. Resolve the release, refuse a downgrade, and record the previous version and
    digest.
 3. Back up (§2.5), which also keeps the operator's files and, in image mode, the
-   payload being replaced.
+   payload being replaced. Until S4 a snapshot in `.ghost-docker-update/` keeps
+   the files; the database is not touched by a stack update.
 4. Write the managed files, run the release's migration scripts in order (each
    recorded in metadata when it completes), validate Compose, pull images, `up
    --wait`, and verify as `check` does.
 5. On a failure, put the previous payload and configuration back (in clone mode,
    by checking the previous commit out), `up --wait`, and report restored or
    needs the operator. Never report success because `up -d` returned zero.
-6. On success, rewrite the site's launcher to pin the new digest.
+6. On success, rewrite the site's launcher to pin the new digest. The launcher
+   holds the pin, so it is replaced even when edited; an edited copy is kept as
+   `ghost-docker.edited`.
 
 Migration `0001-compose-profiles` moves an installation made from `main` before
 this layout: it must handle both an absent profile setting and existing
@@ -592,7 +601,7 @@ change.
 ghost-docker install [--local | --domain example.com [--admin-domain admin.example.com]
                                 [--email ops@example.com]]
                      [--dir PATH] [--port 2368] [--version 6.3.1]
-                     [--channel stable|beta] [--ref vX.Y.Z]
+                     [--channel stable|beta] [--release vX.Y.Z]
                      [--with analytics,activitypub,supervisor]
                      [--import BUNDLE] [--no-start]
 ghost-docker check | info | list
@@ -812,7 +821,7 @@ Keep it to a few hundred lines and to exactly these jobs:
 - Check that Docker is installed, the daemon answers, and Compose is present, and
   say what to do when they are not.
 - Decide which image to run: the digest pinned in the site's own launcher; or a
-  release resolved from `--channel`/`--ref`; or, in a checkout of this
+  release resolved from `--channel`/`--release`; or, in a checkout of this
   repository, an image built from it.
 - Start it: `docker run` with the Docker socket, the site directory, the caller's
   identity and a terminal, following the contract below.
@@ -1161,10 +1170,10 @@ commands. Decisions made while building it, which later steps rely on:
 - **The Tinybird path** comes from the image's declared environment: the older
   layout declares `GHOST_CLI_INSTALL` and keeps Ghost under `current/`; the
   `next` variants do not. No container is started to look.
-- **`--channel` and `--ref`** do not exist until S6a: choosing a release is
-  the launcher's job. The recorded channel is derived from
-  the version the manager image carries (`vX.Y.Z` stable, `-beta.N` beta,
-  `edge-…` edge).
+- **`--channel` and `--release`** arrived with S6a. Choosing a release is the
+  launcher's job; the manager records the channel it was given (or the one
+  `--release` implies) and otherwise derives it from the version the manager image
+  carries (`vX.Y.Z` stable, `-beta.N` beta, `edge-…` edge).
 - **Prompts.** At a terminal, `install` asks for the site mode and a
   production site's domain when no option gave them (`@inquirer/select` and
   `@inquirer/input`); `--no-prompt`, or no terminal, makes a missing answer a
@@ -1264,15 +1273,15 @@ branch into `main` before it passes.
 
 Repo: ghost-docker. Implement §2.7 in two parts.
 
-**S6a — Releases, served launcher, and `update`.** Deps: N3. release-please on
-`next-docker` producing beta tags and explicit dependency-only patch releases;
+**S6a — Releases, served launcher, and `update`.** Deps: N3. A release workflow on
+`next-docker` producing beta tags and dependency-only patch releases;
 image tags `vX.Y.Z[-beta.N]`, `stable` and `beta` published from release tags;
 tested release resolution; the `gh-pages` workflow serving the launchers at
 `docker.ghost.org`; managed-file checksums; and `update` between releases of
 this layout as described in §2.7, without the legacy migration.
 
 Acceptance: the served launchers install the newest beta and an explicit
-`--ref`; version selection is tested against prerelease ordering rather than
+`--release`; version selection is tested against prerelease ordering rather than
 lexical sort; a dependency-only change produces a release; `update` moves a site
 between two releases with the Ghost pin unchanged and the launcher re-pinned,
 refuses a downgrade, keeps a hand-edited managed file and writes the release's
@@ -1281,6 +1290,43 @@ services change.
 In clone mode, a failed update between two refs whose `compose.yml` differs
 leaves the checkout at the previous commit with the previous configuration and
 the site running, and a dirty tree is refused before anything changes.
+
+Status: implemented. `tests/e2e/update.sh` covers `update` in both modes
+against releases built locally; `launcher.yml` installs the newest beta and an
+explicit `--release` with the served launcher after each release. Decisions made
+while building it:
+
+- **No release-please** (§2.7). The Release workflow and
+  `manager/scripts/release.ts` cut releases as Ghost and Ghost-CLI do, and
+  the commit skill gained their release-note emojis. A tag pushed with
+  `GITHUB_TOKEN` starts no workflow, so the release workflow calls the image
+  and launcher workflows itself; a release tag pushed by hand still publishes
+  through `image.yml`. Versions start at `v0.1.0-beta.1`; a bump is applied to
+  the newest release that is not a beta, and betas of a newer version count
+  up toward it.
+- **Moving tags** go only to a release that is the newest on their channel, so
+  a patch to an older line never moves `beta` backwards. A release tag is
+  refused if the image already exists. The launcher is served only from the
+  newest release.
+- **`--release`**, not the planned `--ref`: it names a release tag, never a
+  git ref, and `--version` is already the Ghost version.
+- **The launcher's default** is the `beta` channel, which includes releases.
+  It resolves `--channel` and `--release`/`--to` itself and passes them on. A
+  pinned site's `update` runs the newest release on the channel recorded in
+  the launcher (`GD_PINNED_CHANNEL`), because the updater is the target.
+- **Downgrades** are told by release number in image mode, and by ancestry in
+  a clone. A site on `edge` may update to anything; a build that is not a
+  release cannot update a site that runs one.
+- **Ghost compatibility** is `MINIMUM.ghost` in `versions.ts`. A release that
+  raises it stops the update of an older site before anything changes, with
+  the upgrade sequence.
+- **The lock** (§2.2) is `.ghost-docker.lock`, taken by `update`; S4 uses the
+  same module. An interrupted update's snapshot also blocks the next one
+  until the operator removes it.
+- **Validation** requires Compose to resolve the project, which plain
+  `config validate` only warns about.
+- **Metadata** gained `updatedAt` and `stack.previous`, defaulting to `null`
+  so files written before them still read; `schemaVersion` stays 1.
 
 **S6b — Legacy-layout migration and transactional updates.** Deps: S4, S6a. The
 release migration scripts (run in order, recorded in metadata), migration
@@ -1483,6 +1529,5 @@ interfaces exist and their cache-versus-durable-state requirements are establish
 - Git checkout cannot overwrite an untracked file with a tracked file. Pre-checkout
   migration backups and recovery must include configuration, not just a Git ref.
 - Authoritative references: [Compose profiles](https://docs.docker.com/compose/how-tos/profiles/),
-  [dotenv interpolation](https://docs.docker.com/compose/how-tos/environment-variables/variable-interpolation/),
-  [Caddy commands](https://caddyserver.com/docs/command-line), and
-  [release-please](https://github.com/googleapis/release-please).
+  [dotenv interpolation](https://docs.docker.com/compose/how-tos/environment-variables/variable-interpolation/)
+  and [Caddy commands](https://caddyserver.com/docs/command-line).

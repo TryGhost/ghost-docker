@@ -1,0 +1,147 @@
+name: "Served launcher"
+
+# Serves the launcher at https://docker.ghost.org/install.sh: the release's own
+# ghost-docker, published to the gh-pages branch, whose CNAME is the domain,
+# with pages/index.html as the domain's front page.
+# Only the newest release is served, and never by hand (plan §2.7). Then
+# tests what is served, not the checkout's copy: it installs the newest beta,
+# and an explicit --release.
+#
+# Called by the Release workflow. Run it by hand to publish again, for
+# example once the domain's DNS points at GitHub Pages.
+on:
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: true
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The release whose launcher to serve
+        type: string
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: served-launcher
+  cancel-in-progress: false
+
+env:
+  DOMAIN: docker.ghost.org
+  TAG: ${{ inputs.tag }}
+
+jobs:
+  publish:
+    name: Publish to gh-pages
+    runs-on: ubuntu-latest
+    outputs:
+      published: ${{ steps.newest.outputs.newest }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: "26"
+
+      - name: Is it the newest release?
+        id: newest
+        run: |
+          set -euo pipefail
+          if node manager/scripts/release.ts moving "$TAG" | grep -qx beta; then
+            echo "newest=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "newest=false" >>"$GITHUB_OUTPUT"
+            echo "::notice::$TAG is not the newest release, so the served launcher stays as it is"
+          fi
+
+      - name: Publish
+        if: steps.newest.outputs.newest == 'true'
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          pages=$RUNNER_TEMP/pages
+          if git ls-remote --exit-code --heads origin gh-pages >/dev/null; then
+            git fetch --quiet origin gh-pages
+            git worktree add --quiet "$pages" origin/gh-pages
+          else
+            git worktree add --quiet --detach "$pages"
+            git -C "$pages" checkout --quiet --orphan gh-pages
+            git -C "$pages" rm -r --quiet --force .
+          fi
+          cp ghost-docker "$pages/install.sh"
+          sed "s/{{RELEASE}}/$TAG/g" pages/index.html >"$pages/index.html"
+          printf '%s\n' "$DOMAIN" >"$pages/CNAME"
+          : >"$pages/.nojekyll"
+          git -C "$pages" add install.sh index.html CNAME .nojekyll
+          if git -C "$pages" diff --cached --quiet; then
+            echo "::notice::the served launcher is already $TAG's"
+          else
+            git -C "$pages" commit --quiet --message "Served the launcher from $TAG"
+            git -C "$pages" push --quiet origin HEAD:gh-pages
+          fi
+
+  verify:
+    name: Install with the served launcher
+    needs: publish
+    if: needs.publish.outputs.published == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Wait until the release's launcher is served
+        run: |
+          set -euo pipefail
+          want=$(sha256sum ghost-docker | cut -d' ' -f1)
+          for attempt in $(seq 1 60); do
+            # The query string goes around the CDN's cache.
+            got=$(curl -fsSL "https://$DOMAIN/install.sh?run=$GITHUB_RUN_ID-$attempt" 2>/dev/null | sha256sum | cut -d' ' -f1 || true)
+            if [[ $got == "$want" ]]; then
+              echo "https://$DOMAIN/install.sh is $TAG's launcher"
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "::error::https://$DOMAIN/install.sh did not become $TAG's launcher within 15 minutes. Check that GitHub Pages serves gh-pages and that the domain's DNS points at it."
+          exit 1
+
+      - name: The front page is served
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://$DOMAIN/?run=$GITHUB_RUN_ID" | grep -q "release $TAG" ||
+            { echo "::error::https://$DOMAIN/ is not $TAG's page"; exit 1; }
+
+      - name: The served launcher installs the newest beta
+        run: |
+          set -euo pipefail
+          site=$(mktemp -d)
+          curl -fsSL "https://$DOMAIN/install.sh" | bash -s -- --dir "$site" install --local --no-prompt
+          version=$(jq -r .stack.version "$site/.ghost-docker.json")
+          channel=$(jq -r .channel "$site/.ghost-docker.json")
+          [[ $version == "$TAG" && $channel == beta ]] || {
+            echo "::error::installed $version on $channel, expected $TAG on beta"
+            exit 1
+          }
+          "$site/ghost-docker" check
+          docker compose --project-directory "$site" -f "$site/compose.yml" down --volumes
+
+      - name: The served launcher installs an explicit --release
+        run: |
+          set -euo pipefail
+          site=$(mktemp -d)
+          curl -fsSL "https://$DOMAIN/install.sh" | bash -s -- --dir "$site" install --local --no-prompt --no-start --release "$TAG"
+          version=$(jq -r .stack.version "$site/.ghost-docker.json")
+          [[ $version == "$TAG" ]] || {
+            echo "::error::installed $version, expected $TAG"
+            exit 1
+          }
+          grep -q "^readonly GD_PINNED_IMAGE=\"ghcr.io/tryghost/ghost-docker@sha256:" "$site/ghost-docker"

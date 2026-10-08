@@ -36,7 +36,7 @@ import { atomicWrite, PRIVATE } from '../fs.ts';
 import { resolveGhost, type ResolvedGhost } from '../ghost.ts';
 import { clearUnfinishedImport, Importing, refuseImportOptions } from '../import.ts';
 import type { Io, Prompter } from '../io.ts';
-import { SCHEMA_VERSION, writeMetadata, type Metadata } from '../meta.ts';
+import { SCHEMA_VERSION, writeMetadata } from '../meta.ts';
 import {
     isCheckout,
     makeDirectories,
@@ -60,7 +60,7 @@ import {
 } from '../site.ts';
 import { ALL_PROFILES, Created } from '../undo.ts';
 import { verifyIngress } from '../verify.ts';
-import { managerVersion } from '../versions.ts';
+import { releaseOf, requestedRelease, type ManagerRelease, type Requested } from './common.ts';
 import { collect } from './doctor.ts';
 
 /** Where a local site's port search starts, and how far it goes. */
@@ -70,7 +70,7 @@ export const DEFAULT_MAILPIT_PORT = 8025;
 const PORT_SEARCH = 200;
 const PRODUCTION_PORTS = { http: 80, https: 443 } as const;
 /** Compose waits this long for health checks; pulls and builds come before it. */
-const READY_TIMEOUT_SECONDS = 600;
+export const READY_TIMEOUT_SECONDS = 600;
 
 const parsePort = (input: string): number => {
     if (!/^\d+$/.test(input) || Number(input) < 1 || Number(input) > 65_535) {
@@ -108,6 +108,14 @@ const options = {
     import: {
         type: 'string',
         brief: 'Import a local Ghost-CLI site from the bundle `ghost migrate-export` made: a directory, .tgz, .tar or .zip.',
+    },
+    channel: {
+        type: 'string',
+        brief: 'Install the newest release on this channel: stable or beta. The launcher resolves it.',
+    },
+    release: {
+        type: 'string',
+        brief: 'Install this release, vX.Y.Z or vX.Y.Z-beta.N. The launcher resolves it.',
     },
     'no-prompt': { type: 'boolean', brief: 'Never ask: every input must be an option.' },
     'no-start': {
@@ -261,17 +269,6 @@ export function choosePort(taken: ReadonlySet<number>, start = DEFAULT_PORT): nu
     );
 }
 
-/** `vX.Y.Z` is stable, a `-beta.N` is beta, `edge-...` is edge; anything else is no channel. */
-export function channelOf(version: string): Metadata['channel'] {
-    if (/^v\d+\.\d+\.\d+$/.test(version)) {
-        return 'stable';
-    }
-    if (/^v\d+\.\d+\.\d+-beta\.\d+$/.test(version)) {
-        return 'beta';
-    }
-    return version.startsWith('edge') ? 'edge' : null;
-}
-
 // --- The installation ---------------------------------------------------------
 
 const heading = (io: Io, title: string) => io.stdout(`\n${title}\n`);
@@ -304,6 +301,8 @@ interface Site extends Target {
     readonly profiles: string;
     readonly production: boolean;
     readonly url: string;
+    /** This manager's release, and the channel the site follows. */
+    readonly release: ManagerRelease;
 }
 
 export const installCommand = defineCommand({
@@ -312,6 +311,7 @@ export const installCommand = defineCommand({
     async run(flags, _positionals, io) {
         // 1. Refusals. Before anything is looked at: a bad port is a usage error.
         const requestedPort = flags.port === undefined ? undefined : parsePort(flags.port);
+        const release = requestedRelease(flags.channel, flags.release, '--release');
         if (flags.import !== undefined) {
             refuseImportOptions(flags);
         }
@@ -330,7 +330,7 @@ export const installCommand = defineCommand({
             flags.import === undefined ? null : await Importing.read(io, dir, flags.import, flags);
         let site: Site;
         try {
-            site = await prepare(target, flags, requestedPort, importing);
+            site = await prepare(target, flags, requestedPort, release, importing);
         } catch (error) {
             importing?.abandon();
             throw error;
@@ -398,9 +398,11 @@ async function prepare(
     target: Target,
     flags: Flags,
     requestedPort: number | undefined,
+    requested: Requested,
     importing: Importing | null,
 ): Promise<Site> {
     const { io, context, dir, clone } = target;
+    const release = releaseOf(requested, io.env);
     // Asked only now, so nobody answers questions to be told the directory is taken.
     const intent = importing === null ? await plan(flags, io.prompt) : imported(flags);
     await preflight(io, context);
@@ -434,6 +436,7 @@ async function prepare(
         profiles: [intent.mode, ...intent.services].join(','),
         production,
         url: production ? `https://${intent.domain}` : `http://localhost:${port}`,
+        release,
     };
 }
 
@@ -551,14 +554,15 @@ async function createSite(site: Site, created: Created, importing: Importing | n
 }
 
 /** In image mode, the stack's files and the launcher; a checkout's are used in place. */
-function writeStack({ io, dir, clone, stack, files, pin }: Site, created: Created) {
+function writeStack(site: Site, created: Created) {
+    const { io, dir, clone, stack, files, pin } = site;
     if (clone) {
         return;
     }
     writePayload(dir, stack, files, created);
     created.save();
     ok(io, 'stack files', `compose.yml, caddy/, mysql-init/, tinybird/ from the manager image`);
-    writeLauncher(dir, io.env, pin!, created);
+    writeLauncher(dir, io.env, { image: pin!, channel: site.release.channel }, created);
     created.save();
     ok(io, 'ghost-docker', `the launcher, pinned to ${pin!}`);
 }
@@ -683,19 +687,20 @@ function writeSiteRoutes({ io, dir, production, project, intent }: Site, created
 
 function writeSiteMetadata(site: Site, created: Created) {
     const { io, dir, clone, intent, ghost } = site;
-    const { commit, version } = managerVersion();
+    const { commit, version, channel } = site.release;
     created.file(join(dir, META_FILE));
     writeMetadata(dir, {
         schemaVersion: SCHEMA_VERSION,
         installedAt: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
         mode: intent.mode,
-        channel: clone ? null : channelOf(version),
+        channel: clone ? null : channel,
         source: clone ? 'checkout' : 'image',
         stack: {
-            version: version === 'dev' || version === 'checkout' ? null : version,
-            commit: commit || null,
-            ref: clone ? null : version === 'dev' ? null : version,
+            version,
+            commit,
+            ref: clone ? null : version,
             image: site.pin,
+            previous: null,
         },
         site: {
             project: site.project,

@@ -4,28 +4,31 @@ Configuration to run Ghost and its services with Docker Compose.
 
 > **This is the `next-docker` development branch.** It is being rebuilt around
 > a manager image: a small CLI in a container, started by a launcher that needs
-> only Docker. It installs local and production sites; importing, updating and
-> backups are still to come. See [the plan](docs/ghost-cli-replacement.md) for
+> only Docker. It installs local and production sites, imports local Ghost-CLI
+> sites, and updates between its own beta releases; backups and production
+> imports are still to come. See [the plan](docs/ghost-cli-replacement.md) for
 > what lands when. For a supported setup today, use the `main` branch.
 
 ## The launcher
 
 ```sh
-./ghost-docker install --local                 # Linux, macOS, and Windows through WSL2
-./ghost-docker install --domain example.com --email ops@example.com
+# Linux, macOS, and Windows through WSL2; or --domain example.com --email ops@example.com
+curl -fsSL https://docker.ghost.org/install.sh | bash -s -- install --local
 ./ghost-docker check
+./ghost-docker update
 ```
 
 `install` writes the configuration, generates credentials, pins Ghost to an
 exact image digest, writes Caddy's routes, starts the site and
 reaches it through its own ingress; a failed installation removes what it
 created. `config`, `check`, `info`, `list` and `doctor` look after it
-afterwards. See [docs/install.md](docs/install.md). The other commands in these
+afterwards, and `update` moves it to a newer release of the stack. See [docs/install.md](docs/install.md). The other commands in these
 documents are the planned interface, and each arrives with its plan step.
 
 Everything runs in a container. From a clone of this repository the launcher
 builds that image from the clone; anywhere else it uses the published one,
-`ghcr.io/tryghost/ghost-docker`. The site directory is the current directory,
+`ghcr.io/tryghost/ghost-docker`: the newest beta, a `--channel`, or a
+`--release`. The site directory is the current directory,
 or `--dir PATH`.
 
 On Windows, run the launcher inside WSL2: install Docker Desktop with the
@@ -45,6 +48,7 @@ Linux. There is no native Windows launcher.
 | [`docs/configuration.md`](docs/configuration.md) | The configuration contract: the two files, value encoding, site modes, metadata |
 | [`docs/caddy.md`](docs/caddy.md) | The site's routes, and how to change them |
 | [`docs/bundle-v1.md`](docs/bundle-v1.md) | The Ghost-CLI migration bundle format |
+| [`pages/`](pages) | The front page of docker.ghost.org, published with each release beside `install.sh` |
 | [`docs/ghost-cli-replacement.md`](docs/ghost-cli-replacement.md) | The plan: architecture, contracts, and steps |
 
 ## Site modes
@@ -77,7 +81,11 @@ pnpm run format:check && pnpm run lint && pnpm run typecheck && pnpm test
 
 tests/e2e/launcher.sh        # the launcher against a stand-in docker, then the real image
 tests/e2e/install.sh         # real installations: pulls images, binds 80 and 443
+tests/e2e/update.sh          # real updates between releases built here, and a clone's commits
 ```
+
+Releases are cut by the Release workflow (Actions → Release → Run workflow),
+as Ghost's and Ghost-CLI's are; see [docs/install.md](docs/install.md#releases).
 
 ## IPv6 networking
 

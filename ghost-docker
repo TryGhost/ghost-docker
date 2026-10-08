@@ -10,14 +10,22 @@
 # site directory, the Docker socket and your identity. The manager's exit
 # status is this script's exit status.
 #
-#   --dir PATH   The site directory. Default: the current directory.
+#   --dir PATH            The site directory. Default: the current directory.
+#   --channel CHANNEL     Run the newest release on a channel: stable or beta.
+#   --release, --to TAG   Run this release: vX.Y.Z or vX.Y.Z-beta.N.
+#
+# --channel, --release and --to choose the image, and are passed on to the command
+# too: `install --channel beta`, `install --release v1.2.0`, `update --to v1.2.0`.
 #
 # Which image runs, first match wins:
 #
 #   GD_IMAGE           an image you name
+#   --release or --to  that release
+#   --channel          the newest release on that channel, pulled every time
+#   update, in a site  the newest release on the channel the site follows
 #   a pinned image     written into a site's own copy of this script at install
 #   a checkout         this script next to manager/Dockerfile builds from it
-#   GD_CHANNEL         a published channel (default: edge), pulled every time
+#   GD_CHANNEL         a published channel (default: beta), pulled every time
 #
 # Requires bash and Docker with the Compose plugin. Nothing else. On Windows,
 # run it inside WSL2. The contract this implements is
@@ -27,6 +35,9 @@ set -euo pipefail
 readonly GD_REGISTRY_IMAGE="ghcr.io/tryghost/ghost-docker"
 # Replaced with `repository@sha256:...` in the copy installed into a site.
 readonly GD_PINNED_IMAGE=""
+# Replaced with the channel the site follows (stable, beta or edge), which
+# `update` resolves when no other release is named.
+readonly GD_PINNED_CHANNEL=""
 # How long Docker may take to answer before it is treated as not running. A
 # daemon that has wedged stops answering rather than returning an error.
 GD_DOCKER_TIMEOUT=${GD_DOCKER_TIMEOUT:-20}
@@ -60,6 +71,8 @@ with_deadline() {
 site_dir=""
 # The --import argument's index in args, when there is one.
 bundle_at=""
+channel=""
+release=""
 declare -a args=()
 while (($#)); do
     case $1 in
@@ -69,6 +82,22 @@ while (($#)); do
             shift
             ;;
         --dir=*) site_dir=${1#*=} ;;
+        # The manager's options too, and passed on to it; the image is chosen
+        # from them here.
+        --channel | --release | --to)
+            [[ ${2:-} ]] || die "$1 needs a value" 2
+            args+=("$1" "$2")
+            if [[ $1 == --channel ]]; then channel=$2; else release=$2; fi
+            shift
+            ;;
+        --channel=*)
+            args+=("$1")
+            channel=${1#*=}
+            ;;
+        --release=* | --to=*)
+            args+=("$1")
+            release=${1#*=}
+            ;;
         # The manager's option, but the bundle has to be mounted for it to
         # see it; the manager validates it like any other argument.
         --import)
@@ -88,6 +117,16 @@ while (($#)); do
     esac
     shift
 done
+
+# Only the release formats that are published; the manager checks them again.
+case $channel in
+    '' | stable | beta) ;;
+    *) die "--channel must be stable or beta: got '$channel'" 2 ;;
+esac
+if [[ -n $release ]] && ! [[ $release =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-beta\.(0|[1-9][0-9]*))?$ ]]; then
+    die "a release is vX.Y.Z or vX.Y.Z-beta.N: got '$release'" 2
+fi
+[[ -z $channel || -z $release ]] || die "choose a channel or a release, not both" 2
 
 # --- Can Docker be used? ----------------------------------------------------
 #
@@ -187,10 +226,25 @@ fi
 source_kind=image
 # A channel is a tag that moves, and `docker run` would otherwise keep using
 # whichever copy of it this host pulled first. Docker's progress goes to
-# stderr, so a long pull is visibly happening.
+# stderr, so a long pull is visibly happening. A release's tag never moves,
+# so the copy this host has is the release.
 declare -a pull=()
+# The channel the manager records for the site, when a channel chose the image.
+resolved_channel=""
+use_channel() {
+    resolved_channel=$1
+    image="$GD_REGISTRY_IMAGE:$1"
+    pull=(--pull always)
+}
 if [[ -n ${GD_IMAGE:-} ]]; then
     image=$GD_IMAGE
+elif [[ -n $release ]]; then
+    image="$GD_REGISTRY_IMAGE:$release"
+elif [[ -n $channel ]]; then
+    use_channel "$channel"
+elif [[ -n $GD_PINNED_IMAGE && ${args[0]:-} == update ]]; then
+    # The updater is the release being updated to, never the one the site runs.
+    use_channel "${GD_PINNED_CHANNEL:-beta}"
 elif [[ -n $GD_PINNED_IMAGE ]]; then
     image=$GD_PINNED_IMAGE
 elif [[ -n $script_dir && -f $script_dir/manager/Dockerfile && -f $script_dir/compose.yml ]]; then
@@ -211,8 +265,7 @@ elif [[ -n $script_dir && -f $script_dir/manager/Dockerfile && -f $script_dir/co
         die "the manager image could not be built from $script_dir."
     fi
 else
-    image="$GD_REGISTRY_IMAGE:${GD_CHANNEL:-edge}"
-    pull=(--pull always)
+    use_channel "${GD_CHANNEL:-beta}"
 fi
 
 # --- Run it -----------------------------------------------------------------
@@ -230,6 +283,7 @@ declare -a run=(
     --env "GD_IMAGE=$image"
     --env "GD_SOURCE=$source_kind"
 )
+[[ -z $resolved_channel ]] || run+=(--env "GD_CHANNEL=$resolved_channel")
 [[ -z ${NO_COLOR:-} ]] || run+=(--env "NO_COLOR=$NO_COLOR")
 # Extra Compose files for the manager's own Compose runs (docs/configuration.md).
 [[ -z ${GD_COMPOSE_OVERRIDES:-} ]] || run+=(--env "GD_COMPOSE_OVERRIDES=$GD_COMPOSE_OVERRIDES")

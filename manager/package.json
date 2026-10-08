@@ -4,9 +4,9 @@
   "description": "The ghost-docker CLI. Runs inside the manager image; see docs/ghost-cli-replacement.md §2.10.",
   "type": "module",
   "scripts": {
-    "format": "oxfmt --write src test package.json tsconfig.json",
-    "format:check": "oxfmt --check src test package.json tsconfig.json",
-    "lint": "oxlint src test",
+    "format": "oxfmt --write src test scripts package.json tsconfig.json",
+    "format:check": "oxfmt --check src test scripts package.json tsconfig.json",
+    "lint": "oxlint src test scripts",
     "typecheck": "tsc --project tsconfig.json",
     "test": "node --test --test-timeout=60000 'test/*.test.ts'"
   },
