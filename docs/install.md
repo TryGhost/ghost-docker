@@ -2,13 +2,34 @@
 
 ```bash
 mkdir ~/my-site && cd ~/my-site
-curl -fsSLO https://raw.githubusercontent.com/TryGhost/ghost-docker/next-docker/ghost-docker && chmod +x ghost-docker
-./ghost-docker install --local                     # or: --domain example.com
+curl -fsSL https://docker.ghost.org/install.sh | bash -s -- install --local   # or: --domain example.com
 ```
 
-The launcher served at `docker.ghost.org`, and the `stable`/`beta` release
-channels it resolves, land in S6a. Until then a launcher with no checkout
-beside it runs the `edge` image, built from this branch.
+`install.sh` is the launcher, `ghost-docker`, from the newest release. Piped
+into bash it installs the newest release on the `beta` channel; `install`
+writes a copy of it into the site, and every later command is
+`./ghost-docker ...` from there.
+
+## Releases
+
+A release is a version of the manager image, `ghcr.io/tryghost/ghost-docker`,
+which carries the CLI and the stack's files. Releases are `vX.Y.Z` and
+`vX.Y.Z-beta.N`, and are ordered by number: `v1.10.0` follows `v1.9.0`,
+`beta.10` follows `beta.2`, and a release follows its own betas. Until sites
+installed from the `main` branch can be moved to this layout, every release is
+a beta.
+
+| Choose | With | Runs |
+| --- | --- | --- |
+| A channel | `--channel stable` or `--channel beta` (the default) | The newest release on it. `beta` includes releases; `stable` has no betas. |
+| A release | `--release vX.Y.Z` (`--to` for `update`) | Exactly that release |
+| The development image | `GD_CHANNEL=edge` | `edge`, built from every push to `next-docker`. Not a release. |
+
+These go to the launcher with the command: `curl -fsSL
+https://docker.ghost.org/install.sh | bash -s -- install --local --release
+v0.1.0-beta.1`. A site always runs one image digest, never a channel: `install`
+pins the site's launcher to the digest it ran as, and records the channel the
+site follows, which `update` uses.
 
 Everything happens in the manager image; the host needs Docker Engine 25.0+
 with the Compose v2.24+ plugin, and bash. **One directory is one site.** The
@@ -31,7 +52,7 @@ directory, and day-to-day operation is plain `docker compose`.
 ghost-docker install [--local | --domain example.com [--admin-domain admin.example.com]
                                 [--email ops@example.com]]
                      [--port 2368] [--version 6.3.1] [--with activitypub,mailpit]
-                     [--no-prompt] [--no-start]
+                     [--channel stable|beta | --release vX.Y.Z] [--no-prompt] [--no-start]
 ghost-docker install --import BUNDLE [--port 2368] [--with mailpit] [--no-prompt] [--no-start]
 ```
 
@@ -44,6 +65,8 @@ ghost-docker install --import BUNDLE [--port 2368] [--with mailpit] [--no-prompt
 | `--port PORT` | The loopback port Ghost is published on, in both modes. Omitted: the first at or above 2368 that is free (see [Ports](#ports-and-your-existing-proxy)). |
 | `--version VERSION` | A Ghost version (`6.3.1`, which means `6.3.1-next-alpine`) or a full image tag (`6-alpine`). Resolved to an exact digest. |
 | `--with LIST` | `activitypub`, and `mailpit` for a local site. `analytics` is added after installation; see below. |
+| `--channel CHANNEL` | Install the newest release on `stable` or `beta`; see [Releases](#releases). |
+| `--release vX.Y.Z` | Install that release. |
 | `--no-prompt` | Never ask: every input must then be an option. |
 | `--no-start` | Write the configuration and routes; create no containers. |
 | `--import BUNDLE` | Import a local Ghost-CLI site from the bundle `ghost migrate-export` made; see [Importing a Ghost-CLI site](#importing-a-ghost-cli-site). |
@@ -56,8 +79,8 @@ silent default. Every question has an option, so a script never needs to answer
 one.
 
 Exit statuses: `0` installed, `1` failed, `2` a usage error. Options the plan
-documents for later steps (`--channel` and `--ref` in S6a, `--with supervisor`
-in S8) do not exist yet, and are usage errors like any unknown option.
+documents for later steps (`--with supervisor` in S8) do not exist yet, and
+are usage errors like any unknown option.
 
 ### The ACME email
 
@@ -254,8 +277,7 @@ cd ~/sites/my-blog
 ghost stop
 ghost migrate-export --output ../my-blog-bundle
 mkdir ../my-blog-docker && cd ../my-blog-docker
-curl -fsSLO https://raw.githubusercontent.com/TryGhost/ghost-docker/next-docker/ghost-docker && chmod +x ghost-docker
-./ghost-docker install --import ../my-blog-bundle --port 2368
+curl -fsSL https://docker.ghost.org/install.sh | bash -s -- install --import ../my-blog-bundle --port 2368
 ```
 
 - **Stop first.** The exporter stops a running site while it copies, and
@@ -350,6 +372,7 @@ offered; for a private name, put `tls internal` in a `caddy/custom/` file.
 ./ghost-docker info       # the recorded installation metadata, and where Mailpit's inbox is
 ./ghost-docker list       # every ghost-docker container on this host, stopped ones included
 ./ghost-docker config get|set|validate
+./ghost-docker update     # to a newer release of the stack; see below
 ```
 
 The routes are a file you edit (`caddy/sites/site.caddy`), followed by
@@ -361,6 +384,87 @@ directory, and `list` says so.
 
 `check` exits non-zero when anything is wrong. Its host and configuration
 checks still run when Docker is unreachable, which is when they matter most.
+
+## update
+
+```text
+ghost-docker update [--check] [--channel stable|beta | --to vX.Y.Z]
+```
+
+Moves the site to a newer release of the stack: its files and the manager
+image. **It never changes Ghost.** `.env`, and the exact Ghost image
+`GHOST_IMAGE_REF` pins, are left as they are; Ghost upgrades are a separate
+command (S7). When a release needs a newer Ghost than the site runs, `update`
+stops before changing anything and says to upgrade Ghost first.
+
+Without options it updates to the newest release on the channel the site
+follows. `--channel` updates to the newest on another channel and follows that
+one from then on; `--to` names a release. `--check` says what an update would
+do and changes nothing. The update runs as the release it updates to: the
+site's launcher starts that image, not the one it is pinned to.
+
+| Option | Meaning |
+| --- | --- |
+| `--check` | Whether there is an update, and what it would change. Changes nothing. |
+| `--channel CHANNEL` | The newest release on `stable` or `beta`, which the site then follows. |
+| `--to vX.Y.Z` | Exactly that release. |
+
+In order:
+
+1. **Refusals.** An older release than the site runs is refused, as is a site
+   with no `.ghost-docker.json`, another operation holding the site's lock,
+   and a snapshot left by an update that did not finish. Nothing has changed.
+2. **The lock.** `.ghost-docker.lock` names the operation and when it started.
+   An update that is killed leaves it behind; `check` reports it, and it is
+   removed by hand once the site is known to be right. Nothing removes it
+   automatically.
+3. **A snapshot** of `.env`, `ghost.env`, the metadata, `compose.override.yml`,
+   `caddy/sites/`, `caddy/custom/`, `caddy/global/` and every file the update
+   writes, in `.ghost-docker-update/`.
+4. **The stack's files.** A file the manager wrote and nobody has edited is
+   replaced. An edited one (its checksum is not the one recorded when it was
+   written) is kept, the release's version is written beside it as
+   `<file>.new`, and `update` names both; compare them and merge what you
+   need. It never asks. A file the release no longer has is removed when it
+   is untouched, and kept when it was edited.
+5. **Validate, pull, start, verify.** Compose must resolve the project and the
+   configuration must validate; the release's images are pulled; `up --wait`
+   brings the services up healthy; the site is verified through its ingress as
+   `check` does.
+6. **The launcher** is replaced, pinned to the new release's digest. It is
+   replaced even when it was edited, because it holds the pin: an edited copy
+   is kept as `ghost-docker.edited`. The metadata records the release, the
+   one before it, and the files' new checksums. The snapshot is removed.
+
+When a step after the snapshot fails, the snapshot is put back. When the
+services had been changed, the previous release is started again and must
+become healthy. The update then says either **restored** (the site is back on
+the release it ran, its files as they were) or that **the site needs you**,
+with what could not be put back. In that case the snapshot is left in
+`.ghost-docker-update/` and the site's launcher still runs the previous image.
+An update is never reported as done because `up` returned zero.
+
+Exit statuses: `0` updated, or nothing to update; `1` refused or failed; `2` a
+usage error.
+
+### Updating a clone
+
+A site that is a clone of this repository is updated with git, then
+`./ghost-docker update`, which applies the checked-out files:
+
+```bash
+git fetch --tags
+git checkout v0.1.0-beta.2
+./ghost-docker update
+```
+
+The update is the same, except that the stack's files are already in place
+and nothing is written over them. A checkout with local changes to tracked
+files is refused before anything changes. When the update fails, the
+operator's files are put back and the previous commit, recorded in the
+metadata, is checked out again with a detached HEAD; the launcher keeps the
+manager image built from it as `ghost-docker:checkout-<commit>`. `--to` and
+`--channel` do not apply.
 
 ## Windows
 

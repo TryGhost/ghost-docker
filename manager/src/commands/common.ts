@@ -1,8 +1,11 @@
 // What every command about an installed site starts with.
 import { loadContext, type Context } from '../context.ts';
-import { CliError } from '../errors.ts';
+import { CliError, UsageError } from '../errors.ts';
 import type { Io } from '../io.ts';
+import type { Metadata } from '../meta.ts';
+import { channelOf, CHANNELS, isRelease, type Channel } from '../release.ts';
 import { ENV_FILE, readSettings, siteFacts, type SiteFacts } from '../site.ts';
+import { managerVersion } from '../versions.ts';
 
 export interface InstalledSite {
     readonly context: Context;
@@ -39,4 +42,69 @@ export function installedSite(io: Io): InstalledSite {
         );
     }
     return { context, site };
+}
+
+// --- Which release ------------------------------------------------------------
+
+/**
+ * The release the command line asked for. The launcher has already chosen the
+ * image from these options (plan §2.10); the manager checks them again, so a
+ * manager started any other way reads them the same, and records them.
+ */
+export interface Requested {
+    readonly channel: Channel | null;
+    readonly ref: string | null;
+    /** How the command spells its exact-release option: install's --release, update's --to. */
+    readonly flag: string;
+}
+
+export function requestedRelease(
+    channel: string | undefined,
+    ref: string | undefined,
+    flag: string,
+): Requested {
+    if (channel !== undefined && ref !== undefined) {
+        throw new UsageError(`choose --channel or ${flag}, not both`);
+    }
+    if (channel !== undefined && !(CHANNELS as readonly string[]).includes(channel)) {
+        throw new UsageError(`--channel must be stable or beta: got '${channel}'`);
+    }
+    if (ref !== undefined && !isRelease(ref)) {
+        throw new UsageError(`${flag} must be a release, vX.Y.Z or vX.Y.Z-beta.N: got '${ref}'`);
+    }
+    return { channel: (channel as Channel | undefined) ?? null, ref: ref ?? null, flag };
+}
+
+/** This manager's own release, and the channel a site it writes follows. */
+export interface ManagerRelease {
+    /** `vX.Y.Z[-beta.N]`, `edge-<commit>`, or null for a build from a checkout. */
+    readonly version: string | null;
+    readonly commit: string | null;
+    readonly channel: Metadata['channel'];
+}
+
+/**
+ * Which release this manager is, refusing one that is not what was asked
+ * for: the launcher runs the image the options name, unless GD_IMAGE named
+ * another.
+ */
+export function releaseOf(requested: Requested, env: NodeJS.ProcessEnv): ManagerRelease {
+    const { version, commit } = managerVersion();
+    if (requested.ref !== null && isRelease(version) && version !== requested.ref) {
+        throw new CliError(
+            `${requested.flag} ${requested.ref} was asked for, but this manager is ${version}.\n` +
+                '  Unset GD_IMAGE, which chooses the image whatever the options say, and run it again.',
+        );
+    }
+    const passed = env.GD_CHANNEL;
+    const channel =
+        requested.channel ??
+        (requested.ref === null ? null : channelOf(requested.ref)) ??
+        (passed === 'stable' || passed === 'beta' || passed === 'edge' ? passed : null) ??
+        channelOf(version);
+    return {
+        version: version === 'dev' || version === 'checkout' ? null : version,
+        commit: commit || null,
+        channel,
+    };
 }

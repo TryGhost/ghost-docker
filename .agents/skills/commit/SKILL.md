@@ -24,7 +24,7 @@ They matter most for pull request titles and squash commits; follow them for
 intermediate commits where practical.
 
 ```text
-<past-tense summary, at most 80 characters>
+<optional release-note emoji> <past-tense summary, at most 80 characters>
 
 <optional issue relationship>
 
@@ -45,6 +45,23 @@ intermediate commits where practical.
 - When the change spans several files, end with a list of them, each saying
   what changed there and why (`- manager/src/compose.ts: ...`).
 - Do not add `Co-Authored-By` or other attribution trailers.
+
+### Release-note emojis
+
+Releases are cut as Ghost's and Ghost-CLI's are (the Release workflow and
+`scripts/release.ts`), from the squash commits since the last
+release. A leading emoji opts a commit into the generated release notes. Add
+one only for a change that matters to someone running a site, and write the
+summary from their side:
+
+- ✨ Feature. Also makes the release a minor rather than a patch.
+- 🎨 Improvement or change
+- 🐛 Bug fix
+- 🔒 Security fix
+- 💡 Other noteworthy change
+
+Internal work, tests, documentation and dependency updates take none. Every
+commit since the last release is released, with or without one.
 
 ## Important
 

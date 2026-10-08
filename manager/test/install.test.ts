@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { cpSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, test } from 'node:test';
-import { channelOf, choosePort, projectName, secret, slug } from '../src/commands/install.ts';
+import { choosePort, projectName, secret, slug } from '../src/commands/install.ts';
 import * as env from '../src/env.ts';
 import { ghostTag } from '../src/ghost.ts';
 import { failed, harness, json, ok, type Harness } from './helpers.ts';
@@ -108,7 +108,18 @@ describe('refusals that change nothing', () => {
             [['--local', '--frobnicate'], /frobnicate/],
             // Options whose step has not landed do not exist yet.
             [['--migrate'], /Unknown option '--migrate'/],
-            [['--local', '--channel', 'beta'], /Unknown option '--channel'/],
+            [
+                ['--local', '--channel', 'nightly'],
+                /--channel must be stable or beta: got 'nightly'/,
+            ],
+            [
+                ['--local', '--release', '1.2.3'],
+                /--release must be a release, vX\.Y\.Z or vX\.Y\.Z-beta\.N/,
+            ],
+            [
+                ['--local', '--channel', 'beta', '--release', 'v1.0.0'],
+                /choose --channel or --release, not both/,
+            ],
             [['--local', '--with', 'supervisor'], /unknown optional service: supervisor/],
         ] as const) {
             const result = await install(...args);
@@ -368,6 +379,8 @@ describe('a local site, not started', () => {
             launcher,
             new RegExp(`^readonly GD_PINNED_IMAGE="sha256:${'2'.repeat(64)}"$`, 'm'),
         );
+        // A development build follows no channel.
+        assert.match(launcher, /^readonly GD_PINNED_CHANNEL=""$/m);
         assert.equal(statSync(join(h.dir, 'ghost-docker')).mode & 0o777, 0o755);
         assert.equal(
             statSync(join(h.dir, 'mysql-init', 'create-multiple-databases.sh')).mode & 0o111,
@@ -420,6 +433,62 @@ describe('a local site with Mailpit, not started', () => {
         assert.match(result.stdout, /Mailpit +http:\/\/127\.0\.0\.1:8025/);
         const metadata = JSON.parse(readFileSync(join(h.dir, '.ghost-docker.json'), 'utf8'));
         assert.deepEqual(metadata.profiles, ['local', 'mailpit']);
+    });
+});
+
+describe('which release', () => {
+    const release = (version: string) => {
+        h.env.GD_VERSION_FILE = `${stack}-version.json`;
+        writeFileSync(h.env.GD_VERSION_FILE, JSON.stringify({ version, commit: 'c'.repeat(40) }));
+    };
+    const metadata = () => JSON.parse(readFileSync(join(h.dir, '.ghost-docker.json'), 'utf8'));
+    const pinnedChannel = () =>
+        /^readonly GD_PINNED_CHANNEL="(.*)"$/m.exec(
+            readFileSync(join(h.dir, 'ghost-docker'), 'utf8'),
+        )?.[1];
+
+    test('a release records itself and its channel, and the launcher follows it', async () => {
+        release('v0.2.0-beta.3');
+        const result = await install('--local', '--no-start');
+        assert.equal(result.code, 0, result.stderr);
+        assert.equal(metadata().channel, 'beta');
+        assert.deepEqual(metadata().stack, {
+            version: 'v0.2.0-beta.3',
+            commit: 'c'.repeat(40),
+            ref: 'v0.2.0-beta.3',
+            image: `sha256:${'2'.repeat(64)}`,
+            previous: null,
+        });
+        assert.equal(pinnedChannel(), 'beta');
+    });
+
+    test('the channel the launcher resolved is the one recorded', async () => {
+        // `beta` resolves to a release when it is the newest of all.
+        release('v1.0.0');
+        h.env.GD_CHANNEL = 'beta';
+        const result = await install('--local', '--no-start');
+        assert.equal(result.code, 0, result.stderr);
+        assert.equal(metadata().channel, 'beta');
+        assert.equal(pinnedChannel(), 'beta');
+    });
+
+    test('--channel and --release are recorded as asked', async () => {
+        release('v1.0.0');
+        h.env.GD_CHANNEL = 'beta';
+        const result = await install('--local', '--no-start', '--release', 'v1.0.0');
+        assert.equal(result.code, 0, result.stderr);
+        assert.equal(metadata().channel, 'stable');
+    });
+
+    test('a manager that is not the release asked for changes nothing', async () => {
+        release('v1.0.0');
+        const result = await install('--local', '--no-start', '--release', 'v1.1.0');
+        assert.equal(result.code, 1);
+        assert.match(
+            result.stderr,
+            /--release v1\.1\.0 was asked for, but this manager is v1\.0\.0/,
+        );
+        assert.deepEqual(siteFiles(), []);
     });
 });
 
@@ -513,12 +582,5 @@ describe('the pieces', () => {
         assert.equal(ghostTag('6.3.1'), '6.3.1-next-alpine');
         assert.equal(ghostTag('v6'), '6-next-alpine');
         assert.equal(ghostTag('6-alpine'), '6-alpine');
-    });
-
-    test('the channel comes from the version the image carries', () => {
-        assert.equal(channelOf('v1.2.3'), 'stable');
-        assert.equal(channelOf('v1.2.3-beta.4'), 'beta');
-        assert.equal(channelOf('edge-abc1234'), 'edge');
-        assert.equal(channelOf('dev'), null);
     });
 });

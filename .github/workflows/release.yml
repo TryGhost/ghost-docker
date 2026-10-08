@@ -1,0 +1,145 @@
+name: Release
+run-name: "Release — ${{ inputs.bump-type }}${{ inputs.stable && ', stable' || ', beta' }}${{ inputs.dry-run && ' (dry run)' || '' }}"
+
+# Cuts a release of the stack, the way Ghost and Ghost-CLI cut theirs: the
+# next version comes from the commits since the last release (a ✨ feature is
+# a minor, anything else, dependency updates included, a patch), and the
+# release notes from the commits that carry a release-note emoji. See
+# scripts/release.ts.
+#
+#   tag        vX.Y.Z-beta.N (or vX.Y.Z with `stable`) at the head of next-docker
+#   image      ghcr.io/tryghost/ghost-docker:<tag>, and `beta`/`stable` when it is
+#              the newest release on that channel
+#   notes      the GitHub release
+#   launcher   install.sh and index.html on GitHub Pages, at https://docker.ghost.org
+#
+# The later jobs are called here rather than triggered by the tag: a tag
+# pushed with GITHUB_TOKEN starts no workflow.
+on:
+  workflow_dispatch:
+    inputs:
+      bump-type:
+        description: Version bump
+        type: choice
+        options:
+          - auto
+          - patch
+          - minor
+          - major
+        default: auto
+      stable:
+        description: A release rather than a beta. Every release is a beta until installations from main can be migrated (plan step S6b).
+        type: boolean
+        default: false
+      dry-run:
+        description: Work out the release without tagging or publishing anything
+        type: boolean
+        default: false
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  tag:
+    name: Tag the release
+    if: github.repository == 'TryGhost/ghost-docker'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.cut.outputs.tag }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # Pinned, not the dispatching ref: only what was reviewed is released.
+          ref: next-docker
+          # Every tag and the commits since the last release decide the version.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: "26"
+
+      - name: Tests
+        run: |
+          npm install -g corepack@0.36.0 && corepack enable
+          (cd manager && pnpm install --frozen-lockfile && pnpm test)
+          (cd scripts && pnpm install --frozen-lockfile && pnpm test)
+
+      - name: Tag and push
+        id: cut
+        env:
+          BUMP: ${{ inputs.bump-type }}
+          STABLE: ${{ inputs.stable }}
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          args=(cut --bump "$BUMP")
+          [[ $STABLE != true ]] || args+=(--stable)
+          [[ $DRY_RUN != true ]] || args+=(--dry-run)
+          tag=$(node scripts/release.ts "${args[@]}")
+          {
+            printf '## %s%s\n\n' "$tag" "$([[ $DRY_RUN == true ]] && printf ' (dry run, not pushed)')"
+            node scripts/release.ts notes "$tag"
+          } >>"$GITHUB_STEP_SUMMARY"
+
+  image:
+    name: Publish the image
+    needs: tag
+    if: ${{ !inputs.dry-run }}
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/image.yml
+    with:
+      tag: ${{ needs.tag.outputs.tag }}
+
+  notes:
+    name: GitHub release
+    needs: [tag, image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.tag.outputs.tag }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: "26"
+
+      - name: The release scripts' dependencies
+        working-directory: scripts
+        run: |
+          npm install -g corepack@0.36.0 && corepack enable
+          pnpm install --frozen-lockfile --prod
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          node scripts/release.ts notes "$TAG" >"$RUNNER_TEMP/notes.md"
+          prerelease=()
+          [[ $TAG != *-beta.* ]] || prerelease=(--prerelease)
+          gh release create "$TAG" --verify-tag --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md" "${prerelease[@]}"
+
+  launcher:
+    name: Serve the launcher
+    needs: [tag, image]
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/launcher.yml
+    with:
+      tag: ${{ needs.tag.outputs.tag }}

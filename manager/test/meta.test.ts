@@ -25,6 +25,7 @@ const DIGEST = `sha256:${'a'.repeat(64)}`;
 const sample = (dir: string): Metadata => ({
     schemaVersion: SCHEMA_VERSION,
     installedAt: '2026-10-06T09:12:44Z',
+    updatedAt: null,
     mode: 'production',
     channel: 'beta',
     source: 'image',
@@ -33,6 +34,7 @@ const sample = (dir: string): Metadata => ({
         commit: 'f'.repeat(40),
         ref: 'v1.0.0-beta.1',
         image: `ghcr.io/tryghost/ghost-docker@${DIGEST}`,
+        previous: null,
     },
     site: {
         project: 'ghost-example-com',
@@ -77,6 +79,15 @@ describe('installation metadata', () => {
             MAILPIT_PORT: '8026',
         });
         assert.match((await h.run('info')).stdout, /^mailpit +http:\/\/127\.0\.0\.1:8026$/m);
+    });
+
+    test('a document from before updates were recorded still reads', () => {
+        const { updatedAt: _updatedAt, ...older } = sample(h.dir);
+        const { previous: _previous, ...stack } = older.stack;
+        writeFileSync(metaPath(h.dir), JSON.stringify({ ...older, stack }));
+        const read = readMetadata(h.dir);
+        assert.equal(read.state, 'present');
+        assert.deepEqual(read.state === 'present' && read.metadata, sample(h.dir));
     });
 
     test('the same document is written as the same bytes', () => {

@@ -237,11 +237,37 @@ ok "a checkout builds from itself"
 
 cp "$LAUNCHER" "$WORK/standalone-launcher"
 with_fake ok env ${fake_socket_env[@]+"${fake_socket_env[@]}"} "$BASH_BIN" "$WORK/standalone-launcher" --dir "$SITE" version
-expect_run_arg "ghcr.io/tryghost/ghost-docker:edge"
-expect_run_arg "GD_SOURCE=image"
-with_fake ok env ${fake_socket_env[@]+"${fake_socket_env[@]}"} GD_CHANNEL=beta "$BASH_BIN" "$WORK/standalone-launcher" --dir "$SITE" version
 expect_run_arg "ghcr.io/tryghost/ghost-docker:beta"
-ok "outside a checkout, the published channel"
+expect_run_arg "GD_SOURCE=image"
+expect_run_arg "GD_CHANNEL=beta"
+with_fake ok env ${fake_socket_env[@]+"${fake_socket_env[@]}"} GD_CHANNEL=edge "$BASH_BIN" "$WORK/standalone-launcher" --dir "$SITE" version
+expect_run_arg "ghcr.io/tryghost/ghost-docker:edge"
+ok "outside a checkout, the published channel: beta, or GD_CHANNEL"
+
+step "Choosing a release"
+with_fake ok env ${fake_socket_env[@]+"${fake_socket_env[@]}"} "$BASH_BIN" "$LAUNCHER" --dir "$SITE" install --local --channel stable
+expect_run_arg "ghcr.io/tryghost/ghost-docker:stable"
+expect_run_arg "GD_CHANNEL=stable"
+expect_run_arg "--pull"
+grep -qx 'build' "$FAKE_CALLS" && fail "a channel was asked for, and the checkout was built" "$(cat "$FAKE_CALLS")"
+[[ $(run_args | tail -5) == $'ghcr.io/tryghost/ghost-docker:stable\ninstall\n--local\n--channel\nstable' ]] ||
+    fail "--channel is not passed on to the command" "$(run_args)"
+with_fake ok env ${fake_socket_env[@]+"${fake_socket_env[@]}"} "$BASH_BIN" "$LAUNCHER" --dir "$SITE" install --release=v1.10.0-beta.2
+expect_run_arg "ghcr.io/tryghost/ghost-docker:v1.10.0-beta.2"
+expect_run_arg "--release=v1.10.0-beta.2"
+run_args | grep -qx -- '--pull' && fail "a release, whose tag never moves, was pulled every time" "$(run_args)"
+run_args | grep -q '^GD_CHANNEL=' && fail "a release was named, and a channel was passed on" "$(run_args)"
+with_fake ok env ${fake_socket_env[@]+"${fake_socket_env[@]}"} "$BASH_BIN" "$LAUNCHER" --dir "$SITE" update --to v2.0.0
+expect_run_arg "ghcr.io/tryghost/ghost-docker:v2.0.0"
+ok "--channel, --release and --to choose the image, and reach the command"
+
+for bad in "--channel nightly" "--channel" "--release 1.2.3" "--release v1.2" "--to v1.2.3-rc.1" "--release v01.2.3" "--channel beta --release v1.0.0"; do
+    # shellcheck disable=SC2086 # split on purpose
+    with_fake ok env ${fake_socket_env[@]+"${fake_socket_env[@]}"} "$BASH_BIN" "$LAUNCHER" --dir "$SITE" install $bad
+    expect_status 2
+    grep -qx 'run' "$FAKE_CALLS" && fail "$bad: the manager was started" "$(cat "$FAKE_CALLS")"
+done
+ok "only stable, beta, vX.Y.Z and vX.Y.Z-beta.N are accepted, before Docker is asked anything"
 
 with_fake ok env ${fake_socket_env[@]+"${fake_socket_env[@]}"} "$BASH_BIN" "$WORK/standalone-launcher" --dir "$SITE" version
 expect_run_arg "--pull"
@@ -258,6 +284,21 @@ with_fake ok env ${fake_socket_env[@]+"${fake_socket_env[@]}"} GD_IMAGE=example/
 run_args | grep -qx -- '--pull' && fail "an image named with GD_IMAGE was pulled" "$(run_args)"
 ok "a site's own copy runs the digest it was pinned to; neither it nor GD_IMAGE is pulled"
 
+sed 's|^readonly GD_PINNED_CHANNEL=""$|readonly GD_PINNED_CHANNEL="stable"|' "$WORK/pinned-launcher" >"$WORK/pinned-stable"
+grep -qx 'readonly GD_PINNED_CHANNEL="stable"' "$WORK/pinned-stable" ||
+    fail "the channel placeholder is not where install will look for it"
+with_fake ok env ${fake_socket_env[@]+"${fake_socket_env[@]}"} "$BASH_BIN" "$WORK/pinned-stable" --dir "$SITE" update
+expect_run_arg "ghcr.io/tryghost/ghost-docker:stable"
+expect_run_arg "GD_CHANNEL=stable"
+expect_run_arg "--pull"
+with_fake ok env ${fake_socket_env[@]+"${fake_socket_env[@]}"} "$BASH_BIN" "$WORK/pinned-stable" --dir "$SITE" update --check
+expect_run_arg "ghcr.io/tryghost/ghost-docker:stable"
+with_fake ok env ${fake_socket_env[@]+"${fake_socket_env[@]}"} "$BASH_BIN" "$WORK/pinned-stable" --dir "$SITE" update --channel beta
+expect_run_arg "ghcr.io/tryghost/ghost-docker:beta"
+with_fake ok env ${fake_socket_env[@]+"${fake_socket_env[@]}"} "$BASH_BIN" "$WORK/pinned-stable" --dir "$SITE" check
+expect_run_arg "ghcr.io/tryghost/ghost-docker@sha256:abc123"
+ok "a site's update runs the newest release on the channel it follows, not its pin"
+
 step "Piped from curl"
 set +e
 OUT=$(FAKE_DOCKER=ok PATH="$FAKE:$PATH" env ${fake_socket_env[@]+"${fake_socket_env[@]}"} \
@@ -265,7 +306,7 @@ OUT=$(FAKE_DOCKER=ok PATH="$FAKE:$PATH" env ${fake_socket_env[@]+"${fake_socket_
 RC=$?
 set -e
 expect_status 0
-expect_run_arg "ghcr.io/tryghost/ghost-docker:edge"
+expect_run_arg "ghcr.io/tryghost/ghost-docker:beta"
 ok "runs with no file of its own, and uses the published image"
 
 step "The manager's exit status"

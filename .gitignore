@@ -79,6 +79,9 @@ data
 ghost.env
 # Installation metadata
 .ghost-docker.json
+# Held while an operation changes the site, and an unfinished update's copies
+.ghost-docker.lock
+.ghost-docker-update/
 # A bundle import in progress: its marker and its private staging copy
 .ghost-docker-import
 .import/

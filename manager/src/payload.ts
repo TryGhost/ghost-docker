@@ -111,22 +111,40 @@ export async function managerPin(io: Io, context: Context): Promise<string> {
     return image.repoDigests.find((entry) => entry.startsWith(`${repository}@`)) ?? image.id;
 }
 
+/** What a site's launcher is pinned to: the image it runs, and the channel `update` follows. */
+export interface LauncherPin {
+    readonly image: string;
+    readonly channel: string | null;
+}
+
 /** The launcher, with the pin written into it. */
-export function pinnedLauncher(source: string, pin: string): string {
-    const marker = /^readonly GD_PINNED_IMAGE=""$/m;
-    if (!marker.test(source) || !/^[A-Za-z0-9._/:@-]+$/.test(pin)) {
+export function pinnedLauncher(source: string, pin: LauncherPin): string {
+    const image = /^readonly GD_PINNED_IMAGE=""$/m;
+    const channel = /^readonly GD_PINNED_CHANNEL=""$/m;
+    if (
+        !image.test(source) ||
+        !channel.test(source) ||
+        !/^[A-Za-z0-9._/:@-]+$/.test(pin.image) ||
+        !/^[a-z]*$/.test(pin.channel ?? '')
+    ) {
         throw new CliError('the launcher in this image cannot be pinned; please report this');
     }
-    return source.replace(marker, `readonly GD_PINNED_IMAGE="${pin}"`);
+    return source
+        .replace(image, `readonly GD_PINNED_IMAGE="${pin.image}"`)
+        .replace(channel, `readonly GD_PINNED_CHANNEL="${pin.channel ?? ''}"`);
 }
+
+/** The site's launcher as this image would write it. */
+export const launcherContent = (env: NodeJS.ProcessEnv, pin: LauncherPin): string =>
+    pinnedLauncher(readFileSync(launcherSource(env), 'utf8'), pin);
 
 export function writeLauncher(
     dir: string,
     env: NodeJS.ProcessEnv,
-    pin: string,
+    pin: LauncherPin,
     written: Written,
 ): void {
-    const content = pinnedLauncher(readFileSync(launcherSource(env), 'utf8'), pin);
+    const content = launcherContent(env, pin);
     const target = join(dir, LAUNCHER);
     atomicWrite(target, content, 0o755);
     written.files.push(target);

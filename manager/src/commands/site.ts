@@ -6,6 +6,7 @@ import { loadContext } from '../context.ts';
 import { listContainers } from '../docker/client.ts';
 import { EXIT } from '../errors.ts';
 import type { Io } from '../io.ts';
+import { describeLock, readLock } from '../lock.ts';
 import { describeMetadata, readMetadata } from '../meta.ts';
 import { failed, printChecks, type Check } from '../report.ts';
 import { hasProfile, readSettings } from '../site.ts';
@@ -38,6 +39,17 @@ export async function check(io: Io): Promise<number> {
     }
     if (metadata.state === 'invalid') {
         all.push({ status: 'error', label: 'metadata', detail: metadata.reason });
+    }
+    // Left by an operation that is still running, or one that was interrupted.
+    const lock = readLock(site.dir);
+    if (lock.state !== 'free') {
+        const held: Check = {
+            status: 'error',
+            label: 'lock',
+            detail: describeLock(site.dir, lock),
+        };
+        printChecks(io, [held]);
+        all.push(held);
     }
 
     const host = await io.busy('Checking Docker and the site directory', () =>

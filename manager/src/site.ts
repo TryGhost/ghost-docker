@@ -10,6 +10,23 @@ export const META_FILE = '.ghost-docker.json';
 export const COMPOSE_FILE = 'compose.yml';
 /** The operator's own overrides; plain Compose merges it, so the manager does too. */
 export const COMPOSE_OVERRIDE_FILE = 'compose.override.yml';
+/** Held while an operation changes the site (lock.ts). */
+export const LOCK_FILE = '.ghost-docker.lock';
+/** What an update keeps to put back if it fails, removed when it succeeds. */
+export const UPDATE_DIR = '.ghost-docker-update';
+/**
+ * Files and directories that belong to the operator: an update keeps a copy
+ * of them, and a checkout of another ref never touches them (plan §2.7).
+ */
+export const OPERATOR_FILES = [
+    ENV_FILE,
+    GHOST_ENV_FILE,
+    META_FILE,
+    COMPOSE_OVERRIDE_FILE,
+    join('caddy', 'sites'),
+    join('caddy', 'custom'),
+    join('caddy', 'global'),
+] as const;
 
 /**
  * The bind-mounted data directories, at compose.yml's defaults

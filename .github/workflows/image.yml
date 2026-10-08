@@ -2,48 +2,79 @@ name: "Manager image"
 
 # Publishes ghcr.io/tryghost/ghost-docker.
 #
-#   push to next-docker   ->  :edge       the development image, not a release
-#   tag vX.Y.Z[-beta.N]   ->  :<tag>      a release, immutable
+#   push to next-docker      ->  :edge      the development image, not a release
+#   release vX.Y.Z[-beta.N]  ->  :<tag>     a release, immutable
+#                                :beta      when it is the newest release of all
+#                                :stable    when it is the newest release that is not a beta
 #
-# The moving `stable` and `beta` tags that resolve a channel to a release are
-# added with the release flow (plan step S6a).
+# A release is published when the Release workflow calls this one with its
+# tag, or when a release tag is pushed by hand. The moving tags only resolve a
+# channel to a release; a site always runs a digest (plan §2.7).
 on:
   push:
     branches:
       - next-docker
     tags:
       - "v*"
+  workflow_call:
+    inputs:
+      tag:
+        description: The release tag to publish
+        type: string
+        required: true
 
 permissions:
   contents: read
   packages: write
 
 concurrency:
-  group: manager-image-${{ github.ref }}
+  group: manager-image-${{ inputs.tag || github.ref }}
   cancel-in-progress: false
 
 jobs:
   publish:
     name: Build and publish
     runs-on: ubuntu-latest
+    env:
+      # Empty for a push to next-docker, which publishes edge.
+      RELEASE: ${{ inputs.tag || (github.ref_type == 'tag' && github.ref_name || '') }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          # Every release tag, to tell whether this one is the newest.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: "26"
 
       - name: Build for amd64 and arm64, and publish
+        id: build
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           image="ghcr.io/${GITHUB_REPOSITORY,,}"
-          if [[ $GITHUB_REF == refs/tags/* ]]; then
-            tag=$GITHUB_REF_NAME
-            version=$GITHUB_REF_NAME
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          if [[ -n $RELEASE ]]; then
+            [[ $RELEASE =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-beta\.(0|[1-9][0-9]*))?$ ]] || {
+              echo "::error::$RELEASE is not a release: only vX.Y.Z and vX.Y.Z-beta.N are published"
+              exit 1
+            }
+            # A release is immutable: once published, never replaced.
+            if docker buildx imagetools inspect "$image:$RELEASE" >/dev/null 2>&1; then
+              echo "::error::$image:$RELEASE is already published, and a release is never replaced"
+              exit 1
+            fi
+            tag=$RELEASE
+            version=$RELEASE
           else
             tag=edge
             version="edge-${GITHUB_SHA::7}"
           fi
+          commit=$(git rev-parse HEAD)
 
-          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           # arm64 is built under emulation.
           docker run --privileged --rm tonistiigi/binfmt --install arm64 >/dev/null
           docker buildx create --use >/dev/null
@@ -52,19 +83,40 @@ jobs:
             --platform linux/amd64,linux/arm64 \
             --file manager/Dockerfile \
             --build-arg "GD_VERSION=$version" \
-            --build-arg "GD_COMMIT=$GITHUB_SHA" \
+            --build-arg "GD_COMMIT=$commit" \
             --tag "$image:$tag" \
             --metadata-file "$RUNNER_TEMP/image.json" \
             --push .
 
           digest=$(jq -r '.["containerimage.digest"]' "$RUNNER_TEMP/image.json")
           printf 'Published `%s:%s`\n\n`%s@%s`\n' "$image" "$tag" "$image" "$digest" >>"$GITHUB_STEP_SUMMARY"
+          printf 'image=%s\ntag=%s\ndigest=%s\n' "$image" "$tag" "$digest" >>"$GITHUB_OUTPUT"
 
-      - name: The published image runs
+      - name: The release scripts' dependencies
+        if: env.RELEASE != ''
+        working-directory: scripts
+        run: |
+          npm install -g corepack@0.36.0 && corepack enable
+          pnpm install --frozen-lockfile --prod
+
+      - name: Move the channels it is the newest release on
+        if: env.RELEASE != ''
+        env:
+          IMAGE: ${{ steps.build.outputs.image }}
+          DIGEST: ${{ steps.build.outputs.digest }}
         run: |
           set -euo pipefail
-          image="ghcr.io/${GITHUB_REPOSITORY,,}"
-          tag=$([[ $GITHUB_REF == refs/tags/* ]] && printf '%s' "$GITHUB_REF_NAME" || printf 'edge')
+          for channel in $(node scripts/release.ts moving "$RELEASE"); do
+            docker buildx imagetools create --tag "$IMAGE:$channel" "$IMAGE@$DIGEST"
+            printf '\nMoved `%s:%s` to it\n' "$IMAGE" "$channel" >>"$GITHUB_STEP_SUMMARY"
+          done
+
+      - name: The published image runs
+        env:
+          IMAGE: ${{ steps.build.outputs.image }}
+          TAG: ${{ steps.build.outputs.tag }}
+        run: |
+          set -euo pipefail
           site=$(mktemp -d)
-          GD_IMAGE="$image:$tag" ./ghost-docker --dir "$site" version
-          GD_IMAGE="$image:$tag" ./ghost-docker --dir "$site" doctor
+          GD_IMAGE="$IMAGE:$TAG" ./ghost-docker --dir "$site" version
+          GD_IMAGE="$IMAGE:$TAG" ./ghost-docker --dir "$site" doctor
