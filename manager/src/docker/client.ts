@@ -204,6 +204,7 @@ const containerSummary = z.object({
     Id: z.string(),
     Names: z.array(z.string()).default([]),
     Status: z.string().default(''),
+    State: z.string().default(''),
     Labels: z.record(z.string(), z.string()).nullable().default({}),
     Ports: z
         .array(
@@ -222,6 +223,8 @@ export interface ContainerFacts {
     /** Without Docker's leading slash. */
     readonly name: string;
     readonly status: string;
+    /** `running`, `exited`, `created` and so on. */
+    readonly state: string;
     readonly labels: Readonly<Record<string, string>>;
     /** Host ports the container publishes. */
     readonly publishedPorts: readonly number[];
@@ -244,6 +247,7 @@ export async function listContainers(
     return containers.map((container) => ({
         name: (container.Names[0] ?? container.Id.slice(0, 12)).replace(/^\//, ''),
         status: container.Status,
+        state: container.State,
         labels: container.Labels ?? {},
         publishedPorts: [
             ...new Set(
@@ -253,6 +257,50 @@ export async function listContainers(
             ),
         ],
     }));
+}
+
+const portBindings = z.object({
+    HostConfig: z
+        .object({
+            PortBindings: z
+                .record(
+                    z.string(),
+                    z
+                        .array(z.object({ HostPort: z.string().default('') }))
+                        .nullable()
+                        .default([]),
+                )
+                .nullable()
+                .default({}),
+        })
+        .default({ PortBindings: {} }),
+});
+
+/**
+ * The containers of ghost-docker sites that exist but are not running, with
+ * the host ports they publish once started. A stopped container publishes
+ * nothing, so `Ports` is empty for it; the ports it will take are only in its
+ * configuration. A site taken down with `docker compose down` has no
+ * containers and is not found here.
+ */
+export async function stoppedSiteContainers(docker: DockerTransport): Promise<ContainerFacts[]> {
+    const stopped = (
+        await listContainers(docker, { all: true, labels: ['org.ghost.docker.managed=true'] })
+    ).filter((container) => container.state !== 'running');
+    return Promise.all(
+        stopped.map(async (container) => {
+            const inspected = await call(
+                docker,
+                { method: 'GET', path: `/containers/${encodeURIComponent(container.name)}/json` },
+                portBindings,
+            );
+            const ports = Object.values(inspected.HostConfig.PortBindings ?? {})
+                .flatMap((bindings) => bindings ?? [])
+                .map((binding) => Number(binding.HostPort))
+                .filter((port) => Number.isInteger(port) && port > 0);
+            return { ...container, publishedPorts: [...new Set(ports)] };
+        }),
+    );
 }
 
 // --- One-shot containers ----------------------------------------------------
