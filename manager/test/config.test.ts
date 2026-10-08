@@ -48,6 +48,15 @@ describe('.env', () => {
         assert.doesNotMatch(result.errors, /: supervisor/);
     });
 
+    test('Mailpit is for local sites only', async () => {
+        makeSite(h, { ...LOCAL, COMPOSE_PROFILES: 'local,mailpit' });
+        assert.equal((await validate()).code, 0);
+        makeSite(h, { ...PRODUCTION, COMPOSE_PROFILES: 'production,mailpit' });
+        const result = await validate();
+        assert.equal(result.code, 1);
+        assert.match(result.errors, /selects mailpit, which is for local sites only/);
+    });
+
     test('SITE_MODE must match COMPOSE_PROFILES', async () => {
         makeSite(h, { ...LOCAL, SITE_MODE: 'production' });
         assert.match((await validate()).errors, /SITE_MODE=production does not match .* \(local\)/);

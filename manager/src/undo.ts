@@ -16,7 +16,7 @@ import type { Written } from './payload.ts';
 import { DATA_DIRS, ENV_FILE, GHOST_ENV_FILE, META_FILE } from './site.ts';
 
 /** Every profile, so whatever a failed installation started is found. */
-export const ALL_PROFILES = 'local,production,analytics,activitypub';
+export const ALL_PROFILES = 'local,production,analytics,activitypub,mailpit';
 
 const journalSchema = z.object({
     files: z.array(z.string().startsWith('/')),

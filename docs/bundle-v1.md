@@ -164,6 +164,11 @@ overridden:
 - `process`, `logging__transports`, `logging__path`
 - upgrade-adapter controls
 
+With `install --import --with mailpit`, the importer also drops the source's
+mail transport (`mail__transport`, `mail__options__*`) and writes the site's
+Mailpit in its place, so a local copy never sends real mail. `mail__from` is
+kept.
+
 Public and admin URLs are mapped deliberately into `.env` (`URL`,
 `ADMIN_URL`; the domains are their hosts), preserving supported path and port semantics or
 rejecting an unsupported URL with a clear message. Operator overrides of

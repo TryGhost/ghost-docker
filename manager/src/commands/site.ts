@@ -8,6 +8,7 @@ import { EXIT } from '../errors.ts';
 import type { Io } from '../io.ts';
 import { describeMetadata, readMetadata } from '../meta.ts';
 import { failed, printChecks, type Check } from '../report.ts';
+import { hasProfile, readSettings } from '../site.ts';
 import { verifyIngress } from '../verify.ts';
 import { installedSite } from './common.ts';
 import { collect } from './doctor.ts';
@@ -179,12 +180,19 @@ export const checkCommand = defineCommand({
 // --- info ---------------------------------------------------------------------
 
 export const infoCommand = defineCommand({
-    brief: 'Print the recorded installation metadata.',
+    brief: "Print the recorded installation metadata, and where Mailpit's inbox is.",
     run: async (_values, _positionals, io) => {
         const context = loadContext(io.env);
         const metadata = readMetadata(context.siteDir);
         for (const line of describeMetadata(metadata)) {
             io.stdout(`${line}\n`);
+        }
+        // From `.env`, which says where it is now; the metadata records the install.
+        const settings = readSettings(context.siteDir);
+        if (settings && hasProfile(settings.get('COMPOSE_PROFILES') ?? '', 'mailpit')) {
+            io.stdout(
+                `mailpit        http://127.0.0.1:${settings.get('MAILPIT_PORT') || '8025'}\n`,
+            );
         }
         return metadata.state === 'invalid' ? EXIT.failure : EXIT.ok;
     },

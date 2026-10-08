@@ -389,6 +389,36 @@ describe('importing a local site', () => {
         assert.doesNotMatch(result.stdout + result.stderr, /pa\$\$word/);
     });
 
+    test('with Mailpit, the source mail transport is replaced and its sender kept', async () => {
+        const result = await install(
+            '--import',
+            bundle(local('mysql-data')),
+            '--with',
+            'mailpit',
+            '--no-start',
+        );
+        assert.equal(result.code, 0, result.stderr);
+        assert.equal(setting('COMPOSE_PROFILES'), 'local,mailpit');
+        assert.equal(setting('MAILPIT_PORT'), '8025');
+        assert.equal(ghostSetting('mail__options__auth__pass'), undefined);
+        assert.equal(
+            ghostSetting('mail__options__host'),
+            `mailpit-${setting('COMPOSE_PROJECT_NAME')}`,
+        );
+        assert.equal(ghostSetting('mail__options__port'), '1025');
+        assert.equal(ghostSetting('mail__transport'), 'SMTP');
+        assert.equal(ghostSetting('mail__from'), 'Ghost Blog <noreply@example.com>');
+        assert.match(
+            result.stdout,
+            /note +not carried +mail__options__auth__pass: replaced by Mailpit/,
+        );
+        // Each key once: the source's never follows Mailpit's.
+        const keys = env.keys(readFileSync(join(h.dir, 'ghost.env'), 'utf8'));
+        assert.equal(keys.length, new Set(keys).size);
+        assert.ok(existsSync(join(h.dir, 'data', 'mailpit')));
+        assert.match(result.stdout, /Mailpit +http:\/\/127\.0\.0\.1:8025/);
+    });
+
     test('a mysql-dump bundle: an empty database, the dump, a migration history', async () => {
         const result = await install('--import', bundle(local('mysql-dump')), '--no-start');
         assert.equal(result.code, 0, result.stderr);
@@ -448,9 +478,9 @@ describe('refusals that change nothing', () => {
             /--domain cannot be combined with --import.*\n.*S5e/,
         );
         await refusedWith(
-            ['--import', path, '--with', 'activitypub'],
+            ['--import', path, '--with', 'mailpit,activitypub'],
             2,
-            /--with cannot be combined/,
+            /--with activitypub cannot be combined with --import; only mailpit can/,
         );
         await refusedWith(['--import', ''], 2, /--import needs the path/);
         await refusedWith(

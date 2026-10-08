@@ -52,6 +52,7 @@ import {
     DATA_DIRS,
     ENV_FILE,
     GHOST_ENV_FILE,
+    MAILPIT_DATA_DIR,
     META_FILE,
     readSettings,
     siteFacts,
@@ -64,6 +65,8 @@ import { collect } from './doctor.ts';
 
 /** Where a local site's port search starts, and how far it goes. */
 export const DEFAULT_PORT = 2368;
+/** Where the search for Mailpit's inbox port starts. */
+export const DEFAULT_MAILPIT_PORT = 8025;
 const PORT_SEARCH = 200;
 const PRODUCTION_PORTS = { http: 80, https: 443 } as const;
 /** Compose waits this long for health checks; pulls and builds come before it. */
@@ -98,7 +101,10 @@ const options = {
         type: 'string',
         brief: 'A Ghost version (6.3.1) or image tag (6-alpine). Resolved to an exact digest.',
     },
-    with: { type: 'string', brief: 'Optional per-site services: activitypub.' },
+    with: {
+        type: 'string',
+        brief: 'Optional per-site services: activitypub, and mailpit for a local site.',
+    },
     import: {
         type: 'string',
         brief: 'Import a local Ghost-CLI site from the bundle `ghost migrate-export` made: a directory, .tgz, .tar or .zip.',
@@ -178,8 +184,14 @@ async function plan(flags: Flags, prompt: Prompter | null): Promise<Plan> {
         }
     }
 
+    const services = optionalServices(flags.with, mode);
+    return { mode, domain, adminDomain: adminDomain.toLowerCase(), email, services };
+}
+
+/** The services --with names, for a site of this mode. */
+export function optionalServices(list: string | undefined, mode: SiteMode): string[] {
     const services: string[] = [];
-    for (const service of (flags.with ?? '').split(',').map((item) => item.trim())) {
+    for (const service of (list ?? '').split(',').map((item) => item.trim())) {
         if (service === '') {
             continue;
         }
@@ -196,14 +208,19 @@ async function plan(flags: Flags, prompt: Prompter | null): Promise<Plan> {
                     '  Install without it, then follow TINYBIRD.md.',
             );
         }
-        if (service !== 'activitypub') {
-            throw new UsageError(`unknown optional service: ${service} (activitypub)`);
+        if (service !== 'activitypub' && service !== 'mailpit') {
+            throw new UsageError(`unknown optional service: ${service} (activitypub, mailpit)`);
+        }
+        if (service === 'mailpit' && mode === 'production') {
+            throw new UsageError(
+                "--with mailpit is for local sites only: it would catch a production site's real mail",
+            );
         }
         if (!services.includes(service)) {
             services.push(service);
         }
     }
-    return { mode, domain, adminDomain: adminDomain.toLowerCase(), email, services };
+    return services;
 }
 
 // --- Identity -----------------------------------------------------------------
@@ -231,15 +248,16 @@ export function projectName(mode: SiteMode, domain: string, dir: string): string
 /** 192 bits, hex: nothing in it a dotenv file, a shell or MySQL treats specially. */
 export const secret = (): string => randomBytes(24).toString('hex');
 
-/** The first port at or above the default that is not taken. */
-export function choosePort(taken: ReadonlySet<number>): number {
-    for (let port = DEFAULT_PORT; port < DEFAULT_PORT + PORT_SEARCH; port += 1) {
+/** The first port at or above `start` (Ghost's default) that is not taken. */
+export function choosePort(taken: ReadonlySet<number>, start = DEFAULT_PORT): number {
+    for (let port = start; port < start + PORT_SEARCH; port += 1) {
         if (!taken.has(port)) {
             return port;
         }
     }
     throw new CliError(
-        `every port from ${DEFAULT_PORT} to ${DEFAULT_PORT + PORT_SEARCH - 1} is taken; choose one with --port`,
+        `every port from ${start} to ${start + PORT_SEARCH - 1} is taken` +
+            (start === DEFAULT_PORT ? '; choose one with --port' : ''),
     );
 }
 
@@ -277,6 +295,8 @@ interface Site extends Target {
     readonly flags: Flags;
     readonly intent: Plan;
     readonly port: number;
+    /** Where Mailpit's inbox is published, with --with mailpit. */
+    readonly mailpitPort: number | null;
     readonly ghost: ResolvedGhost;
     /** The manager image the launcher is pinned to; none in a checkout. */
     readonly pin: string | null;
@@ -351,7 +371,7 @@ function refuseOccupied(io: Io, context: Context, dir: string): Target {
             );
         }
     }
-    for (const data of DATA_DIRS) {
+    for (const data of [...DATA_DIRS, MAILPIT_DATA_DIR]) {
         const path = join(dir, data);
         if (existsSync(path) && readdirSync(path).length > 0) {
             throw new CliError(
@@ -364,8 +384,14 @@ function refuseOccupied(io: Io, context: Context, dir: string): Target {
 
 // --- Before anything is written -----------------------------------------------
 
-/** An import is of a local site, with no optional services (refuseImportOptions). */
-const IMPORTED: Plan = { mode: 'local', domain: '', adminDomain: '', email: '', services: [] };
+/** An import is of a local site, with no optional services but Mailpit (refuseImportOptions). */
+const imported = (flags: Flags): Plan => ({
+    mode: 'local',
+    domain: '',
+    adminDomain: '',
+    email: '',
+    services: optionalServices(flags.with, 'local'),
+});
 
 /** Decides everything about the site, changing nothing. */
 async function prepare(
@@ -376,9 +402,14 @@ async function prepare(
 ): Promise<Site> {
     const { io, context, dir, clone } = target;
     // Asked only now, so nobody answers questions to be told the directory is taken.
-    const intent = importing === null ? await plan(flags, io.prompt) : IMPORTED;
+    const intent = importing === null ? await plan(flags, io.prompt) : imported(flags);
     await preflight(io, context);
-    const port = await ghostPort(io, intent.mode, requestedPort);
+    const { port, mailpitPort } = await sitePorts(
+        io,
+        intent.mode,
+        requestedPort,
+        intent.services.includes('mailpit'),
+    );
 
     heading(io, 'Resolving the Ghost image');
     const ghost = await io.busy('Resolving the Ghost image', () =>
@@ -396,6 +427,7 @@ async function prepare(
         flags,
         intent,
         port,
+        mailpitPort,
         ghost,
         pin,
         project: projectName(intent.mode, intent.domain, dir),
@@ -418,19 +450,28 @@ async function preflight(io: Io, context: Context): Promise<void> {
 }
 
 /**
- * The port Ghost is published on. Any port the site needs that a container
- * already publishes is refused, naming the container. Where Docker would
- * publish over a port a host process holds (io.hostListens), Ghost's port
- * must also be free on the host: a chosen one skips it, a requested one is
- * refused.
+ * The ports Ghost, and with --with mailpit Mailpit's inbox, are published on.
+ * Any port the site needs that a container already publishes is refused,
+ * naming the container. Where Docker would publish over a port a host process
+ * holds (io.hostListens), Ghost's port must also be free on the host: a
+ * chosen one skips it, a requested one is refused. Mailpit's is always
+ * chosen, the same way.
  */
-async function ghostPort(io: Io, mode: SiteMode, requested: number | undefined): Promise<number> {
+async function sitePorts(
+    io: Io,
+    mode: SiteMode,
+    requested: number | undefined,
+    mailpit: boolean,
+): Promise<{ port: number; mailpitPort: number | null }> {
     // A stopped site's ports count as taken: it would fail to start again.
     const running = await listContainers(io.docker);
     const stopped = await stoppedSiteContainers(io.docker);
     const containers = [...running, ...stopped];
     const published = new Set(containers.flatMap((container) => container.publishedPorts));
     const port = requested ?? (await freeOnHost(io, published));
+    const mailpitPort = mailpit
+        ? await freeOnHost(io, new Set([...published, port]), DEFAULT_MAILPIT_PORT)
+        : null;
     const wanted = [
         port,
         ...(mode === 'production' ? [PRODUCTION_PORTS.http, PRODUCTION_PORTS.https] : []),
@@ -464,14 +505,18 @@ async function ghostPort(io: Io, mode: SiteMode, requested: number | undefined):
                 '  Nothing has been changed.',
         );
     }
-    return port;
+    return { port, mailpitPort };
 }
 
 /** The first port no container publishes and, where that can be told, nothing on the host holds. */
-async function freeOnHost(io: Io, published: ReadonlySet<number>): Promise<number> {
+async function freeOnHost(
+    io: Io,
+    published: ReadonlySet<number>,
+    start = DEFAULT_PORT,
+): Promise<number> {
     const taken = new Set(published);
     for (;;) {
-        const port = choosePort(taken);
+        const port = choosePort(taken, start);
         if (!(await io.hostListens(port))) {
             return port;
         }
@@ -533,6 +578,9 @@ function writeEnv(site: Site, created: Created) {
         ['GHOST_CONTENT_PATH', ghost.contentPath],
         ['GHOST_TINYBIRD_PATH', ghost.tinybirdPath],
         ['GHOST_PORT', String(site.port)],
+        ...(site.mailpitPort === null
+            ? []
+            : [['MAILPIT_PORT', String(site.mailpitPort)] as [string, string]]),
         ['RESTART_POLICY', production ? 'unless-stopped' : 'no'],
         ['DATABASE_HOST', 'db'],
         ['DATABASE_PORT', '3306'],
@@ -570,14 +618,12 @@ async function writeGhostEnv(
     importing: Importing | null,
 ) {
     const path = join(dir, GHOST_ENV_FILE);
-    // The source site's configuration, without what the container owns.
-    const carried = await importing?.ghostEnv();
+    const mailpit = intent.services.includes('mailpit');
+    // The source site's configuration, without what the container owns, and
+    // with Mailpit, without the source's mail transport.
+    const carried = await importing?.ghostEnv(mailpit);
     created.file(path);
-    atomicWrite(
-        path,
-        ghostEnvTemplate(project, intent.services.length > 0) + (carried?.text ?? ''),
-        PRIVATE,
-    );
+    atomicWrite(path, ghostEnvTemplate(project, intent.services) + (carried?.text ?? ''), PRIVATE);
     ok(io, GHOST_ENV_FILE, carried?.detail ?? 'Ghost application settings');
     for (const { key, reason } of carried?.skipped ?? []) {
         printChecks(io, [{ status: 'note', label: 'not carried', detail: `${key}: ${reason}` }]);
@@ -588,8 +634,9 @@ async function writeGhostEnv(
  * Bind mount sources must exist before the daemon resolves them, or it
  * creates them as root. Ownership inside is the images' own business.
  */
-function makeDataDirectories({ io, dir }: Site, created: Created, isImport: boolean) {
-    for (const data of DATA_DIRS) {
+function makeDataDirectories({ io, dir, intent }: Site, created: Created, isImport: boolean) {
+    const dirs = [...DATA_DIRS, ...(intent.services.includes('mailpit') ? [MAILPIT_DATA_DIR] : [])];
+    for (const data of dirs) {
         const path = join(dir, data);
         const before = created.directories.length;
         makeDirectories(path, created.directories);
@@ -599,7 +646,7 @@ function makeDataDirectories({ io, dir }: Site, created: Created, isImport: bool
         }
     }
     created.save();
-    ok(io, 'data', DATA_DIRS.join(' and '));
+    ok(io, 'data', `${dirs.slice(0, -1).join(', ')} and ${dirs.at(-1)}`);
 }
 
 async function validateConfiguration({ io, dir, intent }: Site) {
@@ -772,6 +819,9 @@ function printSummary(site: Site, importing: Importing | null) {
             `  Project      ${site.project} (${site.profiles}), in ${site.dir}`,
             `  Ghost        ${ghost.version}, ${ghost.reference}`,
             `  Loopback     127.0.0.1:${site.port}`,
+            ...(site.mailpitPort === null
+                ? []
+                : [`  Mailpit      http://127.0.0.1:${site.mailpitPort}, the mail Ghost sends`]),
             ...(importing === null ? [] : [`  Imported     ${importing.description}`]),
             '',
             '.env and ghost.env hold the credentials; back them up.',
@@ -789,19 +839,32 @@ const describe = (error: unknown) =>
 /**
  * Written fresh rather than copied from the example, whose SMTP block is a
  * placeholder: a site shipping with smtp.example.com fails to send mail in a
- * way that looks like a Ghost bug.
+ * way that looks like a Ghost bug. With Mailpit, mail goes to it; the
+ * operator owns these lines afterwards.
  */
-function ghostEnvTemplate(project: string, optionalServices: boolean): string {
+export function ghostEnvTemplate(project: string, services: readonly string[]): string {
+    const mailpit = services.includes('mailpit');
     return [
         `# Ghost application settings for ${project}; see ghost.env.example.`,
         '# Write values with ./ghost-docker config set ghost.env KEY VALUE, which encodes',
-        '# them for Compose. Staff invites and password resets need mail__* (SMTP) set.',
+        mailpit
+            ? '# them for Compose. Mail goes to Mailpit, whose inbox is at MAILPIT_PORT in .env.'
+            : '# them for Compose. Staff invites and password resets need mail__* (SMTP) set.',
         '',
-        // Both optional services need Ghost's public API.
-        ...(optionalServices ? [env.serialize('labs__publicAPI', 'true')] : []),
+        // ActivityPub (and analytics, added later) need Ghost's public API.
+        ...(services.includes('activitypub') ? [env.serialize('labs__publicAPI', 'true')] : []),
+        ...(mailpit ? mailpitMail(project).map(([key, value]) => env.serialize(key, value)) : []),
         '',
     ].join('\n');
 }
+
+/** Ghost's SMTP settings for the site's own Mailpit, by its unique alias. */
+export const mailpitMail = (project: string): [string, string][] => [
+    ['mail__transport', 'SMTP'],
+    ['mail__options__host', `mailpit-${project}`],
+    ['mail__options__port', '1025'],
+    ['mail__options__secure', 'false'],
+];
 
 /**
  * Why `up` failed, in Compose's own words. Docker names a port it could not

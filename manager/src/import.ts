@@ -16,7 +16,7 @@ import * as env from './env.ts';
 import { CliError, UsageError } from './errors.ts';
 import { atomicWrite, readIfExists } from './fs.ts';
 import { resolveExactGhost, type ResolvedGhost } from './ghost.ts';
-import { sourceConfig, type CarriedConfig } from './import/config.ts';
+import { replaceMailTransport, sourceConfig, type CarriedConfig } from './import/config.ts';
 import {
     BATCH,
     databaseInput,
@@ -64,10 +64,16 @@ export function refuseImportOptions(flags: {
             );
         }
     }
-    if (flags.with !== undefined) {
+    // Mailpit only replaces the mail transport; anything else would change
+    // what the imported site is.
+    const others = (flags.with ?? '')
+        .split(',')
+        .map((item) => item.trim())
+        .filter((item) => item !== '' && item !== 'mailpit');
+    if (flags.with !== undefined && others.length > 0) {
         throw new UsageError(
-            '--with cannot be combined with --import. Import the site first, then enable\n' +
-                '  optional services; see docs/configuration.md.',
+            `--with ${others.join(',')} cannot be combined with --import; only mailpit can. Import the\n` +
+                '  site first, then enable optional services; see docs/configuration.md.',
         );
     }
 }
@@ -158,9 +164,18 @@ export class Importing {
         created.save();
     }
 
-    /** The source site's configuration for ghost.env, without what the container owns. */
-    async ghostEnv(): Promise<{ text: string; detail: string; skipped: CarriedConfig['skipped'] }> {
-        const { settings, skipped } = await sourceConfig(this.io, this.dir, this.manifest);
+    /**
+     * The source site's configuration for ghost.env, without what the
+     * container owns. With Mailpit, without the source's mail transport, which
+     * Mailpit replaces: a local copy of a site then never sends real mail.
+     */
+    async ghostEnv(
+        mailpit: boolean,
+    ): Promise<{ text: string; detail: string; skipped: CarriedConfig['skipped'] }> {
+        const { settings, skipped } = replaceMailTransport(
+            await sourceConfig(this.io, this.dir, this.manifest),
+            mailpit,
+        );
         return {
             text:
                 settings.length === 0

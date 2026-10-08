@@ -102,6 +102,7 @@ describe('refusals that change nothing', () => {
             [['--domain', 'example.com', '--email', 'nobody'], /--email must be an email address/],
             [['--domain', 'example.com', '--admin-domain', 'example.com'], /must differ/],
             [['--local', '--with', 'redis'], /unknown optional service: redis/],
+            [['--domain', 'example.com', '--with', 'mailpit'], /mailpit is for local sites only/],
             [['--local', '--with', 'production'], /--with selects optional services/],
             [['--local', '--port', '70000'], /port number/],
             [['--local', '--frobnicate'], /frobnicate/],
@@ -263,6 +264,36 @@ describe('refusals that change nothing', () => {
         assert.equal(env.get(readFileSync(join(h.dir, '.env'), 'utf8'), 'GHOST_PORT'), '2368');
     });
 
+    test('existing Mailpit data is never installed over either', async () => {
+        mkdirSync(join(h.dir, 'data', 'mailpit'), { recursive: true });
+        writeFileSync(join(h.dir, 'data', 'mailpit', 'mailpit.db'), '');
+        const result = await install('--local', '--with', 'mailpit');
+        assert.match(result.stderr, /data\/mailpit is not empty/);
+    });
+
+    test("Mailpit's port skips those a container publishes, a host process holds, and Ghost's", async () => {
+        h.daemon.containers = [
+            {
+                Id: 'o',
+                Names: ['/other-mailpit-1'],
+                Ports: [{ PrivatePort: 8025, PublicPort: 8025, Type: 'tcp' }],
+            },
+        ];
+        h.daemon.hostPorts = [8026];
+        const result = await install(
+            '--local',
+            '--port',
+            '8027',
+            '--with',
+            'mailpit',
+            '--no-start',
+        );
+        assert.equal(result.code, 0, result.stderr);
+        const values = env.toRecord(readFileSync(join(h.dir, '.env'), 'utf8'));
+        assert.equal(values.GHOST_PORT, '8027');
+        assert.equal(values.MAILPIT_PORT, '8028');
+    });
+
     test('a failed preflight changes nothing', async () => {
         h.daemon.info = { ServerVersion: '24.0.0', OSType: 'linux', Architecture: 'x86_64' };
         const result = await install('--local');
@@ -355,6 +386,40 @@ describe('a local site, not started', () => {
 
     test('nothing was started', () => {
         assert.ok(!compose.some((args) => args[0] === 'up' || args[0] === 'run'));
+    });
+});
+
+describe('a local site with Mailpit, not started', () => {
+    let result: Awaited<ReturnType<typeof install>>;
+    beforeEach(async () => {
+        result = await install('--local', '--with', 'mailpit', '--no-start');
+        assert.equal(result.code, 0, result.stderr);
+    });
+
+    test('.env selects it and publishes its inbox on a port of its own', () => {
+        const values = env.toRecord(readFileSync(join(h.dir, '.env'), 'utf8'));
+        assert.equal(values.COMPOSE_PROFILES, 'local,mailpit');
+        assert.equal(values.GHOST_PORT, '2368');
+        assert.equal(values.MAILPIT_PORT, '8025');
+    });
+
+    test('ghost.env sends mail to it by its unique alias, and nothing else is added', () => {
+        const values = env.toRecord(readFileSync(join(h.dir, 'ghost.env'), 'utf8'));
+        const project = env.get(readFileSync(join(h.dir, '.env'), 'utf8'), 'COMPOSE_PROJECT_NAME');
+        assert.deepEqual(values, {
+            mail__transport: 'SMTP',
+            mail__options__host: `mailpit-${project}`,
+            mail__options__port: '1025',
+            mail__options__secure: 'false',
+        });
+    });
+
+    test('its inbox has a data directory, and the summary says where it is', () => {
+        assert.ok(statSync(join(h.dir, 'data', 'mailpit')).isDirectory());
+        assert.match(result.stdout, /data\/ghost, data\/mysql and data\/mailpit/);
+        assert.match(result.stdout, /Mailpit +http:\/\/127\.0\.0\.1:8025/);
+        const metadata = JSON.parse(readFileSync(join(h.dir, '.ghost-docker.json'), 'utf8'));
+        assert.deepEqual(metadata.profiles, ['local', 'mailpit']);
     });
 });
 

@@ -11,11 +11,13 @@
 //                   name it serves
 //   https           whether Caddy holds a certificate for the domain yet:
 //                   serving, or pending until DNS reaches this host
+//   mailpit         with that profile: its health check, and from the ghost
+//                   container, over the site's network, its SMTP greeting
 //   published ports what Docker says it published, not verified from the host
 import { compose, composeError, composePs, type ServiceState } from './compose.ts';
 import type { Io } from './io.ts';
 import type { Check } from './report.ts';
-import type { SiteFacts } from './site.ts';
+import { hasProfile, type SiteFacts } from './site.ts';
 
 /**
  * Run in the ghost container, which has Node and is on the site's network:
@@ -69,6 +71,53 @@ async function redirects(io: Io, site: SiteFacts, domains: readonly string[]): P
                     : `Caddy answered ${code} for http://${domain}, not a redirect to https://${domain}; check caddy/sites/site.caddy`,
         };
     });
+}
+
+/** Run in the ghost container: the first line Mailpit's SMTP server sends. */
+const SMTP_PROBE = `
+const socket = require('net').connect({ host: process.argv[1], port: 1025, timeout: 10000 });
+socket.once('data', (data) => { console.log(String(data).split('\\r\\n')[0]); socket.destroy(); });
+socket.on('timeout', () => { console.log('no answer within 10 seconds'); socket.destroy(); });
+socket.on('error', (error) => console.log(error.message));
+`;
+
+/** Mailpit, healthy, and taking mail where Ghost sends it: its alias on the site network. */
+async function mailpit(
+    io: Io,
+    site: SiteFacts,
+    services: readonly ServiceState[] | null,
+): Promise<Check[]> {
+    const state = services?.find((entry) => entry.Service === 'mailpit');
+    if (state?.Health !== 'healthy') {
+        return [
+            {
+                status: 'error',
+                label: 'mailpit',
+                detail: `not healthy (${state ? [state.State, state.Health].filter(Boolean).join(', ') : 'no container'})`,
+            },
+        ];
+    }
+    const host = `mailpit-${site.settings.get('COMPOSE_PROJECT_NAME') || 'ghost'}`;
+    const result = await compose(
+        io,
+        site.dir,
+        ['exec', '-T', 'ghost', 'node', '-e', SMTP_PROBE, host],
+        { timeoutMs: 60_000 },
+    );
+    const greeting = result.stdout.trim();
+    return [
+        result.exitCode === 0 && greeting.startsWith('220')
+            ? {
+                  status: 'ok',
+                  label: 'mailpit',
+                  detail: `healthy, and takes mail at ${host}:1025 on the site network`,
+              }
+            : {
+                  status: 'error',
+                  label: 'mailpit',
+                  detail: `did not answer SMTP at ${host}:1025 from the ghost container: ${greeting || composeError(result, 2) || 'no answer'}`,
+              },
+    ];
 }
 
 /**
@@ -141,12 +190,17 @@ export async function verifyIngress(
         const domains = [site.domain, site.adminDomain].filter((name) => name !== '');
         checks.push(...(await redirects(io, site, domains)), await https(io, site));
     }
+    const withMailpit = hasProfile(site.settings.get('COMPOSE_PROFILES') ?? '', 'mailpit');
+    if (withMailpit) {
+        checks.push(...(await mailpit(io, site, services)));
+    }
     checks.push({
         status: 'note',
         label: 'published ports',
         detail:
             `Docker publishes Ghost on ${publishedPorts(services, 'ghost')}` +
             (production ? ` and Caddy on ${publishedPorts(services, 'caddy')}` : '') +
+            (withMailpit ? `, and Mailpit's inbox on ${publishedPorts(services, 'mailpit')}` : '') +
             '; a container cannot reach the host, so open the URL to see them from there',
     });
     return checks;

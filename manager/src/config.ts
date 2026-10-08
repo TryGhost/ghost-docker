@@ -26,7 +26,9 @@ import {
     ENV_EXAMPLE_FILE,
     ENV_FILE,
     GHOST_ENV_FILE,
+    hasProfile,
     hostOf,
+    LOCAL_ONLY_PROFILES,
     OPTIONAL_PROFILES,
     SITE_MODES,
     siteMode,
@@ -129,6 +131,16 @@ export async function validateEnv(io: Io, dir: string): Promise<Finding[]> {
                 `unknown profile(s) in COMPOSE_PROFILES: ${unknown.join(', ')} (optional profiles are ${OPTIONAL_PROFILES.join(', ')})`,
             ),
         );
+    }
+    if (mode === 'production') {
+        for (const profile of LOCAL_ONLY_PROFILES.filter((each) => hasProfile(profiles, each))) {
+            findings.push(
+                error(
+                    file,
+                    `COMPOSE_PROFILES selects ${profile}, which is for local sites only: in production it would catch the site's real mail`,
+                ),
+            );
+        }
     }
     const declared = values.SITE_MODE;
     if (mode !== null && declared && declared !== mode) {

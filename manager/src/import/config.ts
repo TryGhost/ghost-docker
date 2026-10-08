@@ -72,3 +72,23 @@ export async function sourceConfig(
     const container = new Set(Object.keys(resolved.project.services.ghost?.environment ?? {}));
     return carriedConfig(manifest, container, operatorKeyTest(dir));
 }
+
+/** Ghost's mail transport: what Mailpit replaces. `mail__from` is the site's own. */
+export const isMailTransport = (key: string): boolean =>
+    key === 'mail__transport' || key.startsWith('mail__options__');
+
+/** With Mailpit, the carried configuration without the source's mail transport. */
+export function replaceMailTransport(carried: CarriedConfig, mailpit: boolean): CarriedConfig {
+    if (!mailpit) {
+        return carried;
+    }
+    return {
+        settings: carried.settings.filter(([key]) => !isMailTransport(key)),
+        skipped: [
+            ...carried.skipped,
+            ...carried.settings
+                .filter(([key]) => isMailTransport(key))
+                .map(([key]) => ({ key, reason: 'replaced by Mailpit (--with mailpit)' })),
+        ],
+    };
+}

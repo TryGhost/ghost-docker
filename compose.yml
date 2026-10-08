@@ -13,7 +13,8 @@
 # Site modes are selected through COMPOSE_PROFILES and are additive:
 #   local       ghost + db, Ghost published on 127.0.0.1:${GHOST_PORT}
 #   production  ghost + db + caddy (HTTPS ingress)
-# Optional, per-site profiles: analytics, activitypub.
+# Optional, per-site profiles: analytics, activitypub, and for local sites
+# mailpit.
 # `supervisor` is reserved for the upgrade supervisor and defines no service yet.
 
 x-logging: &default-logging
@@ -93,6 +94,9 @@ services:
         required: false
       activitypub:
         condition: service_started
+        required: false
+      mailpit:
+        condition: service_healthy
         required: false
     networks:
       ghost_network:
@@ -218,6 +222,43 @@ services:
       ghost_network:
         aliases:
           - activitypub-${COMPOSE_PROJECT_NAME:-ghost}
+
+  # Local sites only: catches the mail Ghost sends (staff invites, password
+  # resets, member sign-in links) and shows it in a web inbox. Newsletters go
+  # through Mailgun's API, not SMTP, so they never arrive here.
+  mailpit:
+    image: axllent/mailpit:v1.31.4@sha256:b68349e3a014b90c5610bfb26b2ae36f3892d7b8cf25ee140c6c71c98d2fcf48
+    restart: ${RESTART_POLICY:-unless-stopped}
+    profiles: [mailpit]
+    labels:
+      <<: *site-labels
+      org.ghost.docker.role: mailpit
+      org.ghost.docker.lifecycle: long-running
+    logging: *default-logging
+    # The inbox, on the loopback interface only, like Ghost. SMTP stays on the
+    # site's network.
+    ports:
+      - "127.0.0.1:${MAILPIT_PORT:-8025}:8025"
+    expose:
+      - "1025"
+    environment:
+      MP_DATABASE: /data/mailpit.db
+      # Ghost may be configured with SMTP credentials; any are accepted.
+      MP_SMTP_AUTH_ACCEPT_ANY: "true"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "true"
+    volumes:
+      - ${MAILPIT_DATA_LOCATION:-./data/mailpit}:/data
+    healthcheck:
+      test: [CMD, /mailpit, readyz]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      start_interval: 1s
+      retries: 5
+    networks:
+      ghost_network:
+        aliases:
+          - mailpit-${COMPOSE_PROJECT_NAME:-ghost}
 
   # Supporting one-shot jobs.
   #

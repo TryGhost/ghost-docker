@@ -10,7 +10,9 @@ import {
     writeMetadata,
     type Metadata,
 } from '../src/meta.ts';
+import { join } from 'node:path';
 import { harness, type Harness } from './helpers.ts';
+import { writeEnvFile } from './site.ts';
 
 let h: Harness;
 beforeEach(() => {
@@ -66,6 +68,15 @@ describe('installation metadata', () => {
         const info = await h.run('info');
         assert.match(info.stdout, /mode +production/);
         assert.match(info.stdout, new RegExp(`ghost image +ghost@${DIGEST}`));
+    });
+
+    test('with Mailpit, info says where its inbox is, from .env', async () => {
+        writeMetadata(h.dir, sample(h.dir));
+        writeEnvFile(join(h.dir, '.env'), {
+            COMPOSE_PROFILES: 'local,mailpit',
+            MAILPIT_PORT: '8026',
+        });
+        assert.match((await h.run('info')).stdout, /^mailpit +http:\/\/127\.0\.0\.1:8026$/m);
     });
 
     test('the same document is written as the same bytes', () => {
