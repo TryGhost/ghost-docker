@@ -243,12 +243,20 @@ with_fake ok env ${fake_socket_env[@]+"${fake_socket_env[@]}"} GD_CHANNEL=beta "
 expect_run_arg "ghcr.io/tryghost/ghost-docker:beta"
 ok "outside a checkout, the published channel"
 
+with_fake ok env ${fake_socket_env[@]+"${fake_socket_env[@]}"} "$BASH_BIN" "$WORK/standalone-launcher" --dir "$SITE" version
+expect_run_arg "--pull"
+expect_run_arg "always"
+ok "a channel is pulled every time it runs"
+
 sed 's|^readonly GD_PINNED_IMAGE=""$|readonly GD_PINNED_IMAGE="ghcr.io/tryghost/ghost-docker@sha256:abc123"|' \
     "$LAUNCHER" >"$WORK/pinned-launcher"
 grep -q 'sha256:abc123' "$WORK/pinned-launcher" || fail "the pin placeholder is not where install will look for it"
 with_fake ok env ${fake_socket_env[@]+"${fake_socket_env[@]}"} "$BASH_BIN" "$WORK/pinned-launcher" --dir "$SITE" version
 expect_run_arg "ghcr.io/tryghost/ghost-docker@sha256:abc123"
-ok "a site's own copy runs the digest it was pinned to"
+run_args | grep -qx -- '--pull' && fail "a pinned digest was pulled by the launcher" "$(run_args)"
+with_fake ok env ${fake_socket_env[@]+"${fake_socket_env[@]}"} GD_IMAGE=example/manager:1 "$BASH_BIN" "$WORK/standalone-launcher" --dir "$SITE" version
+run_args | grep -qx -- '--pull' && fail "an image named with GD_IMAGE was pulled" "$(run_args)"
+ok "a site's own copy runs the digest it was pinned to; neither it nor GD_IMAGE is pulled"
 
 step "Piped from curl"
 set +e
