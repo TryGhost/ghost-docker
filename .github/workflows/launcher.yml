@@ -1,14 +1,17 @@
 name: "Served launcher"
 
 # Serves the launcher at https://docker.ghost.org/install.sh: the release's own
-# ghost-docker, published to the gh-pages branch, whose CNAME is the domain,
-# with pages/index.html as the domain's front page.
+# ghost-docker, with pages/index.html as the domain's front page, deployed to
+# GitHub Pages from this workflow. There is no gh-pages branch: each deploy is
+# the whole site, built from the release. The custom domain is set in the
+# repository's Pages settings (a CNAME file is ignored for an Actions deploy).
 # Only the newest release is served, and never by hand (plan §2.7). Then
 # tests what is served, not the checkout's copy: it installs the newest beta,
 # and an explicit --release.
 #
-# Called by the Release workflow. Run it by hand to publish again, for
-# example once the domain's DNS points at GitHub Pages.
+# Called by the Release workflow. Run it by hand to deploy again, for
+# example once the domain's DNS points at GitHub Pages. The github-pages
+# environment must allow deployments from next-docker.
 on:
   workflow_call:
     inputs:
@@ -23,7 +26,7 @@ on:
         required: true
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: served-launcher
@@ -34,11 +37,11 @@ env:
   TAG: ${{ inputs.tag }}
 
 jobs:
-  publish:
-    name: Publish to gh-pages
+  build:
+    name: Build the site
     runs-on: ubuntu-latest
     outputs:
-      published: ${{ steps.newest.outputs.newest }}
+      newest: ${{ steps.newest.outputs.newest }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -60,37 +63,39 @@ jobs:
             echo "::notice::$TAG is not the newest release, so the served launcher stays as it is"
           fi
 
-      - name: Publish
+      - name: The site
         if: steps.newest.outputs.newest == 'true'
         run: |
           set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          pages=$RUNNER_TEMP/pages
-          if git ls-remote --exit-code --heads origin gh-pages >/dev/null; then
-            git fetch --quiet origin gh-pages
-            git worktree add --quiet "$pages" origin/gh-pages
-          else
-            git worktree add --quiet --detach "$pages"
-            git -C "$pages" checkout --quiet --orphan gh-pages
-            git -C "$pages" rm -r --quiet --force .
-          fi
-          cp ghost-docker "$pages/install.sh"
-          sed "s/{{RELEASE}}/$TAG/g" pages/index.html >"$pages/index.html"
-          printf '%s\n' "$DOMAIN" >"$pages/CNAME"
-          : >"$pages/.nojekyll"
-          git -C "$pages" add install.sh index.html CNAME .nojekyll
-          if git -C "$pages" diff --cached --quiet; then
-            echo "::notice::the served launcher is already $TAG's"
-          else
-            git -C "$pages" commit --quiet --message "Served the launcher from $TAG"
-            git -C "$pages" push --quiet origin HEAD:gh-pages
-          fi
+          site=$RUNNER_TEMP/site
+          mkdir "$site"
+          cp ghost-docker "$site/install.sh"
+          sed "s/{{RELEASE}}/$TAG/g" pages/index.html >"$site/index.html"
+          : >"$site/.nojekyll"
+
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        if: steps.newest.outputs.newest == 'true'
+        with:
+          path: ${{ runner.temp }}/site
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    if: needs.build.outputs.newest == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
 
   verify:
     name: Install with the served launcher
-    needs: publish
-    if: needs.publish.outputs.published == 'true'
+    needs: deploy
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -111,7 +116,7 @@ jobs:
             fi
             sleep 15
           done
-          echo "::error::https://$DOMAIN/install.sh did not become $TAG's launcher within 15 minutes. Check that GitHub Pages serves gh-pages and that the domain's DNS points at it."
+          echo "::error::https://$DOMAIN/install.sh did not become $TAG's launcher within 15 minutes. Check the repository's Pages settings (source: GitHub Actions, custom domain $DOMAIN) and that the domain's DNS points at GitHub Pages."
           exit 1
 
       - name: The front page is served

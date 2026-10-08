@@ -11,7 +11,7 @@ run-name: "Release — ${{ inputs.bump-type }}${{ inputs.stable && ', stable' ||
 #   image      ghcr.io/tryghost/ghost-docker:<tag>, and `beta`/`stable` when it is
 #              the newest release on that channel
 #   notes      the GitHub release
-#   launcher   install.sh on gh-pages, served at https://docker.ghost.org/install.sh
+#   launcher   install.sh and index.html on GitHub Pages, at https://docker.ghost.org
 #
 # The later jobs are called here rather than triggered by the tag: a tag
 # pushed with GITHUB_TOKEN starts no workflow.
@@ -132,7 +132,9 @@ jobs:
     name: Serve the launcher
     needs: [tag, image]
     permissions:
-      contents: write
+      contents: read
+      pages: write
+      id-token: write
     uses: ./.github/workflows/launcher.yml
     with:
       tag: ${{ needs.tag.outputs.tag }}

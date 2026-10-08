@@ -548,10 +548,10 @@ Rules:
   local modifications is refused. On a failure the updater puts the operator's
   files back and checks out the previous commit (recorded in metadata), and the
   launcher has kept the previous manager image, tagged with its commit.
-- **The launcher is served** from the `gh-pages` branch with the custom domain
-  `docker.ghost.org`: `https://docker.ghost.org/install.sh`. It is the
-  repository's own `ghost-docker`, published by a workflow on release and
-  never by hand. Test the served file rather than the checkout's copy.
+- **The launcher is served** by GitHub Pages, deployed from GitHub Actions,
+  with the custom domain `docker.ghost.org`: `https://docker.ghost.org/install.sh`.
+  It is the repository's own `ghost-docker`, published by a workflow on release
+  and never by hand. Test the served file rather than the checkout's copy.
 
 `./ghost-docker update [--check] [--channel stable|beta] [--to vX.Y.Z]` updates
 the stack, not Ghost. Preserve the exact Ghost pin; if a stack release requires a
@@ -1276,7 +1276,7 @@ Repo: ghost-docker. Implement §2.7 in two parts.
 **S6a — Releases, served launcher, and `update`.** Deps: N3. A release workflow on
 `next-docker` producing beta tags and dependency-only patch releases;
 image tags `vX.Y.Z[-beta.N]`, `stable` and `beta` published from release tags;
-tested release resolution; the `gh-pages` workflow serving the launchers at
+tested release resolution; the workflow serving the launcher at
 `docker.ghost.org`; managed-file checksums; and `update` between releases of
 this layout as described in §2.7, without the legacy migration.
 
@@ -1308,6 +1308,10 @@ while building it:
   a patch to an older line never moves `beta` backwards. A release tag is
   refused if the image already exists. The launcher is served only from the
   newest release.
+- **GitHub Pages deploys from Actions**, not a `gh-pages` branch: each deploy
+  is the whole site built from the release, and there is no branch anyone
+  could push to by hand. The custom domain lives in the repository's Pages
+  settings, and the `github-pages` environment allows `next-docker`.
 - **`--release`**, not the planned `--ref`: it names a release tag, never a
   git ref, and `--version` is already the Ghost version.
 - **The launcher's default** is the `beta` channel, which includes releases.

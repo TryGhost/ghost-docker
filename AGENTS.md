@@ -80,7 +80,7 @@ delivers it. `docs/install.md` describes what exists.
   numerically. The Release workflow cuts them as Ghost and Ghost-CLI do
   (`manager/scripts/release.ts`: ✨ commits make a minor, anything else a
   patch; release-note emojis select the notes), then publishes the image, its
-  moving `beta`/`stable` tags (`image.yml`), and the launcher to gh-pages as
+  moving `beta`/`stable` tags (`image.yml`), and the launcher to GitHub Pages as
   `https://docker.ghost.org/install.sh` (`launcher.yml`). Every release is a
   beta until S6b.
 - `src/commands/update.ts` moves a site to the release it runs as: snapshot
