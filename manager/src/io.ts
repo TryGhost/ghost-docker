@@ -1,7 +1,9 @@
 // Everything a command touches outside itself, so tests can substitute it.
 import input from '@inquirer/input';
 import select from '@inquirer/select';
+import { lookup } from 'node:dns/promises';
 import { statfsSync } from 'node:fs';
+import { connect } from 'node:net';
 import { Spinner } from 'picospinner';
 import { socketTransport, type DockerTransport } from './docker/transport.ts';
 import { exec, type Exec } from './process.ts';
@@ -24,6 +26,11 @@ export interface Io {
     exec: Exec;
     /** Bytes free to this user on the filesystem holding `path`, or null when unknown. */
     freeBytes: (path: string) => number | null;
+    /**
+     * Whether something on the host answers on its loopback `port`, or null
+     * where the host cannot be reached that way (see HOST_ALIAS).
+     */
+    hostListens: (port: number) => Promise<boolean | null>;
     /**
      * Questions for the person at the terminal, or null when there is none to
      * ask, so a missing answer is an error naming the option that supplies it.
@@ -50,6 +57,34 @@ const terminal: Prompter = {
 
 const isTTY = process.stdin.isTTY && process.stdout.isTTY;
 
+/**
+ * The host itself, from a container, on Docker Desktop and OrbStack. Their
+ * daemon is in a VM whose port forwarding publishes a port that a host
+ * process already holds without any error, and the host process keeps
+ * answering it. A Linux engine has no such alias, and there the bind fails
+ * loudly instead.
+ */
+const HOST_ALIAS = 'host.docker.internal';
+
+async function hostListens(port: number): Promise<boolean | null> {
+    let address: string;
+    try {
+        ({ address } = await lookup(HOST_ALIAS));
+    } catch {
+        return null;
+    }
+    return new Promise((resolve) => {
+        const socket = connect({ host: address, port, timeout: 1500 });
+        const settle = (listening: boolean) => {
+            socket.destroy();
+            resolve(listening);
+        };
+        socket.once('connect', () => settle(true));
+        socket.once('timeout', () => settle(false));
+        socket.once('error', () => settle(false));
+    });
+}
+
 export const processIo: Io = {
     stdout: (text) => void process.stdout.write(text),
     stderr: (text) => void process.stderr.write(text),
@@ -72,6 +107,7 @@ export const processIo: Io = {
     gid: () => process.getgid?.() ?? 0,
     docker: socketTransport(process.env.GD_DOCKER_SOCKET ?? '/var/run/docker.sock'),
     exec,
+    hostListens,
     freeBytes: (path) => {
         try {
             const stats = statfsSync(path);

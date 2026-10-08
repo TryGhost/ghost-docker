@@ -24,6 +24,8 @@ export interface Daemon {
     compose?: string | null;
     /** Free bytes on the site's filesystem; 50 GB when unset. */
     freeBytes?: number | null;
+    /** Ports a host process holds, as the manager can tell; null: it cannot tell. */
+    hostPorts?: number[] | null;
     /** What GET /containers/json answers, as the Engine API spells it. */
     containers?: unknown[];
     /**
@@ -173,6 +175,10 @@ export function harness(): Harness {
                           },
                       },
             freeBytes: () => state.daemon.freeBytes ?? 50 * 1024 ** 3,
+            hostListens: async (port) =>
+                state.daemon.hostPorts === null
+                    ? null
+                    : (state.daemon.hostPorts ?? []).includes(port),
             exec: fakeExec((command, args, options) => {
                 state.calls.push([command, ...args]);
                 if (command !== 'docker-compose') {

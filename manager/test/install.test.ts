@@ -205,6 +205,29 @@ describe('refusals that change nothing', () => {
         );
     });
 
+    test('an explicit --port a host process holds is refused where Docker would publish over it', async () => {
+        h.daemon.hostPorts = [2368];
+        const result = await install('--local', '--port', '2368', '--no-start');
+        assert.equal(result.code, 1);
+        assert.match(
+            result.stderr,
+            /port 2368 is already in use on this host by something outside Docker.*\n.*ghost ls[\s\S]*--port/,
+        );
+        assert.deepEqual(siteFiles(), []);
+    });
+
+    test('a chosen port skips those a host process holds', async () => {
+        h.daemon.hostPorts = [2368, 2369];
+        assert.equal((await install('--local', '--no-start')).code, 0);
+        assert.equal(env.get(readFileSync(join(h.dir, '.env'), 'utf8'), 'GHOST_PORT'), '2370');
+    });
+
+    test('where the host cannot be asked (a Linux engine), the default port is taken as free', async () => {
+        h.daemon.hostPorts = null;
+        assert.equal((await install('--local', '--no-start')).code, 0);
+        assert.equal(env.get(readFileSync(join(h.dir, '.env'), 'utf8'), 'GHOST_PORT'), '2368');
+    });
+
     test('a failed preflight changes nothing', async () => {
         h.daemon.info = { ServerVersion: '24.0.0', OSType: 'linux', Architecture: 'x86_64' };
         const result = await install('--local');

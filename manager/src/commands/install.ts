@@ -231,7 +231,7 @@ export function projectName(mode: SiteMode, domain: string, dir: string): string
 /** 192 bits, hex: nothing in it a dotenv file, a shell or MySQL treats specially. */
 export const secret = (): string => randomBytes(24).toString('hex');
 
-/** The first port at or above the default that no container publishes. */
+/** The first port at or above the default that is not taken. */
 export function choosePort(taken: ReadonlySet<number>): number {
     for (let port = DEFAULT_PORT; port < DEFAULT_PORT + PORT_SEARCH; port += 1) {
         if (!taken.has(port)) {
@@ -239,7 +239,7 @@ export function choosePort(taken: ReadonlySet<number>): number {
         }
     }
     throw new CliError(
-        `every port from ${DEFAULT_PORT} to ${DEFAULT_PORT + PORT_SEARCH - 1} is published by a container; choose one with --port`,
+        `every port from ${DEFAULT_PORT} to ${DEFAULT_PORT + PORT_SEARCH - 1} is taken; choose one with --port`,
     );
 }
 
@@ -419,12 +419,15 @@ async function preflight(io: Io, context: Context): Promise<void> {
 
 /**
  * The port Ghost is published on. Any port the site needs that a container
- * already publishes is refused, naming the container.
+ * already publishes is refused, naming the container. Where Docker would
+ * publish over a port a host process holds (io.hostListens), Ghost's port
+ * must also be free on the host: a chosen one skips it, a requested one is
+ * refused.
  */
 async function ghostPort(io: Io, mode: SiteMode, requested: number | undefined): Promise<number> {
     const containers = await listContainers(io.docker);
     const published = new Set(containers.flatMap((container) => container.publishedPorts));
-    const port = requested ?? choosePort(published);
+    const port = requested ?? (await freeOnHost(io, published));
     const wanted = [
         port,
         ...(mode === 'production' ? [PRODUCTION_PORTS.http, PRODUCTION_PORTS.https] : []),
@@ -447,7 +450,27 @@ async function ghostPort(io: Io, mode: SiteMode, requested: number | undefined):
                 '\n  Nothing was stopped. Nothing has been changed.',
         );
     }
+    if (requested !== undefined && !published.has(port) && (await io.hostListens(port))) {
+        throw new CliError(
+            `port ${port} is already in use on this host by something outside Docker, such as a\n` +
+                '  Ghost-CLI site (`ghost ls` lists those). Docker here would publish the site on it\n' +
+                '  anyway, and the other program would keep answering. Choose another port with --port.\n' +
+                '  Nothing has been changed.',
+        );
+    }
     return port;
+}
+
+/** The first port no container publishes and, where that can be told, nothing on the host holds. */
+async function freeOnHost(io: Io, published: ReadonlySet<number>): Promise<number> {
+    const taken = new Set(published);
+    for (;;) {
+        const port = choosePort(taken);
+        if (!(await io.hostListens(port))) {
+            return port;
+        }
+        taken.add(port);
+    }
 }
 
 // --- Writing, starting and verifying --------------------------------------------
