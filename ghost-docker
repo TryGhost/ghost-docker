@@ -172,9 +172,6 @@ if [[ -n $bundle && -e $bundle ]]; then
     else
         bundle="$(CDPATH='' cd -- "$(dirname -- "$bundle")" && pwd -P)/$(basename -- "$bundle")"
     fi
-    case $bundle in
-        *:*) die "the bundle's path contains a colon, which Docker cannot mount: $bundle" 2 ;;
-    esac
     bundle_mount=(--volume "$bundle:$bundle:ro")
     args[bundle_at]=$bundle
 fi

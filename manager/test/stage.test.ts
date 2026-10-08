@@ -37,7 +37,7 @@ async function stage(bundle: string): Promise<StagedBundle> {
     counter += 1;
     site = join(h.dir, `site-${counter}`);
     mkdirSync(site);
-    return stageBundle(h.io(), site, bundle);
+    return stageBundle(site, bundle);
 }
 
 /** Stages a bundle that must be refused, and checks nothing was left behind. */
@@ -247,21 +247,15 @@ describe('staging a valid bundle', () => {
         );
     });
 
-    test('staged content is readable like a fresh install; the rest stays private', async () => {
-        const source = bundleDir(fixture('mysql-data'));
-        execFileSync('chmod', ['-R', 'go-rwx', source]);
-        const staged = await stage(tarOf(source, 'private.tgz'));
-        const mode = (path: string) => statSync(join(staged.root, path)).mode & 0o777;
-        assert.equal(mode('content/themes/source/package.json'), 0o644);
-        assert.equal(mode('content/themes'), 0o755);
-        assert.equal(mode('database.sql'), 0o600);
-        assert.equal(statSync(join(site, STAGING)).mode & 0o077, 0, 'staging is not private');
+    test('the staging directory is private', async () => {
+        await stage(tarOf(bundleDir(fixture('mysql-data')), 'bundle.tgz'));
+        assert.equal(statSync(join(site, STAGING)).mode & 0o077, 0);
     });
 
     test('staging again replaces what an earlier attempt left', async () => {
         const first = await stage(bundleDir(fixture('mysql-dump')));
         writeFileSync(join(first.staging, 'stale'), 'x');
-        const again = await stageBundle(h.io(), site, join(work, 'bundle'));
+        const again = await stageBundle(site, join(work, 'bundle'));
         assert.ok(!existsSync(join(again.staging, 'stale')));
     });
 
@@ -407,12 +401,6 @@ describe('archives that are not bundles', () => {
         await refused(source, /manifest\.json is not valid JSON/);
     });
 
-    test('a manifest that is implausibly large', async () => {
-        const source = bundleDir(fixture('mysql-dump'));
-        writeFileSync(join(source, 'manifest.json'), ' '.repeat(1024 * 1024 + 1));
-        await refused(source, /implausibly large/);
-    });
-
     test('a manifest that does not meet the contract names each problem', async () => {
         const manifest = fixture('mysql-data');
         manifest.bundleVersion = 2;
@@ -446,13 +434,5 @@ describe('archives that are not bundles', () => {
         const source = bundleDir(fixture('mysql-dump'));
         rmSync(join(source, 'content'), { recursive: true });
         await refused(source, /no content\/ directory/);
-    });
-
-    test('too little space to unpack it and load the database', async () => {
-        h.daemon.freeBytes = 100 * 1024 ** 2;
-        await refused(
-            tarOf(bundleDir(fixture('mysql-dump')), 'bundle.tgz'),
-            /has 100 MB free; an import needs that and 256 MB more/,
-        );
     });
 });

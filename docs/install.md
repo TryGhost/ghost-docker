@@ -185,7 +185,7 @@ What to expect:
   private staging directory (`.import`) inside the site directory and
   validated there. A path that would leave the bundle, a symbolic or hard
   link, a device or anything else that is not a plain file or directory is
-  refused before anything is extracted, as is a manifest that does not meet the
+  refused as it is read, as is a manifest that does not meet the
   [contract](bundle-v1.md). The database is loaded as the site's own database
   user, never as root. Importing a bundle still means trusting it: its
   database and themes become your site, so import bundles you made.

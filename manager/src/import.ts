@@ -333,9 +333,7 @@ export async function readBundle(
     io.stdout('Reading the bundle\n');
     let staged: StagedBundle;
     try {
-        staged = await io.busy('Unpacking and checking the bundle', () =>
-            stageBundle(io, dir, bundle),
-        );
+        staged = await io.busy('Unpacking and checking the bundle', () => stageBundle(dir, bundle));
     } catch (error) {
         if (error instanceof BundleRefused) {
             throw new BundleRefused(

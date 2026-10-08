@@ -4,10 +4,10 @@
 // Importing a bundle means trusting it: its SQL becomes the site's database
 // and its themes become the site. What is defended here is narrower. Nothing
 // in a bundle can be written outside the staging directory, and nothing in it
-// is anything but a regular file or a directory: every entry is checked
-// before anything is extracted (an absolute path, a `..` component, a
-// symbolic or hard link, a device or any other special entry is refused), and
-// the unpacked tree is checked again afterwards whatever produced it.
+// is anything but a regular file or a directory: every entry is checked as it
+// is read (an absolute path, a `..` component, a symbolic or hard link, a
+// device or any other special entry is refused), and a refusal removes the
+// staging directory with whatever was unpacked before it.
 //
 // Every later step of an import works from the staged copy; the bundle itself
 // is only ever read, and the launcher mounts it read-only.
@@ -31,14 +31,10 @@ import { pipeline } from 'node:stream/promises';
 import * as tar from 'tar';
 import yauzl from 'yauzl';
 import { CliError } from '../errors.ts';
-import type { Io } from '../io.ts';
 import { CONTENT_ROOT, namedFiles, readManifest, type BundleManifest } from './manifest.ts';
 
 /** The staging directory, inside the site directory. */
 export const STAGING = '.import';
-/** Kept free on the site's filesystem after unpacking, for the database load. */
-export const RESERVE_BYTES = 256 * 1024 ** 2;
-const MANIFEST_LIMIT = 1024 * 1024;
 
 /** A bundle that is not one, or not one this host can take. Nothing was changed. */
 export class BundleRefused extends CliError {}
@@ -88,35 +84,23 @@ const clean = (name: string) => name.replace(/^(\.\/)+/, '').replace(/\/$/, '');
  */
 const isAppleDouble = (name: string) => basename(name).startsWith('._');
 
-const megabytes = (bytes: number) => `${Math.floor(bytes / 1024 ** 2)} MB`;
-
-function checkSpace(io: Io, target: string, needed: number): void {
-    const free = io.freeBytes(target);
-    if (free !== null && needed + RESERVE_BYTES > free) {
-        throw new BundleRefused(
-            `the bundle unpacks to ${megabytes(needed)} and the site directory's filesystem has ${megabytes(free)} free; ` +
-                `an import needs that and ${megabytes(RESERVE_BYTES)} more for the database`,
-        );
-    }
-}
-
 // --- Directories --------------------------------------------------------------
 
 /** Every entry under `root`, relative to it, not following links. */
-function walk(root: string): { name: string; type: EntryType; size: number }[] {
-    const found: { name: string; type: EntryType; size: number }[] = [];
+function walk(root: string): { name: string; type: EntryType }[] {
+    const found: { name: string; type: EntryType }[] = [];
     const visit = (relative: string) => {
         for (const entry of readdirSync(join(root, relative), { withFileTypes: true }).sort(
             (a, b) => a.name.localeCompare(b.name),
         )) {
             const name = relative === '' ? entry.name : `${relative}/${entry.name}`;
             if (entry.isDirectory()) {
-                found.push({ name, type: 'directory', size: 0 });
+                found.push({ name, type: 'directory' });
                 visit(name);
             } else if (entry.isFile()) {
-                found.push({ name, type: 'file', size: lstatSync(join(root, name)).size });
+                found.push({ name, type: 'file' });
             } else {
-                found.push({ name, type: entry.isSymbolicLink() ? 'symlink' : 'special', size: 0 });
+                found.push({ name, type: entry.isSymbolicLink() ? 'symlink' : 'special' });
             }
         }
     };
@@ -124,20 +108,15 @@ function walk(root: string): { name: string; type: EntryType; size: number }[] {
     return found;
 }
 
-function copyDirectory(io: Io, bundle: string, target: string): void {
+function copyDirectory(bundle: string, target: string): void {
     const entries = walk(bundle);
     for (const entry of entries) {
         checkEntry(entry.name, entry.type);
     }
-    checkSpace(
-        io,
-        target,
-        entries.reduce((sum, entry) => sum + entry.size, 0),
-    );
     for (const entry of entries) {
         const destination = join(target, entry.name);
         if (entry.type === 'directory') {
-            mkdirSync(destination, { mode: 0o700 });
+            mkdirSync(destination, { mode: 0o755 });
         } else {
             copyFileSync(join(bundle, entry.name), destination);
         }
@@ -158,34 +137,13 @@ const TAR_TYPES: Record<string, EntryType> = {
 const NOT_AN_ARCHIVE =
     'the bundle is not an archive made by `ghost migrate-export`, or it is corrupt or truncated';
 
-/** A tar archive, compressed or not: node-tar recognises gzip itself. */
-async function unpackTar(io: Io, bundle: string, target: string): Promise<void> {
-    // Every entry is checked before anything is written.
-    let size = 0;
+/**
+ * A tar archive, compressed or not: node-tar recognises gzip itself. Each
+ * entry is checked by the filter, before node-tar writes or even sanitises
+ * it; after the first refusal nothing more is written.
+ */
+async function unpackTar(bundle: string, target: string): Promise<void> {
     let refused: unknown = null;
-    try {
-        await tar.t({
-            file: bundle,
-            strict: true,
-            onReadEntry: (entry) => {
-                try {
-                    checkEntry(entry.path, TAR_TYPES[entry.type] ?? 'special');
-                } catch (problem) {
-                    refused ??= problem;
-                }
-                size += entry.size ?? 0;
-            },
-        });
-    } catch {
-        throw new BundleRefused(NOT_AN_ARCHIVE);
-    }
-    if (refused !== null) {
-        throw refused;
-    }
-    checkSpace(io, target, size);
-
-    // And filtered again as it is extracted, whatever the listing said.
-    let unexpected: string | null = null;
     try {
         await tar.x({
             file: bundle,
@@ -193,21 +151,24 @@ async function unpackTar(io: Io, bundle: string, target: string): Promise<void> 
             strict: true,
             preserveOwner: false,
             filter: (path, entry) => {
+                if (refused !== null) {
+                    return false;
+                }
                 const type = TAR_TYPES[(entry as tar.ReadEntry).type] ?? 'special';
-                if (type !== 'file' && type !== 'directory') {
-                    unexpected ??= path;
+                try {
+                    checkEntry(path, type);
+                } catch (problem) {
+                    refused = problem;
                     return false;
                 }
                 return !(type === 'file' && isAppleDouble(path));
             },
         });
     } catch {
-        throw new BundleRefused(NOT_AN_ARCHIVE);
+        throw refused ?? new BundleRefused(NOT_AN_ARCHIVE);
     }
-    if (unexpected !== null) {
-        throw new BundleRefused(
-            `the bundle contains a special file: ${clean(unexpected)}. ${ONLY_FILES}`,
-        );
+    if (refused !== null) {
+        throw refused;
     }
 }
 
@@ -251,7 +212,7 @@ function zipType(entry: yauzl.Entry): EntryType {
     return mode === 0 || mode === S_IFREG ? 'file' : 'special';
 }
 
-async function unpackZip(io: Io, bundle: string, target: string): Promise<void> {
+async function unpackZip(bundle: string, target: string): Promise<void> {
     let zip: yauzl.ZipFile;
     let entries: yauzl.Entry[];
     try {
@@ -272,24 +233,19 @@ async function unpackZip(io: Io, bundle: string, target: string): Promise<void> 
         for (const entry of entries) {
             checkEntry(entry.fileName, zipType(entry));
         }
-        checkSpace(
-            io,
-            target,
-            entries.reduce((sum, entry) => sum + entry.uncompressedSize, 0),
-        );
         for (const entry of entries) {
             const destination = join(target, entry.fileName);
             if (zipType(entry) === 'directory') {
-                mkdirSync(destination, { recursive: true, mode: 0o700 });
+                mkdirSync(destination, { recursive: true, mode: 0o755 });
                 continue;
             }
-            mkdirSync(dirname(destination), { recursive: true, mode: 0o700 });
+            mkdirSync(dirname(destination), { recursive: true, mode: 0o755 });
             const stream = await new Promise<NodeJS.ReadableStream>((resolve, reject) =>
                 zip.openReadStream(entry, (error, opened) =>
                     error ? reject(error) : resolve(opened),
                 ),
             );
-            await pipeline(stream, createWriteStream(destination, { flags: 'wx', mode: 0o600 }));
+            await pipeline(stream, createWriteStream(destination, { flags: 'wx', mode: 0o644 }));
         }
     } catch (error) {
         if (error instanceof BundleRefused) {
@@ -315,7 +271,7 @@ function magic(path: string, length: number): Buffer {
 }
 
 /** Copies or unpacks the bundle into the empty `target`. */
-async function unpack(io: Io, bundle: string, target: string): Promise<void> {
+async function unpack(bundle: string, target: string): Promise<void> {
     let stats;
     try {
         stats = statSync(bundle);
@@ -323,14 +279,14 @@ async function unpack(io: Io, bundle: string, target: string): Promise<void> {
         throw new BundleRefused(`there is no bundle at ${bundle}`);
     }
     if (stats.isDirectory()) {
-        copyDirectory(io, bundle, target);
+        copyDirectory(bundle, target);
     } else if (!stats.isFile()) {
         throw new BundleRefused(`${bundle} is neither a bundle directory nor an archive`);
     } else if (magic(bundle, 2).toString('latin1') === 'PK') {
         // By content, not by name.
-        await unpackZip(io, bundle, target);
+        await unpackZip(bundle, target);
     } else {
-        await unpackTar(io, bundle, target);
+        await unpackTar(bundle, target);
     }
 }
 
@@ -351,17 +307,11 @@ function bundleRoot(unpacked: string): string {
 
 /** The unpacked bundle meets the contract, or this says how it does not. */
 function validate(root: string): BundleManifest {
-    for (const entry of walk(root)) {
-        checkEntry(entry.name, entry.type);
-    }
     const path = join(root, 'manifest.json');
     if (!existsSync(path)) {
         throw new BundleRefused(
             'the bundle has no manifest.json; it was not made by `ghost migrate-export`',
         );
-    }
-    if (lstatSync(path).size > MANIFEST_LIMIT) {
-        throw new BundleRefused('manifest.json is implausibly large');
     }
     let value: unknown;
     try {
@@ -391,53 +341,21 @@ function validate(root: string): BundleManifest {
 }
 
 /**
- * Content is served by Ghost and read by theme developers, like the content
- * of a fresh install, whatever modes the archive recorded; everything else
- * stays private to the caller.
- */
-function settleModes(root: string): void {
-    for (const entry of walk(root)) {
-        const path = join(root, entry.name);
-        const content = entry.name === 'content' || entry.name.startsWith('content/');
-        if (entry.type === 'directory') {
-            chmodSync(path, content ? 0o755 : 0o700);
-        } else {
-            const executable = (lstatSync(path).mode & 0o100) !== 0;
-            chmodSync(path, content ? (executable ? 0o755 : 0o644) : 0o600);
-        }
-    }
-}
-
-/**
  * Unpacks BUNDLE into the site's staging directory and validates it. A bundle
  * that is refused leaves nothing behind.
  */
-export async function stageBundle(io: Io, dir: string, bundle: string): Promise<StagedBundle> {
+export async function stageBundle(dir: string, bundle: string): Promise<StagedBundle> {
     const staging = join(dir, STAGING);
     rmSync(staging, { recursive: true, force: true });
+    // Private whatever the umask: the dump and the configuration are in here.
     mkdirSync(staging, { mode: 0o700 });
     chmodSync(staging, 0o700);
     try {
         const unpacked = join(staging, 'bundle');
-        mkdirSync(unpacked, { mode: 0o700 });
-        await unpack(io, bundle, unpacked);
-        // An archive records its own modes; whatever they were, the caller must
-        // be able to read, move and remove what was unpacked.
-        for (const entry of walk(unpacked)) {
-            if (entry.type === 'directory') {
-                chmodSync(join(unpacked, entry.name), 0o700);
-            }
-        }
+        mkdirSync(unpacked);
+        await unpack(bundle, unpacked);
         const root = bundleRoot(unpacked);
-        const manifest = validate(root);
-        const free = io.freeBytes(staging);
-        if (free !== null && free < RESERVE_BYTES) {
-            throw new BundleRefused(
-                `unpacking the bundle left ${megabytes(free)} free on the site directory's filesystem, too little to load its database`,
-            );
-        }
-        settleModes(root);
-        return { staging, root, manifest };
+        return { staging, root, manifest: validate(root) };
     } catch (error) {
         removeStaging(dir);
         throw error;
@@ -445,19 +363,5 @@ export async function stageBundle(io: Io, dir: string, bundle: string): Promise<
 }
 
 export function removeStaging(dir: string): void {
-    const staging = join(dir, STAGING);
-    if (!existsSync(staging)) {
-        return;
-    }
-    // Directories the archive made unwritable could not otherwise be emptied.
-    try {
-        for (const entry of walk(staging)) {
-            if (entry.type === 'directory') {
-                chmodSync(join(staging, entry.name), 0o700);
-            }
-        }
-    } catch {
-        // Removed as far as it can be, below.
-    }
-    rmSync(staging, { recursive: true, force: true });
+    rmSync(join(dir, STAGING), { recursive: true, force: true });
 }
