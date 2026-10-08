@@ -102,9 +102,9 @@ describe('DEFINER clauses in a dump', () => {
         }
     });
 
-    test('a long line passes through without being held', async () => {
+    test('a long line arrives intact', async () => {
         const line = Buffer.from(`INSERT INTO t VALUES ('${'x'.repeat(5 * 1024 * 1024)}');\n`);
-        assert.equal((await filtered(line, 65_536)).length, line.length);
+        assert.deepEqual(await filtered(line, 65_536), line);
     });
 });
 

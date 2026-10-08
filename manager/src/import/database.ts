@@ -89,104 +89,42 @@ export function dropDefiner(line: string): string {
     return line;
 }
 
-const SLASH = 0x2f;
-const STAR = 0x2a;
-const BANG = 0x21;
 const NEWLINE = 0x0a;
 
 /**
- * dropDefiner over a stream, byte for byte everywhere else. Only lines that
- * start `/*!` are held whole and rewritten; every other line, however long
- * (an extended INSERT can be megabytes), passes straight through.
+ * dropDefiner over a stream, byte for byte everywhere else. It holds one line
+ * at a time, so the longest line bounds its memory: mysqldump starts a new
+ * INSERT at net_buffer_length (1MB), so that is about the largest single row.
  */
 export class DefinerFilter extends Transform {
-    /** The start of the current line while it is undecided or held. */
+    /** The current line, until its newline arrives. */
     private held: Buffer[] = [];
-    private heldLength = 0;
-    private state: 'start' | 'pass' | 'hold' = 'start';
 
     override _transform(chunk: Buffer, _encoding: BufferEncoding, done: TransformCallback): void {
-        let at = 0;
-        while (at < chunk.length) {
-            if (this.state === 'pass') {
-                const end = chunk.indexOf(NEWLINE, at);
-                if (end < 0) {
-                    this.push(chunk.subarray(at));
-                    break;
-                }
-                this.push(chunk.subarray(at, end + 1));
-                at = end + 1;
-                this.state = 'start';
-                continue;
-            }
-            if (this.state === 'start') {
-                // Up to three bytes decide it: `/*!` is held, anything else passes.
-                const take = Math.min(3 - this.heldLength, chunk.length - at);
-                const piece = chunk.subarray(at, at + take);
-                const newline = piece.indexOf(NEWLINE);
-                if (newline >= 0) {
-                    this.hold(piece.subarray(0, newline + 1));
-                    this.flush();
-                    at += newline + 1;
-                    continue;
-                }
-                this.hold(piece);
-                at += take;
-                if (this.heldLength < 3) {
-                    continue;
-                }
-                const start = Buffer.concat(this.held);
-                if (start[0] === SLASH && start[1] === STAR && start[2] === BANG) {
-                    this.state = 'hold';
-                } else {
-                    this.flush();
-                    this.state = 'pass';
-                }
-                continue;
-            }
-            const end = chunk.indexOf(NEWLINE, at);
-            if (end < 0) {
-                this.hold(chunk.subarray(at));
-                break;
-            }
-            this.hold(chunk.subarray(at, end + 1));
-            at = end + 1;
-            this.rewrite();
-            this.state = 'start';
+        let start = 0;
+        for (let end = chunk.indexOf(NEWLINE); end >= 0; end = chunk.indexOf(NEWLINE, start)) {
+            this.held.push(chunk.subarray(start, end + 1));
+            this.push(rewrite(Buffer.concat(this.held)));
+            this.held = [];
+            start = end + 1;
         }
+        this.held.push(chunk.subarray(start));
         done();
     }
 
     override _flush(done: TransformCallback): void {
-        if (this.state === 'hold') {
-            this.rewrite();
-        } else {
-            this.flush();
-        }
-        done();
-    }
-
-    private hold(piece: Buffer): void {
-        this.held.push(piece);
-        this.heldLength += piece.length;
-    }
-
-    private flush(): void {
-        if (this.heldLength > 0) {
-            this.push(Buffer.concat(this.held));
-        }
-        this.held = [];
-        this.heldLength = 0;
-    }
-
-    /** latin1 maps each byte to one character and back, so nothing else changes. */
-    private rewrite(): void {
-        this.held = [
-            Buffer.from(dropDefiner(Buffer.concat(this.held).toString('latin1')), 'latin1'),
-        ];
-        this.flush();
+        done(null, rewrite(Buffer.concat(this.held)));
     }
 }
+
+/**
+ * Only mysqldump's own `/*!` lines are decoded and rewritten. latin1 maps
+ * each byte to one character and back, so nothing else changes.
+ */
+const rewrite = (line: Buffer): Buffer =>
+    line.subarray(0, 3).toString('latin1') === '/*!'
+        ? Buffer.from(dropDefiner(line.toString('latin1')), 'latin1')
+        : line;
 
 /** database.sql as the client reads it: as it is, or for a dump, without DEFINER clauses. */
 export function databaseInput(root: string, manifest: BundleManifest): Readable {
