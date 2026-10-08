@@ -84,6 +84,22 @@
   <pre><code>mkdir ~/my-site &amp;&amp; cd ~/my-site
 curl -fsSL https://docker.ghost.org/install.sh | bash -s -- install --local</code></pre>
 
+  <h2>Moving a Ghost-CLI site</h2>
+  <p>A local Ghost-CLI site (one made with <code>ghost install local</code>) moves to Docker with its posts, members, staff accounts, settings, themes, images and configuration. You need Ghost-CLI 1.33.0 or later, and Ghost 6 or later in the site; run <code>ghost update</code> there first if it is older.</p>
+  <p>Stop the site, export it, and install from the export in a new directory beside it, on the port it used:</p>
+  <pre><code>cd ~/sites/my-blog
+ghost stop
+ghost migrate-export --output ../my-blog-bundle
+mkdir ../my-blog-docker &amp;&amp; cd ../my-blog-docker
+curl -fsSL https://docker.ghost.org/install.sh | bash -s -- install --import ../my-blog-bundle --port 2368</code></pre>
+  <ul>
+    <li>The Docker site runs the exact Ghost version the source did, at the same <code>http://localhost:2368</code>. Use the source's port: <code>server.port</code> in its <code>config.development.json</code>.</li>
+    <li>Staff sign in with their existing passwords.</li>
+    <li>If the import fails, it removes what it created, and <code>ghost start</code> in the source brings it back as it was. Neither the source nor the export is changed.</li>
+    <li>The export holds the site's configuration, secrets included. Remove it once you no longer need it.</li>
+  </ul>
+  <p class="note">Production Ghost-CLI sites can't be imported yet. That is coming in a later beta.</p>
+
   <h2>Afterwards</h2>
   <p>Installation writes a launcher into the site directory. Every later command runs from there:</p>
   <pre><code>./ghost-docker check     # diagnose the site
@@ -92,7 +108,8 @@ docker compose logs -f ghost</code></pre>
 
   <h2>More</h2>
   <ul>
-    <li><a href="https://github.com/TryGhost/ghost-docker/blob/next-docker/docs/install.md">Installation guide</a>: every option, releases and channels, updates, and moving a Ghost-CLI site to Docker.</li>
+    <li><a href="https://github.com/TryGhost/ghost-docker/blob/next-docker/docs/install.md">Installation guide</a>: every option, releases and channels, and updates.</li>
+    <li><a href="https://github.com/TryGhost/ghost-docker/blob/next-docker/docs/install.md#importing-a-ghost-cli-site">Importing a Ghost-CLI site</a>: what an import carries over, what it refuses, and what to expect.</li>
     <li><a href="https://github.com/TryGhost/ghost-docker/blob/next-docker/docs/configuration.md">Configuration</a>.</li>
     <li><a href="https://docker.ghost.org/install.sh">install.sh</a>: the launcher itself. Read it before you run it.</li>
   </ul>
