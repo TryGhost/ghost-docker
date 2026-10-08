@@ -223,7 +223,17 @@ describe('scripts/release.ts', () => {
             cwd: checkout,
             encoding: 'utf8',
             stdio: ['ignore', 'pipe', 'pipe'],
-            env: { ...process.env, GITHUB_OUTPUT: '' },
+            // The tag is annotated, so it needs an identity, which a CI
+            // runner has none of; the Release workflow sets its own.
+            env: {
+                ...process.env,
+                GITHUB_OUTPUT: '',
+                GIT_CONFIG_GLOBAL: '/dev/null',
+                GIT_AUTHOR_NAME: 'Test',
+                GIT_AUTHOR_EMAIL: 'test@example.com',
+                GIT_COMMITTER_NAME: 'Test',
+                GIT_COMMITTER_EMAIL: 'test@example.com',
+            },
         });
 
     // A checkout with its own origin, so that tags can be pushed.
