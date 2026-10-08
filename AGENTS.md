@@ -64,7 +64,12 @@ delivers it. `docs/install.md` describes what exists.
 - `src/bundle/manifest.ts` is the bundle v1 manifest as a zod schema. It
   imports nothing but zod, so the exporter in Ghost-CLI can share it; keep
   importer policy out of it. `src/bundle/stage.ts` unpacks and validates a
-  bundle in staging; `src/import.ts` holds the import's steps.
+  bundle in staging; `src/import.ts` holds the import's steps and `Importing`,
+  what `install --import` adds to an installation, with the pieces that
+  print nothing in `src/import/config.ts` (what ghost.env carries over) and
+  `src/import/database.ts` (the client, the DEFINER filter, row counts).
+  `src/undo.ts` records what an installation created and removes it on
+  failure; an import keeps that record in its marker file.
 - The manager verifies a site from inside its own containers
   (`src/verify.ts`): `127.0.0.1` in the manager is the manager, and it cannot
   reach the host's ports.

@@ -1,23 +1,33 @@
 // Importing a staged bundle into a new site: its configuration, its content
-// and its database. The order and the policy are install's; these are the
-// steps. The contract is docs/bundle-v1.md and the sequence §2.4 of
-// docs/ghost-cli-replacement.md.
+// and its database. The order and the policy are install's; `Importing` is
+// what install calls, at its points, when --import is given. The contract is
+// docs/bundle-v1.md and the sequence §2.4 of docs/ghost-cli-replacement.md.
 //
-// The database is always loaded as the site's own MySQL user, never as root,
-// so whatever a dump contains can affect nothing but that site's database.
-import { createReadStream, readdirSync, renameSync } from 'node:fs';
+// The pieces that print nothing and decide no order are in import/:
+// config.ts, what ghost.env receives; database.ts, the client, the dump
+// filter and the row counts.
+import { existsSync, readdirSync, renameSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { Transform, type Readable, type TransformCallback } from 'node:stream';
 import type { BundleManifest } from './bundle/manifest.ts';
 import { BundleRefused, removeStaging, stageBundle, type StagedBundle } from './bundle/stage.ts';
-import { compose, composeConfig, composeError, type ComposeResult } from './compose.ts';
-import { operatorKeyTest } from './config.ts';
+import { compose, composeError } from './compose.ts';
+import type { Context } from './context.ts';
 import * as env from './env.ts';
 import { CliError, UsageError } from './errors.ts';
 import { atomicWrite, readIfExists } from './fs.ts';
+import { resolveExactGhost, type ResolvedGhost } from './ghost.ts';
+import { sourceConfig, type CarriedConfig } from './import/config.ts';
+import {
+    BATCH,
+    databaseInput,
+    rowCountQuery,
+    rowMismatches,
+    siteMysql,
+} from './import/database.ts';
 import type { Io } from './io.ts';
 import { printChecks } from './report.ts';
 import { DATA_DIRS, ENV_FILE } from './site.ts';
+import { ALL_PROFILES, Created } from './undo.ts';
 
 /** Present from the first change an import makes until it has been verified. */
 export const MARKER = '.ghost-docker-import';
@@ -29,265 +39,7 @@ export const MARKER = '.ghost-docker-import';
  */
 export const INCOMPLETE_PROFILE = 'import-incomplete';
 
-// --- Configuration ------------------------------------------------------------
-
-/**
- * Ghost configuration the container owns ("Keys the importer omits" in
- * docs/bundle-v1.md). The keys compose.yml sets on the ghost service are
- * added to these at run time, from the resolved configuration, so the two
- * lists cannot drift apart.
- */
-const OWNED_KEYS = ['url', 'admin__url', 'process', 'logging__transports', 'logging__path'];
-const OWNED_PREFIXES = ['database__', 'server__', 'paths__'];
-
-export function isContainerOwned(key: string, container: ReadonlySet<string>): boolean {
-    return (
-        container.has(key) ||
-        OWNED_KEYS.some((owned) => key === owned || key.startsWith(`${owned}__`)) ||
-        OWNED_PREFIXES.some((prefix) => key.startsWith(prefix))
-    );
-}
-
-export interface CarriedConfig {
-    /** What ghost.env receives, raw; the encoder writes it. */
-    readonly settings: [string, string][];
-    /** Keys left out, with why. Names only: values may be credentials. */
-    readonly skipped: { key: string; reason: string }[];
-}
-
-/** The bundle's Ghost configuration, without what ghost.env must not hold. */
-export function carriedConfig(
-    manifest: BundleManifest,
-    container: ReadonlySet<string>,
-    isOperatorKey: (key: string) => boolean,
-): CarriedConfig {
-    const settings: [string, string][] = [];
-    const skipped: { key: string; reason: string }[] = [];
-    for (const [key, value] of Object.entries(manifest.config)) {
-        if (!env.isValidKey(key)) {
-            skipped.push({ key, reason: 'not a valid setting name' });
-        } else if (isContainerOwned(key, container)) {
-            skipped.push({ key, reason: 'set by the container' });
-        } else if (isOperatorKey(key)) {
-            skipped.push({ key, reason: 'an operator setting, not Ghost configuration' });
-        } else {
-            settings.push([key, value]);
-        }
-    }
-    return { settings, skipped };
-}
-
-// --- Content ------------------------------------------------------------------
-
-/**
- * Moves the staged content tree into the site's content directory, which was
- * verified empty. Staging is in the site directory, so this renames rather
- * than copies; dotfiles travel too. It runs before any container has mounted
- * the directory, and the Ghost image takes ownership of it when it starts.
- */
-export function placeContent(root: string, target: string): void {
-    const source = join(root, 'content');
-    for (const name of readdirSync(source)) {
-        renameSync(join(source, name), join(target, name));
-    }
-}
-
-// --- The database -------------------------------------------------------------
-
-/**
- * The mysql client inside the db container, as the site's database user and
- * against the site's database only. The password reaches the client through
- * the container's own environment, not an argument.
- */
-const CLIENT =
-    'MYSQL_PWD="$MYSQL_PASSWORD" exec mysql --default-character-set=utf8mb4 -h 127.0.0.1 -u"$MYSQL_USER" "$@" "$MYSQL_DATABASE"';
-
-export interface Mysql {
-    /** Runs SQL from `input` as the site's user. */
-    run: (
-        input: string | Readable,
-        args?: readonly string[],
-        timeoutMs?: number,
-    ) => Promise<ComposeResult>;
-}
-
-/** The site's database, through Compose with the profiles given. */
-export const siteMysql = (io: Io, dir: string, profiles: string): Mysql => ({
-    run: (input, args = [], timeoutMs = 60_000) =>
-        compose(io, dir, ['exec', '-T', 'db', 'sh', '-c', CLIENT, 'mysql', ...args], {
-            env: { COMPOSE_PROFILES: profiles },
-            input,
-            timeoutMs,
-        }),
-});
-
-/** `--batch --skip-column-names`: tab-separated rows, nothing else. */
-export const BATCH = ['--batch', '--skip-column-names'] as const;
-
-/** One query counting the rows of every table, by name. Names are validated by the schema. */
-export const rowCountQuery = (tables: readonly string[]): string =>
-    `${tables.map((table) => `SELECT '${table}', COUNT(*) FROM \`${table}\``).join(' UNION ALL ')};\n`;
-
-/**
- * Each table whose count in the database differs from the bundle's record,
- * as a sentence. `output` is the batch output of rowCountQuery.
- */
-export function rowMismatches(
-    expected: Readonly<Record<string, number>>,
-    output: string,
-): string[] {
-    const actual = new Map<string, number>();
-    for (const line of output.split('\n')) {
-        const [table, count] = line.split('\t');
-        if (table && count !== undefined && /^\d+$/.test(count.trim())) {
-            actual.set(table, Number(count.trim()));
-        }
-    }
-    return Object.entries(expected)
-        .filter(([table, count]) => actual.get(table) !== count)
-        .map(
-            ([table, count]) =>
-                `${table}: the bundle records ${count} rows, the database has ${actual.get(table) ?? 'none'}`,
-        );
-}
-
-/**
- * mysqldump records who defined each view and trigger (`DEFINER=`), and only
- * an account with SET_USER_ID may create an object on another's behalf. The
- * load runs as the site's own user precisely so that it has no such
- * privilege, so these clauses are dropped and the objects belong to the
- * site's user, which is the account Ghost connects as. Only mysqldump's own
- * version-comment lines are rewritten:
- *
- *   /*!50013 DEFINER=`root`@`%` SQL SECURITY DEFINER *\/         (views)
- *   /*!50003 CREATE*\/ /*!50017 DEFINER=`root`@`%`*\/ /*!50003 TRIGGER ... (triggers)
- *
- * Row data never starts a line that way, and nothing else is changed.
- */
-export function dropDefiner(line: string): string {
-    if (/^\/\*!\d{5} DEFINER=/.test(line)) {
-        return line.replace(/^(\/\*!\d{5}) DEFINER=`[^`]*`@`[^`]*`/, '$1');
-    }
-    if (/^\/\*!\d{5} CREATE\*\//.test(line)) {
-        return line.replace(/\/\*!\d{5} DEFINER=`[^`]*`@`[^`]*`\*\/ ?/, '');
-    }
-    return line;
-}
-
-const SLASH = 0x2f;
-const STAR = 0x2a;
-const BANG = 0x21;
-const NEWLINE = 0x0a;
-
-/**
- * dropDefiner over a stream, byte for byte everywhere else. Only lines that
- * start `/*!` are held whole and rewritten; every other line, however long
- * (an extended INSERT can be megabytes), passes straight through.
- */
-export class DefinerFilter extends Transform {
-    /** The start of the current line while it is undecided or held. */
-    private held: Buffer[] = [];
-    private heldLength = 0;
-    private state: 'start' | 'pass' | 'hold' = 'start';
-
-    override _transform(chunk: Buffer, _encoding: BufferEncoding, done: TransformCallback): void {
-        let at = 0;
-        while (at < chunk.length) {
-            if (this.state === 'pass') {
-                const end = chunk.indexOf(NEWLINE, at);
-                if (end < 0) {
-                    this.push(chunk.subarray(at));
-                    break;
-                }
-                this.push(chunk.subarray(at, end + 1));
-                at = end + 1;
-                this.state = 'start';
-                continue;
-            }
-            if (this.state === 'start') {
-                // Up to three bytes decide it: `/*!` is held, anything else passes.
-                const take = Math.min(3 - this.heldLength, chunk.length - at);
-                const piece = chunk.subarray(at, at + take);
-                const newline = piece.indexOf(NEWLINE);
-                if (newline >= 0) {
-                    this.hold(piece.subarray(0, newline + 1));
-                    this.flush();
-                    at += newline + 1;
-                    continue;
-                }
-                this.hold(piece);
-                at += take;
-                if (this.heldLength < 3) {
-                    continue;
-                }
-                const start = Buffer.concat(this.held);
-                if (start[0] === SLASH && start[1] === STAR && start[2] === BANG) {
-                    this.state = 'hold';
-                } else {
-                    this.flush();
-                    this.state = 'pass';
-                }
-                continue;
-            }
-            const end = chunk.indexOf(NEWLINE, at);
-            if (end < 0) {
-                this.hold(chunk.subarray(at));
-                break;
-            }
-            this.hold(chunk.subarray(at, end + 1));
-            at = end + 1;
-            this.rewrite();
-            this.state = 'start';
-        }
-        done();
-    }
-
-    override _flush(done: TransformCallback): void {
-        if (this.state === 'hold') {
-            this.rewrite();
-        } else {
-            this.flush();
-        }
-        done();
-    }
-
-    private hold(piece: Buffer): void {
-        this.held.push(piece);
-        this.heldLength += piece.length;
-    }
-
-    private flush(): void {
-        if (this.heldLength > 0) {
-            this.push(Buffer.concat(this.held));
-        }
-        this.held = [];
-        this.heldLength = 0;
-    }
-
-    /** latin1 maps each byte to one character and back, so nothing else changes. */
-    private rewrite(): void {
-        this.held = [
-            Buffer.from(dropDefiner(Buffer.concat(this.held).toString('latin1')), 'latin1'),
-        ];
-        this.flush();
-    }
-}
-
-/** database.sql as the client reads it: as it is, or for a dump, without DEFINER clauses. */
-export function databaseInput(root: string, manifest: BundleManifest): Readable {
-    const file = createReadStream(join(root, manifest.database.path));
-    if (manifest.kind !== 'mysql-dump') {
-        return file;
-    }
-    const filter = new DefinerFilter();
-    file.on('error', (error) => filter.destroy(error));
-    return file.pipe(filter);
-}
-
-// --- The steps, as install takes them ------------------------------------------
-
-const say = (io: Io, label: string, detail: string) =>
-    printChecks(io, [{ status: 'ok', label, detail }]);
+// --- What install calls --------------------------------------------------------
 
 /** Options that cannot be combined with --import in this release. */
 export function refuseImportOptions(flags: {
@@ -317,6 +69,189 @@ export function refuseImportOptions(flags: {
             '--with cannot be combined with --import. Import the site first, then enable\n' +
                 '  optional services; see docs/configuration.md.',
         );
+    }
+}
+
+/**
+ * Everything an unfinished import wrote went into a directory it had verified
+ * free, and it never served anything, so nothing in it is worth keeping; but
+ * only an import may clear it.
+ */
+export async function clearUnfinishedImport(
+    io: Io,
+    context: Context,
+    dir: string,
+    isImport: boolean,
+): Promise<void> {
+    const marker = join(dir, MARKER);
+    if (!existsSync(marker)) {
+        return;
+    }
+    if (!isImport) {
+        throw new CliError(
+            `an earlier import into ${dir} did not finish, so it holds a partial site\n` +
+                '  that cannot be started. Run the import again, which removes what it left behind first:\n' +
+                '    ./ghost-docker install --import BUNDLE',
+        );
+    }
+    io.stdout('Removing what an earlier, unfinished import left behind\n');
+    const leftovers = await io.busy('Removing the unfinished import', () =>
+        Created.fromJournal(io, context, dir, marker).remove(),
+    );
+    if (leftovers.length > 0) {
+        throw new CliError(
+            `some of what the earlier import left could not be removed:\n${leftovers.map((item) => `  ${item}`).join('\n')}`,
+        );
+    }
+}
+
+/**
+ * An import, as install takes it. Install calls each of these at its point in
+ * the installation and, without --import, none of them.
+ */
+export class Importing {
+    readonly manifest: BundleManifest;
+
+    private readonly io: Io;
+    private readonly dir: string;
+    private readonly staged: StagedBundle;
+
+    private constructor(io: Io, dir: string, staged: StagedBundle) {
+        this.io = io;
+        this.dir = dir;
+        this.staged = staged;
+        this.manifest = staged.manifest;
+    }
+
+    /**
+     * The bundle, staged and checked. It says what kind of site this is and
+     * which Ghost version it runs, so it is read before anything else is
+     * decided. A refusal from here until the site is written calls `abandon`.
+     */
+    static async read(
+        io: Io,
+        dir: string,
+        bundle: string,
+        flags: { version?: string },
+    ): Promise<Importing> {
+        return new Importing(io, dir, await readBundle(io, dir, bundle, flags));
+    }
+
+    /** What the summary says was imported. */
+    get description(): string {
+        return `${this.manifest.kind} bundle of ${this.manifest.url}`;
+    }
+
+    /** Refused before anything was written: the directory is as it was. */
+    abandon(): void {
+        removeStaging(this.dir);
+    }
+
+    /** An import happens at the source site's version; upgrading is a separate step. */
+    resolveGhost(): Promise<ResolvedGhost> {
+        return resolveExactGhost(this.io, this.manifest.ghost.version);
+    }
+
+    /** From the first change until the site is verified, the marker records what was created. */
+    begin(created: Created): void {
+        created.journal = join(this.dir, MARKER);
+        created.save();
+    }
+
+    /** The source site's configuration for ghost.env, without what the container owns. */
+    async ghostEnv(): Promise<{ text: string; detail: string; skipped: CarriedConfig['skipped'] }> {
+        const { settings, skipped } = await sourceConfig(this.io, this.dir, this.manifest);
+        return {
+            text:
+                settings.length === 0
+                    ? ''
+                    : env.serializeAll(
+                          settings,
+                          `# Carried over from ${this.manifest.url} by install --import.\n`,
+                      ),
+            detail: `${settings.length} Ghost settings carried over from the source site`,
+            skipped,
+        };
+    }
+
+    /** The content and the database, once `.env` and ghost.env are written and valid. */
+    load(created: Created, profiles: string, version: string): Promise<void> {
+        return importSite(this.io, this.dir, this.staged, profiles, version, () => {
+            created.project = true;
+            created.save();
+        });
+    }
+
+    /**
+     * With --no-start. The import needed the database, and Ghost once for a
+     * rows-only bundle. Nothing is left running; the data stays.
+     */
+    async stop(): Promise<void> {
+        const down = await this.io.busy('Stopping what the import started', () =>
+            compose(this.io, this.dir, ['down', '--remove-orphans', '--timeout', '20'], {
+                timeoutMs: 300_000,
+            }),
+        );
+        if (down.exitCode !== 0) {
+            throw new CliError(
+                `the services the import started could not be stopped: ${composeError(down, 2)}`,
+            );
+        }
+    }
+
+    /** Verified, or deliberately not started: either way, now a site. */
+    finish(created: Created): void {
+        removeStaging(this.dir);
+        rmSync(join(this.dir, MARKER), { force: true });
+        created.journal = null;
+    }
+
+    /** Whatever happened, a partial site must not be startable. */
+    markIncomplete(): void {
+        markIncomplete(this.dir);
+    }
+
+    /**
+     * With GD_IMPORT_KEEP_FAILED, what a failed import created is kept for
+     * inspection rather than removed, but not left running. True when it was
+     * kept, and so must not be removed.
+     */
+    async keptForInspection(created: Created): Promise<boolean> {
+        if (this.io.env.GD_IMPORT_KEEP_FAILED !== '1') {
+            return false;
+        }
+        if (created.project) {
+            await this.io.busy('Stopping what the import started', () =>
+                compose(this.io, this.dir, ['stop', '--timeout', '20'], {
+                    timeoutMs: 300_000,
+                    env: { COMPOSE_PROFILES: ALL_PROFILES },
+                }),
+            );
+        }
+        this.io.stderr(
+            `\nThe import did not complete. GD_IMPORT_KEEP_FAILED is set, so what it created was\n` +
+                `kept for inspection in ${this.dir}. It cannot be started; running the import\n` +
+                'again removes it first.\n',
+        );
+        return true;
+    }
+}
+
+// --- The steps ------------------------------------------------------------------
+
+const say = (io: Io, label: string, detail: string) =>
+    printChecks(io, [{ status: 'ok', label, detail }]);
+
+/**
+ * Moves the staged content tree into the site's content directory, which was
+ * verified empty. Staging is in the site directory, so this renames rather
+ * than copies; dotfiles travel too. It runs before any container has mounted
+ * the directory, and the Ghost image takes ownership of it when it starts.
+ */
+export function placeContent(root: string, target: string): void {
+    const source = join(root, 'content');
+    for (const name of readdirSync(source)) {
+        renameSync(join(source, name), join(target, name));
     }
 }
 
@@ -382,25 +317,6 @@ export async function readBundle(
         `a ${manifest.sourceInstallType} site, Ghost ${manifest.ghost.version}, ${manifest.url}`,
     );
     return staged;
-}
-
-/**
- * The bundle's configuration for ghost.env. What the container owns is read
- * from the resolved Compose configuration, which needs `.env` in place.
- */
-export async function sourceConfig(
-    io: Io,
-    dir: string,
-    manifest: BundleManifest,
-): Promise<CarriedConfig> {
-    const resolved = await composeConfig(io, dir);
-    if (!resolved.ok) {
-        throw new CliError(
-            `the Compose configuration could not be resolved to see what the container sets: ${resolved.reason}`,
-        );
-    }
-    const container = new Set(Object.keys(resolved.project.services.ghost?.environment ?? {}));
-    return carriedConfig(manifest, container, operatorKeyTest(dir));
 }
 
 /** `.env` selects no service. */
