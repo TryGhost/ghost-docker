@@ -91,6 +91,42 @@ export async function resolveGhost(
 }
 
 /**
+ * The image of exactly `version`, for an import, which happens at the source
+ * site's version. The default variant is tried first; older releases were
+ * only published in the previous layout (`-alpine`), so that is tried when
+ * the default has none. An image reporting any other version is refused.
+ */
+export async function resolveExactGhost(
+    io: Io,
+    version: string,
+    image = DEFAULT_IMAGE,
+): Promise<ResolvedGhost> {
+    const tags = [...new Set([ghostTag(version), `${version}-alpine`])];
+    const problems: string[] = [];
+    for (const tag of tags) {
+        let resolved: ResolvedGhost;
+        try {
+            resolved = await resolveGhost(io, tag, image);
+        } catch (error) {
+            problems.push(`  ${(error as Error).message.split('\n')[0]}`);
+            continue;
+        }
+        if (resolved.version !== version) {
+            throw new CliError(
+                `${image}:${tag} is Ghost ${resolved.version}, but the bundle was exported from Ghost ${version}`,
+            );
+        }
+        return resolved;
+    }
+    throw new CliError(
+        `no ${image} image for Ghost ${version} could be used:\n${problems.join('\n')}\n` +
+            '  An import runs at the exact version of the source site. Check that this host can\n' +
+            '  reach the registry; if that version has no image, run `ghost update` in the source\n' +
+            '  installation and export it again.',
+    );
+}
+
+/**
  * Where the image keeps the Tinybird datafiles. The older layout, installed
  * by Ghost-CLI (which the image declares in GHOST_CLI_INSTALL), keeps Ghost
  * under `current/`; the `next` variants install it directly.

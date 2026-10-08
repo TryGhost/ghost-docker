@@ -1229,6 +1229,12 @@ with the released exporter, is done.)
 **S5b — Local import.** Deps: N3. Not S4; see "Local imports" in §2.4. Import
 `sourceInstallType: local` bundles of kind `mysql-dump` and `mysql-data`.
 
+Status: implemented (`install --import`). `manager/src/bundle/manifest.ts`
+is the zod schema, written to depend on nothing but zod so the exporter can
+use it; `manager/src/bundle/stage.ts` unpacks with node-tar and yauzl;
+`manager/src/import.ts` holds the steps. `tests/e2e/import.sh` is the
+acceptance test.
+
 - Unpack with a tar library and an entry filter as in "Reading the bundle" in
   `docs/bundle-v1.md`; directory bundles and zip archives too.
 - Validate the manifest with a zod schema that encodes `docs/bundle-v1.md`,

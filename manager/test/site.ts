@@ -1,13 +1,25 @@
 // A site directory for tests: the repository's own compose.yml and examples,
 // a `.env` written through the real encoder, and a scripted
 // `docker compose config` that answers what Compose would.
-import { copyFileSync, cpSync, mkdirSync, writeFileSync } from 'node:fs';
+import { copyFileSync, cpSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as env from '../src/env.ts';
 import { failed, ok, type Harness } from './helpers.ts';
 
 export const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+
+/** A bundle manifest, loosely typed so tests can break it. */
+export type Manifest = Record<string, any>;
+
+/** One of the exporter's manifest fixtures, fresh each time. */
+export const fixture = (kind: string): Manifest =>
+    JSON.parse(
+        readFileSync(
+            join(REPO, 'tests', 'fixtures', 'migration-bundle-v1', `${kind}.json`),
+            'utf8',
+        ),
+    );
 
 /** The keys compose.yml sets for Ghost itself, which override ghost.env. */
 const containerOwned = (values: Record<string, string>): Record<string, string> => ({

@@ -24,10 +24,11 @@ Branches:
 
 ## Current state
 
-Steps N1–N3: the stack's files and contracts, the launcher and manager image,
-and the first real commands: `install` (local and production, from the image
-or a clone), `config get|set|validate`, `check`, `info`, `list`, plus
-`version`, `doctor` and `help`. Every other `./ghost-docker ...` command or
+Steps N1–N3 and S5b: the stack's files and contracts, the launcher and
+manager image, and the first real commands: `install` (local and production,
+from the image or a clone, and `--import` of a local Ghost-CLI site's bundle),
+`config get|set|validate`, `check`, `info`, `list`, plus `version`, `doctor`
+and `help`. Every other `./ghost-docker ...` command or
 option in the documents is the planned interface: it does not exist until its
 step lands (an unknown command or option exits 2), and the plan says which step
 delivers it. `docs/install.md` describes what exists.
@@ -60,6 +61,10 @@ delivers it. `docs/install.md` describes what exists.
   holds file names, modes and profiles; `src/config.ts` validation;
   `src/caddy.ts` fills `templates/site.caddy`, the routes install writes; `src/meta.ts` the metadata schema; `src/ghost.ts`
   image resolution; `src/payload.ts` the image-mode files and pinned launcher.
+- `src/bundle/manifest.ts` is the bundle v1 manifest as a zod schema. It
+  imports nothing but zod, so the exporter in Ghost-CLI can share it; keep
+  importer policy out of it. `src/bundle/stage.ts` unpacks and validates a
+  bundle in staging; `src/import.ts` holds the import's steps.
 - The manager verifies a site from inside its own containers
   (`src/verify.ts`): `127.0.0.1` in the manager is the manager, and it cannot
   reach the host's ports.
@@ -77,9 +82,10 @@ delivers it. `docs/install.md` describes what exists.
   password, and is never passed into the Ghost container. `ghost.env` holds
   Ghost application settings and is the `ghost` service's only `env_file`.
 - `docs/configuration.md`, `docs/caddy.md`, `docs/bundle-v1.md` — contracts.
-- There is no migration tooling on this branch. The legacy `scripts/migrate.sh`
-  on `main` does not understand this layout and was not brought across; it
-  remains the production path on `main` until production import (S5e) exists.
+- Migration is `install --import` for local sites only. The legacy
+  `scripts/migrate.sh` on `main` does not understand this layout and was not
+  brought across; it remains the production path on `main` until production
+  import (S5e) exists.
 
 ## Rules that hold whatever is being built
 
@@ -115,6 +121,7 @@ cd manager && pnpm install
 pnpm run format:check && pnpm run lint && pnpm run typecheck && pnpm test
 tests/e2e/launcher.sh         # stand-in docker, then the real image
 tests/e2e/install.sh          # real installs; binds 80/443, pulls images
+tests/e2e/import.sh           # Ghost-CLI sites exported and imported; needs Node
 ```
 
 Unit tests fake the daemon at the transport (`test/helpers.ts`: `api`, `run`

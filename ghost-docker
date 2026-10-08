@@ -58,6 +58,8 @@ with_deadline() {
 # --- Options that belong to the launcher ------------------------------------
 
 site_dir=""
+# The --import argument's index in args, when there is one.
+bundle_at=""
 declare -a args=()
 while (($#)); do
     case $1 in
@@ -67,6 +69,21 @@ while (($#)); do
             shift
             ;;
         --dir=*) site_dir=${1#*=} ;;
+        # The manager's option, but the bundle has to be mounted for it to
+        # see it; the manager validates it like any other argument.
+        --import)
+            args+=("$1")
+            if (($# > 1)); then
+                bundle_at=${#args[@]}
+                args+=("$2")
+                shift
+            fi
+            ;;
+        --import=*)
+            args+=(--import)
+            bundle_at=${#args[@]}
+            args+=("${1#*=}")
+            ;;
         *) args+=("$1") ;;
     esac
     shift
@@ -142,6 +159,23 @@ if [[ $host_os == Linux ]]; then
     [[ -S $socket ]] || die "the Docker socket was not found at $socket."
 fi
 
+# --- A bundle to import -----------------------------------------------------
+#
+# Mounted read-only, at its own resolved absolute path, like the site
+# directory. A path that does not exist is passed on as given, for the
+# manager to report.
+declare -a bundle_mount=()
+bundle=${bundle_at:+${args[bundle_at]}}
+if [[ -n $bundle && -e $bundle ]]; then
+    if [[ -d $bundle ]]; then
+        bundle=$(CDPATH='' cd -- "$bundle" && pwd -P)
+    else
+        bundle="$(CDPATH='' cd -- "$(dirname -- "$bundle")" && pwd -P)/$(basename -- "$bundle")"
+    fi
+    bundle_mount=(--volume "$bundle:$bundle:ro")
+    args[bundle_at]=$bundle
+fi
+
 # --- Which image ------------------------------------------------------------
 
 # Empty when this script is being read from a pipe (`curl ... | bash`): there is
@@ -195,6 +229,9 @@ declare -a run=(
 # Extra Compose files for the manager's own Compose runs (docs/configuration.md).
 [[ -z ${GD_COMPOSE_OVERRIDES:-} ]] || run+=(--env "GD_COMPOSE_OVERRIDES=$GD_COMPOSE_OVERRIDES")
 [[ -z ${TERM:-} ]] || run+=(--env "TERM=$TERM")
+# Keep a failed import's site for inspection instead of removing it (docs/install.md).
+[[ -z ${GD_IMPORT_KEEP_FAILED:-} ]] || run+=(--env "GD_IMPORT_KEEP_FAILED=$GD_IMPORT_KEEP_FAILED")
+run+=(${bundle_mount[@]+"${bundle_mount[@]}"})
 
 # A terminal is attached when there is one, including when this script was
 # piped from curl and stdin is therefore the script itself.

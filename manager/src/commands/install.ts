@@ -18,6 +18,8 @@
 import { randomBytes } from 'node:crypto';
 import { existsSync, readdirSync, rmdirSync, rmSync } from 'node:fs';
 import { basename, join } from 'node:path';
+import { z } from 'zod';
+import { removeStaging } from '../bundle/stage.ts';
 import { ACME_EMAIL, isHostname, SITE_FILE, writeRoutes } from '../caddy.ts';
 import { compose, composeError } from '../compose.ts';
 import { defineCommand, type Options, type Values } from '../command.ts';
@@ -26,8 +28,16 @@ import { loadContext, type Context } from '../context.ts';
 import { listContainers, runOnce } from '../docker/client.ts';
 import * as env from '../env.ts';
 import { CliError, EXIT, UsageError } from '../errors.ts';
-import { atomicWrite, PRIVATE } from '../fs.ts';
-import { resolveGhost } from '../ghost.ts';
+import { atomicWrite, PRIVATE, readIfExists } from '../fs.ts';
+import { resolveExactGhost, resolveGhost } from '../ghost.ts';
+import {
+    importSite,
+    MARKER,
+    markIncomplete,
+    readBundle,
+    refuseImportOptions,
+    sourceConfig,
+} from '../import.ts';
 import type { Io, Prompter } from '../io.ts';
 import { SCHEMA_VERSION, writeMetadata, type Metadata } from '../meta.ts';
 import {
@@ -92,6 +102,10 @@ const options = {
         brief: 'A Ghost version (6.3.1) or image tag (6-alpine). Resolved to an exact digest.',
     },
     with: { type: 'string', brief: 'Optional per-site services: activitypub.' },
+    import: {
+        type: 'string',
+        brief: 'Import a local Ghost-CLI site from the bundle `ghost migrate-export` made: a directory, .tgz, .tar or .zip.',
+    },
     'no-prompt': { type: 'boolean', brief: 'Never ask: every input must be an option.' },
     'no-start': {
         type: 'boolean',
@@ -245,9 +259,22 @@ export function channelOf(version: string): Metadata['channel'] {
 
 // --- Undo -------------------------------------------------------------------
 
+/** Every profile, so whatever a failed installation started is found. */
+const ALL_PROFILES = 'local,production,analytics,activitypub';
+
+const journalSchema = z.object({
+    files: z.array(z.string().startsWith('/')),
+    directories: z.array(z.string().startsWith('/')),
+    data: z.array(z.string().startsWith('/')),
+    project: z.boolean(),
+});
+
 /**
  * What this installation created, so that a failure removes exactly that and
  * leaves the directory as it was.
+ *
+ * An import also keeps this record in its marker file as it goes, so that an
+ * import killed before it could clean up is removed by the next one.
  */
 class Created implements Written {
     readonly checksums: Record<string, string> = {};
@@ -257,6 +284,8 @@ class Created implements Written {
     readonly data: string[] = [];
     /** Compose has created something for this project: a network, containers, volumes. */
     project = false;
+    /** The import marker, when this is an import. */
+    journal: string | null = null;
 
     private readonly io: Io;
     private readonly context: Context;
@@ -268,8 +297,49 @@ class Created implements Written {
         this.dir = dir;
     }
 
+    /**
+     * What an unfinished import's marker recorded. A marker that cannot be
+     * read stands for everything an import writes besides the payload.
+     */
+    static fromJournal(io: Io, context: Context, dir: string): Created {
+        const created = new Created(io, context, dir);
+        created.journal = join(dir, MARKER);
+        let recorded: z.infer<typeof journalSchema>;
+        try {
+            recorded = journalSchema.parse(JSON.parse(readIfExists(created.journal) ?? ''));
+        } catch {
+            recorded = {
+                files: [ENV_FILE, GHOST_ENV_FILE, META_FILE].map((file) => join(dir, file)),
+                directories: [],
+                data: DATA_DIRS.map((data) => join(dir, data)),
+                project: true,
+            };
+        }
+        // Only ever inside this site directory, whatever the file says.
+        const inside = (path: string) => path.startsWith(`${dir}/`);
+        created.files.push(...recorded.files.filter(inside));
+        created.directories.push(...recorded.directories.filter(inside));
+        created.data.push(...recorded.data.filter(inside));
+        created.project = recorded.project && existsSync(join(dir, ENV_FILE));
+        return created;
+    }
+
     file(path: string) {
         this.files.push(path);
+        this.save();
+    }
+
+    /** Records what has been created so far in the import marker, if there is one. */
+    save() {
+        if (this.journal === null) {
+            return;
+        }
+        const { files, directories, data, project } = this;
+        atomicWrite(
+            this.journal,
+            `${JSON.stringify({ files, directories, data, project }, null, 2)}\n`,
+            PRIVATE,
+        );
     }
 
     async remove(): Promise<string[]> {
@@ -283,7 +353,7 @@ class Created implements Written {
                 ['down', '--volumes', '--remove-orphans', '--timeout', '20'],
                 {
                     timeoutMs: 300_000,
-                    env: { COMPOSE_PROFILES: 'local,production,analytics,activitypub' },
+                    env: { COMPOSE_PROFILES: ALL_PROFILES },
                 },
             );
             if (down.exitCode !== 0) {
@@ -305,6 +375,13 @@ class Created implements Written {
                 if (existsSync(directory)) {
                     leftovers.push(directory);
                 }
+            }
+        }
+        if (this.journal !== null) {
+            removeStaging(this.dir);
+            // Kept while anything is left, so the next import tries again.
+            if (leftovers.length === 0) {
+                rmSync(this.journal, { force: true });
             }
         }
         return leftovers;
@@ -353,12 +430,38 @@ export const installCommand = defineCommand({
     async run(flags, _positionals, io) {
         // Before anything is looked at: a bad port is a usage error.
         const requestedPort = flags.port === undefined ? undefined : parsePort(flags.port);
+        const bundle = flags.import;
+        if (bundle !== undefined) {
+            refuseImportOptions(flags);
+        }
         const context = loadContext(io.env);
         const dir = context.siteDir;
         if (io.cwd() !== dir) {
             throw new CliError(
                 `working in ${io.cwd()}, but the launcher gave the site directory as ${dir}`,
             );
+        }
+
+        // Everything an unfinished import wrote went into a directory it had
+        // verified free, and it never served anything, so nothing in it is
+        // worth keeping; but only an import may clear it.
+        if (existsSync(join(dir, MARKER))) {
+            if (bundle === undefined) {
+                throw new CliError(
+                    `an earlier import into ${dir} did not finish, so it holds a partial site\n` +
+                        '  that cannot be started. Run the import again, which removes what it left behind first:\n' +
+                        '    ./ghost-docker install --import BUNDLE',
+                );
+            }
+            io.stdout('Removing what an earlier, unfinished import left behind\n');
+            const leftovers = await io.busy('Removing the unfinished import', () =>
+                Created.fromJournal(io, context, dir).remove(),
+            );
+            if (leftovers.length > 0) {
+                throw new CliError(
+                    `some of what the earlier import left could not be removed:\n${leftovers.map((item) => `  ${item}`).join('\n')}`,
+                );
+            }
         }
 
         for (const file of [ENV_FILE, META_FILE]) {
@@ -390,63 +493,91 @@ export const installCommand = defineCommand({
             }
         }
 
-        // Asked only now, so nobody answers questions to be told the directory is taken.
-        const intent = await plan(flags, io.prompt);
+        // --- The bundle, before anything else is decided ---
+        // It says what kind of site this is and which Ghost version it runs.
+        // A refusal from here until the site is written removes the staging
+        // directory, and the directory is as it was.
+        const staged = bundle === undefined ? null : await readBundle(io, dir, bundle, flags);
 
-        // --- Preflight ---
-        heading(io, 'Checking this host');
-        const checks = await io.busy('Checking Docker and the site directory', () =>
-            collect(context, io),
-        );
-        printChecks(io, checks);
-        if (failed(checks)) {
-            throw new CliError('preflight failed. Nothing has been changed on this host.');
-        }
+        const prepare = async () => {
+            // Asked only now, so nobody answers questions to be told the directory is taken.
+            const intent: Plan =
+                staged === null
+                    ? await plan(flags, io.prompt)
+                    : { mode: 'local', domain: '', adminDomain: '', email: '', services: [] };
 
-        // --- Ports Docker knows are taken ---
-        const containers = await listContainers(io.docker);
-        const published = new Set(containers.flatMap((container) => container.publishedPorts));
-        const port = requestedPort ?? choosePort(published);
-        const wanted = [
-            port,
-            ...(intent.mode === 'production'
-                ? [PRODUCTION_PORTS.http, PRODUCTION_PORTS.https]
-                : []),
-        ];
-        const holders = new Map<number, string>();
-        for (const container of containers) {
-            for (const busy of container.publishedPorts.filter((each) => wanted.includes(each))) {
-                holders.set(busy, container.name);
+            // --- Preflight ---
+            heading(io, 'Checking this host');
+            const checks = await io.busy('Checking Docker and the site directory', () =>
+                collect(context, io),
+            );
+            printChecks(io, checks);
+            if (failed(checks)) {
+                throw new CliError('preflight failed. Nothing has been changed on this host.');
             }
-        }
-        if (holders.size > 0) {
-            const lines = [...holders].map(
-                ([busy, name]) =>
-                    `  port ${busy} is already in use by the Docker container ${name}`,
-            );
-            throw new CliError(
-                `${lines.join('\n').trimStart()}\n` +
-                    (holders.has(port)
-                        ? `  Choose another port for Ghost with --port.`
-                        : '  A production site needs ports 80 and 443 for Caddy. Free them first.') +
-                    '\n  Nothing was stopped. Nothing has been changed.',
-            );
-        }
 
-        // --- The exact Ghost image ---
-        heading(io, 'Resolving the Ghost image');
-        const ghost = await io.busy('Resolving the Ghost image', () =>
-            resolveGhost(io, flags.version),
-        );
-        ok(
-            io,
-            'ghost',
-            `${ghost.image}:${ghost.tag} is Ghost ${ghost.version}, ${ghost.reference}`,
-        );
+            // --- Ports Docker knows are taken ---
+            const containers = await listContainers(io.docker);
+            const published = new Set(containers.flatMap((container) => container.publishedPorts));
+            const port = requestedPort ?? choosePort(published);
+            const wanted = [
+                port,
+                ...(intent.mode === 'production'
+                    ? [PRODUCTION_PORTS.http, PRODUCTION_PORTS.https]
+                    : []),
+            ];
+            const holders = new Map<number, string>();
+            for (const container of containers) {
+                for (const busy of container.publishedPorts.filter((each) =>
+                    wanted.includes(each),
+                )) {
+                    holders.set(busy, container.name);
+                }
+            }
+            if (holders.size > 0) {
+                const lines = [...holders].map(
+                    ([busy, name]) =>
+                        `  port ${busy} is already in use by the Docker container ${name}`,
+                );
+                throw new CliError(
+                    `${lines.join('\n').trimStart()}\n` +
+                        (holders.has(port)
+                            ? `  Choose another port for Ghost with --port.`
+                            : '  A production site needs ports 80 and 443 for Caddy. Free them first.') +
+                        '\n  Nothing was stopped. Nothing has been changed.',
+                );
+            }
 
-        const pin = clone
-            ? null
-            : await io.busy('Resolving the manager image', () => managerPin(io, context));
+            // --- The exact Ghost image ---
+            // An import happens at the source site's version; upgrading is a
+            // separate step.
+            heading(io, 'Resolving the Ghost image');
+            const ghost = await io.busy('Resolving the Ghost image', () =>
+                staged === null
+                    ? resolveGhost(io, flags.version)
+                    : resolveExactGhost(io, staged.manifest.ghost.version),
+            );
+            ok(
+                io,
+                'ghost',
+                `${ghost.image}:${ghost.tag} is Ghost ${ghost.version}, ${ghost.reference}`,
+            );
+
+            const pin = clone
+                ? null
+                : await io.busy('Resolving the manager image', () => managerPin(io, context));
+            return { intent, port, ghost, pin };
+        };
+        let prepared: Awaited<ReturnType<typeof prepare>>;
+        try {
+            prepared = await prepare();
+        } catch (error) {
+            if (staged !== null) {
+                removeStaging(dir);
+            }
+            throw error;
+        }
+        const { intent, port, ghost, pin } = prepared;
 
         // --- From here on a failure removes what this installation created ---
         const created = new Created(io, context, dir);
@@ -458,15 +589,22 @@ export const installCommand = defineCommand({
         // Writing, starting and verifying. Everything it creates is recorded in
         // `created`, so a failure removes exactly that.
         const createSite = async () => {
+            if (staged !== null) {
+                // From the first change until the site is verified.
+                created.journal = join(dir, MARKER);
+                created.save();
+            }
             heading(io, 'Writing the site');
             if (!clone) {
                 writePayload(dir, stack, files, created);
+                created.save();
                 ok(
                     io,
                     'stack files',
                     `compose.yml, caddy/, mysql-init/, tinybird/ from the manager image`,
                 );
                 writeLauncher(dir, io.env, pin!, created);
+                created.save();
                 ok(io, 'ghost-docker', `the launcher, pinned to ${pin!}`);
             }
 
@@ -514,9 +652,32 @@ export const installCommand = defineCommand({
             ok(io, ENV_FILE, 'Compose and operator settings, with generated database passwords');
 
             const ghostEnvPath = join(dir, GHOST_ENV_FILE);
+            // The source site's configuration, without what the container owns.
+            const carried = staged === null ? null : await sourceConfig(io, dir, staged.manifest);
             created.file(ghostEnvPath);
-            atomicWrite(ghostEnvPath, ghostEnvTemplate(project, services.length > 0), PRIVATE);
-            ok(io, GHOST_ENV_FILE, 'Ghost application settings');
+            atomicWrite(
+                ghostEnvPath,
+                ghostEnvTemplate(project, services.length > 0) +
+                    (carried === null || carried.settings.length === 0
+                        ? ''
+                        : env.serializeAll(
+                              carried.settings,
+                              `# Carried over from ${staged!.manifest.url} by install --import.\n`,
+                          )),
+                PRIVATE,
+            );
+            ok(
+                io,
+                GHOST_ENV_FILE,
+                carried === null
+                    ? 'Ghost application settings'
+                    : `${carried.settings.length} Ghost settings carried over from the source site`,
+            );
+            for (const { key, reason } of carried?.skipped ?? []) {
+                printChecks(io, [
+                    { status: 'note', label: 'not carried', detail: `${key}: ${reason}` },
+                ]);
+            }
 
             // Bind mount sources must exist before the daemon resolves them, or it
             // creates them as root. Ownership inside is the images' own business.
@@ -524,10 +685,12 @@ export const installCommand = defineCommand({
                 const path = join(dir, data);
                 const before = created.directories.length;
                 makeDirectories(path, created.directories);
-                if (created.directories.length > before) {
+                // An import writes into them even when they were there, empty.
+                if (created.directories.length > before || staged !== null) {
                     created.data.push(path);
                 }
             }
+            created.save();
             ok(io, 'data', DATA_DIRS.join(' and '));
 
             const findings = await io.busy('Validating the configuration', () => validate(io, dir));
@@ -538,6 +701,13 @@ export const installCommand = defineCommand({
                 );
             }
             ok(io, 'configuration', `.env and ghost.env are valid for a ${mode} site`);
+
+            if (staged !== null) {
+                await importSite(io, dir, staged, profiles, ghost.version, () => {
+                    created.project = true;
+                    created.save();
+                });
+            }
 
             if (production) {
                 // Written once; from here on the file is the operator's.
@@ -591,6 +761,20 @@ export const installCommand = defineCommand({
 
             if (flags.noStart) {
                 io.stdout('\nNot starting: --no-start was given.\n');
+                if (staged !== null) {
+                    // The import needed the database, and Ghost once for a
+                    // rows-only bundle. Nothing is left running; the data stays.
+                    const down = await io.busy('Stopping what the import started', () =>
+                        compose(io, dir, ['down', '--remove-orphans', '--timeout', '20'], {
+                            timeoutMs: 300_000,
+                        }),
+                    );
+                    if (down.exitCode !== 0) {
+                        throw new CliError(
+                            `the services the import started could not be stopped: ${composeError(down, 2)}`,
+                        );
+                    }
+                }
             } else {
                 heading(io, 'Starting the services');
                 created.project = true;
@@ -626,23 +810,53 @@ export const installCommand = defineCommand({
                     );
                 }
             }
+            if (staged !== null) {
+                // Verified, or deliberately not started: either way, now a site.
+                removeStaging(dir);
+                rmSync(join(dir, MARKER), { force: true });
+                created.journal = null;
+            }
         };
 
         try {
             await createSite();
         } catch (error) {
             io.stderr(`\n${describe(error)}\n`);
+            if (staged !== null) {
+                // Whatever happened, a partial site must not be startable.
+                markIncomplete(dir);
+            }
             if (created.project) {
                 const logs = await io.busy("Reading the services' logs", () =>
                     compose(io, dir, ['logs', '--no-color', '--tail', '30'], {
                         timeoutMs: 60_000,
+                        env: { COMPOSE_PROFILES: ALL_PROFILES },
                     }),
                 );
                 if (logs.stdout.trim()) {
                     io.stderr(`\nThe services' last words:\n${logs.stdout.trimEnd()}\n`);
                 }
             }
-            io.stderr('\nThe installation did not complete. Removing what it created\n');
+            if (staged !== null && io.env.GD_IMPORT_KEEP_FAILED === '1') {
+                // Kept for inspection, not left running.
+                if (created.project) {
+                    await io.busy('Stopping what the import started', () =>
+                        compose(io, dir, ['stop', '--timeout', '20'], {
+                            timeoutMs: 300_000,
+                            env: { COMPOSE_PROFILES: ALL_PROFILES },
+                        }),
+                    );
+                }
+                io.stderr(
+                    `\nThe import did not complete. GD_IMPORT_KEEP_FAILED is set, so what it created was\n` +
+                        `kept for inspection in ${dir}. It cannot be started; running the import\n` +
+                        'again removes it first.\n',
+                );
+                throw new CliError('the import failed.');
+            }
+            io.stderr(
+                `\nThe ${staged === null ? 'installation' : 'import'} did not complete. Removing what it created\n`,
+            );
             const leftovers = await io.busy('Removing what the installation created', () =>
                 created.remove(),
             );
@@ -650,13 +864,17 @@ export const installCommand = defineCommand({
                 io.stderr(
                     `Some of it could not be removed:\n${leftovers.map((item) => `  ${item}\n`).join('')}`,
                 );
+            } else if (staged !== null) {
+                io.stderr(
+                    `${dir} is as it was before the import. The bundle and the source site were not changed.\n`,
+                );
             } else {
                 io.stderr(
                     `${dir} is as it was before. Nothing that was already running was stopped.\n`,
                 );
             }
             throw new CliError(
-                'installation failed; fix the error above and run the same command again.',
+                `${staged === null ? 'installation' : 'the import'} failed; fix the error above and run the same command again.`,
             );
         }
 
@@ -669,7 +887,9 @@ export const installCommand = defineCommand({
                     './ghost-docker check reports it. Configure mail (see ghost.env), then open',
                     'Ghost Admin and create the owner account.',
                 ]
-              : ['Open Ghost Admin and create the owner account.'];
+              : staged !== null
+                ? ["Sign in to Ghost Admin with the source site's staff accounts."]
+                : ['Open Ghost Admin and create the owner account.'];
         io.stdout(
             [
                 '',
@@ -680,6 +900,9 @@ export const installCommand = defineCommand({
                 `  Project      ${project} (${profiles}), in ${dir}`,
                 `  Ghost        ${ghost.version}, ${ghost.reference}`,
                 `  Loopback     127.0.0.1:${port}`,
+                ...(staged === null
+                    ? []
+                    : [`  Imported     ${staged.manifest.kind} bundle of ${staged.manifest.url}`]),
                 '',
                 '.env and ghost.env hold the credentials; back them up.',
                 ...next,

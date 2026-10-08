@@ -5,9 +5,12 @@
 //
 // `--project-directory`, never `-C`, and an explicit `-f`. COMPOSE_FILE is not
 // inherited, because it changes override auto-loading; nor are the other
-// COMPOSE_* settings, which belong to the site's own `.env`. Overrides are
-// opted into with GD_COMPOSE_OVERRIDES (docs/configuration.md).
+// COMPOSE_* settings, which belong to the site's own `.env`, nor anything else
+// of the manager's own environment, which Compose would interpolate over
+// `.env`. Overrides are opted into with GD_COMPOSE_OVERRIDES
+// (docs/configuration.md).
 import { isAbsolute, join } from 'node:path';
+import type { Readable } from 'node:stream';
 import { z } from 'zod';
 import type { Io } from './io.ts';
 import type { Exec } from './process.ts';
@@ -32,6 +35,8 @@ export interface ComposeOptions {
     readonly timeoutMs?: number;
     /** Set for this run only, over the site's `.env`; for example COMPOSE_PROFILES. */
     readonly env?: Readonly<Record<string, string>>;
+    /** Standard input, for `exec -T`; none when absent. */
+    readonly input?: string | Readable;
 }
 
 /** The `-f` list: compose.yml, then each override, relative to the site. */
@@ -45,11 +50,32 @@ export function composeFiles(dir: string, overrides = ''): string[] {
     return files.flatMap((file) => ['-f', file]);
 }
 
-/** The environment Compose runs in: ours, without any COMPOSE_* of our own. */
-function composeEnvironment(io: Io, extra: Readonly<Record<string, string>> = {}) {
+/**
+ * What Compose needs of our environment to find itself and the daemon.
+ * Nothing else is passed on: Compose interpolates the shell's variables in
+ * preference to `.env`, so the manager's own (the image sets
+ * NODE_ENV=production) would silently override the site's settings.
+ */
+const PASSED_THROUGH = [
+    'PATH',
+    'HOME',
+    'TMPDIR',
+    'DOCKER_HOST',
+    'DOCKER_CONFIG',
+    'DOCKER_CONTEXT',
+    'DOCKER_CERT_PATH',
+    'DOCKER_TLS_VERIFY',
+];
+
+/** The environment Compose runs in: only what it needs, and `extra`. */
+export function composeEnvironment(
+    io: Pick<Io, 'env'>,
+    extra: Readonly<Record<string, string>> = {},
+): Record<string, string> {
     const environment: Record<string, string> = {};
-    for (const [key, value] of Object.entries(io.env)) {
-        if (value !== undefined && !key.startsWith('COMPOSE_')) {
+    for (const key of PASSED_THROUGH) {
+        const value = io.env[key];
+        if (value !== undefined) {
             environment[key] = value;
         }
     }
@@ -60,13 +86,19 @@ export async function compose(
     io: Io,
     dir: string,
     args: readonly string[],
-    { timeoutMs = 120_000, env }: ComposeOptions = {},
+    { timeoutMs = 120_000, env, input }: ComposeOptions = {},
 ): Promise<ComposeResult> {
-    const result = await io.exec({
+    const command = io.exec({
         timeout: timeoutMs,
         env: composeEnvironment(io, env),
         extendEnv: false,
-    })`docker-compose --project-directory ${dir} ${composeFiles(dir, io.env.GD_COMPOSE_OVERRIDES)} ${args}`;
+    });
+    const result = await (input === undefined
+        ? command
+        : command({
+              stdin: 'pipe',
+              input,
+          }))`docker-compose --project-directory ${dir} ${composeFiles(dir, io.env.GD_COMPOSE_OVERRIDES)} ${args}`;
     return {
         exitCode: typeof result.exitCode === 'number' ? result.exitCode : null,
         stdout: String(result.stdout ?? ''),
