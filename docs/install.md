@@ -41,7 +41,7 @@ ghost-docker install --import BUNDLE [--port 2368] [--no-prompt] [--no-start]
 | `--domain DOMAIN` | Production: Ghost, MySQL and Caddy with HTTPS on that domain. |
 | `--admin-domain DOMAIN` | A separate Ghost Admin domain. Production only. |
 | `--email EMAIL` | The ACME account email. Production only; see below. |
-| `--port PORT` | The loopback port Ghost is published on, in both modes. Omitted: the first at or above 2368 that no container publishes. |
+| `--port PORT` | The loopback port Ghost is published on, in both modes. Omitted: the first at or above 2368 that is free (see [Ports](#ports-and-your-existing-proxy)). |
 | `--version VERSION` | A Ghost version (`6.3.1`, which means `6.3.1-next-alpine`) or a full image tag (`6-alpine`). Resolved to an exact digest. |
 | `--with LIST` | `activitypub`. `analytics` is added after installation; see below. |
 | `--no-prompt` | Never ask: every input must then be an option. |
@@ -175,7 +175,7 @@ What to expect:
   version is a usage error. A source older than Ghost 6 is refused: run
   `ghost update` there first.
 - **A new address.** The site is served at `http://localhost:PORT`, on the
-  first port at or above 2368 that no container publishes unless `--port` says
+  first free port at or above 2368 unless `--port` says
   otherwise. An ordinary export leaves the source running, so the two sit side
   by side until you run `ghost stop` in the source directory. They are separate
   copies from the moment of export.
@@ -229,7 +229,9 @@ See the [plan](ghost-cli-replacement.md) for where each lands, and
 server may proxy other applications, and replacing its web server is not an
 installer's decision.
 
-- A port the installer *chooses* moves out of the way of containers.
+- A port the installer *chooses* moves out of the way of containers, and on
+  macOS (OrbStack, Docker Desktop) also of programs on the host, such as a
+  Ghost-CLI site.
 - A port you *asked for* does not: `--port` on a busy port is an error, because
   a site at an address nothing else expects is worse than a refusal.
 - A production site needs 80 and 443. If a container holds them, installation
@@ -237,14 +239,17 @@ installer's decision.
   Docker refuses to start Caddy; the error names the port, says nothing that
   was running was stopped, and the directory is as it was.
 
-The manager runs in a container and cannot see the host's ports itself, which
-is why a port held by a program outside Docker is found only when Docker tries
-to publish it. With Docker Engine on Linux that is a clear error (tested).
-OrbStack publishes the port regardless, so on macOS with OrbStack such a
-conflict is not reported at all: the site is published but the program keeps
-the address. Docker Desktop has not been tested. Wherever the host's ports
-cannot be checked, the installer says they were not verified, and opening the
-URL is the check.
+The manager runs in a container, so it sees a program outside Docker holding a
+port in one of two ways. With Docker Engine on Linux, Docker refuses to publish
+the port, and that is a clear error (tested). OrbStack publishes the port
+anyway, and the program keeps answering on it, so there the manager asks first:
+it connects to the port on `host.docker.internal`, which is the Mac itself,
+before choosing Ghost's port or accepting `--port` (tested with OrbStack).
+Docker Desktop provides the same name and is expected to behave the same, but
+has not been tested. Ports 80 and 443 for a production site are not checked
+this way; production is supported on Linux only. Wherever the host's ports
+cannot be checked after starting, the installer says they were not verified,
+and opening the URL is the check.
 
 To run Ghost behind your own nginx or Apache instead, point it at
 `127.0.0.1:${GHOST_PORT}` and edit `compose.yml` to drop the `caddy` service or
