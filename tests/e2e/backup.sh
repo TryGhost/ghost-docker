@@ -5,12 +5,16 @@
 #
 # Builds the manager image from this checkout and installs a local site with
 # ActivityPub from it. The site is given an owner, a post, an image, a theme
-# of its own and a configuration value, then backed up, changed, and restored
-# over itself; then taken down and restored into a new directory. Each restore
-# is checked the way an operator would: staff sign in and the post is there,
-# the image is served, the theme is active and the configuration is as it was.
-# Then the lock refuses a second operation, `check` reports a stale lock, and
-# a dump that fails is an error, not a backup.
+# of its own, a configuration value and ActivityPub records, then backed up
+# consistently (Ghost and ActivityPub stopped for the capture and running
+# again after),
+# changed, and restored over itself; then taken down and restored into a new
+# directory. Each restore is checked the way an operator would: staff sign in
+# and the post is there, the image is served, the theme is active, the
+# configuration is as it was, and ActivityPub's records hold exactly what was
+# backed up. Then the lock refuses a second operation, `check` reports a
+# stale lock, a dump that fails is an error, not a backup, and leaves the
+# writers running, and a backup by default is live and never stops them.
 #
 # It pulls images, starts containers and binds a loopback port. It needs jq
 # and curl. Exits non-zero at the first check that fails, naming it.
@@ -24,6 +28,29 @@ OWNER_PASSWORD='Kept-in-a-backup-2026!'
 # dotenv encoding gets wrong. Ghost ignores a key it does not know.
 SETTING_KEY=backupE2e__marker
 SETTING="Kept \$by 'the' \"backup\""
+# ActivityPub records of its own tables: a site it serves and a stored
+# object. Fresh migrations would recreate the tables, never these rows.
+AP_SEED=$(
+    cat <<'SQL'
+INSERT INTO activitypub.sites (host, webhook_secret, ghost_pro) VALUES ('e2e-seed.example', 'kept-by-the-backup', 0);
+INSERT INTO activitypub.key_value (`key`, value) VALUES ('e2e-seed', '{"kept": "by the backup", "n": 1}');
+SQL
+)
+# What the seed reads back as; a restore must give exactly this.
+AP_RECORDS=$(
+    cat <<'SQL'
+SELECT CONCAT_WS('|', host, webhook_secret, ghost_pro) FROM activitypub.sites WHERE host LIKE 'e2e-%' ORDER BY host;
+SELECT CONCAT('key_value|', value) FROM activitypub.key_value WHERE `key` = 'e2e-seed';
+SQL
+)
+# After the backup: one record changed, one removed, one added.
+AP_CHANGES=$(
+    cat <<'SQL'
+UPDATE activitypub.sites SET webhook_secret = 'changed-after-the-backup' WHERE host = 'e2e-seed.example';
+DELETE FROM activitypub.key_value WHERE `key` = 'e2e-seed';
+INSERT INTO activitypub.sites (host, webhook_secret, ghost_pro) VALUES ('e2e-after.example', 'added-after-the-backup', 0);
+SQL
+)
 
 
 if ! docker info >/dev/null 2>&1; then
@@ -108,6 +135,20 @@ new_site() {
 
 backups_of() { find "$1/backups" -mindepth 1 -maxdepth 1 2>/dev/null | sort; }
 
+# started_at SITE -- when Ghost's and ActivityPub's containers last started.
+started_at() {
+    compose_in "$1" ps -q ghost activitypub | xargs docker inspect --format '{{.State.StartedAt}}'
+}
+
+# writers SITE -- Ghost's and ActivityPub's containers, with their state.
+writers() {
+    local service
+    for service in ghost activitypub; do
+        printf '%s %s %s\n' "$service" "$(compose_in "$1" ps --all -q "$service")" \
+            "$(compose_in "$1" ps --all --format '{{.State}}' "$service")"
+    done
+}
+
 # api SITE METHOD PATH [curl options] -- the Admin API, signed in.
 api() {
     local site=$1 method=$2 path=$3 base
@@ -162,9 +203,12 @@ expect_restored() {
 
     [[ $(root_sql "$site" "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'activitypub'") == "$AP_TABLES" ]] ||
         fail "the activitypub database does not have its $AP_TABLES tables"
+    body=$(root_sql "$site" "$AP_RECORDS")
+    [[ $body == "$AP_EXPECTED" ]] ||
+        fail "ActivityPub's records are not as backed up" "$(printf 'expected:\n%s\nfound:\n%s' "$AP_EXPECTED" "$body")"
     compose_in "$site" ps --format '{{.Service}} {{.State}}' | grep -qx 'activitypub running' ||
         fail "ActivityPub is not running" "$(compose_in "$site" ps)"
-    ok "ActivityPub's database is back, and ActivityPub runs"
+    ok "ActivityPub's records are exactly as backed up, and ActivityPub runs"
 }
 
 printf 'Docker: %s on %s\n' "$(docker info --format '{{.OperatingSystem}}')" "$(uname -s)"
@@ -214,15 +258,28 @@ body=$(api "$A" PUT 'themes/e2e-theme/activate/')
 [[ $(jq -r '.themes[0].active' <<<"$body" 2>/dev/null) == true ]] || fail "activating e2e-theme failed" "$body"
 AP_TABLES=$(root_sql "$A" "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'activitypub'")
 [[ $AP_TABLES -gt 0 ]] || fail "ActivityPub's migrations created no tables"
-ok "post $SLUG, images/2026/10/marker.png, e2e-theme active, $SETTING_KEY, $AP_TABLES ActivityPub tables"
+root_sql "$A" "$AP_SEED" || fail "seeding ActivityPub's records failed"
+AP_EXPECTED=$(root_sql "$A" "$AP_RECORDS")
+if ! grep -qx 'e2e-seed.example|kept-by-the-backup|0' <<<"$AP_EXPECTED" ||
+    ! grep -q '^key_value|.*"kept": "by the backup"' <<<"$AP_EXPECTED"; then
+    fail "ActivityPub's records do not read back as seeded" "$AP_EXPECTED"
+fi
+ok "post $SLUG, images/2026/10/marker.png, e2e-theme active, $SETTING_KEY, $AP_TABLES ActivityPub tables with records of their own"
 
 # --- Backup --------------------------------------------------------------------
 
-step "Back it up"
-run gd "$A" backup
+step "Back it up consistently, with Ghost and ActivityPub stopped for the capture"
+writers_before=$(writers "$A")
+grep -q '^activitypub .* running$' <<<"$writers_before" || fail "ActivityPub is not running before the backup" "$writers_before"
+run gd "$A" backup --consistent
 expect_status 0
+expect_output 'ghost and activitypub stopped, so nothing writes during the capture'
+expect_output 'ghost and activitypub running again, and healthy'
 expect_output 'ok +checked +ghost: [0-9]+ tables, activitypub: [0-9]+ tables, loaded into a scratch MySQL'
 expect_output 'Backed up to '
+# Started again, not recreated: the same containers, running.
+[[ $(writers "$A") == "$writers_before" ]] ||
+    fail "the writers are not as they were before the backup" "$(printf 'before:\n%s\nafter:\n%s' "$writers_before" "$(writers "$A")")"
 BACKUP=$(backups_of "$A")
 [[ $(wc -l <<<"$BACKUP") -eq 1 && -f $BACKUP/manifest.json ]] || fail "there is not one backup" "$BACKUP"
 [[ $(jq -r '.databases | map(.name) | join(",")' "$BACKUP/manifest.json") == ghost,activitypub ]] ||
@@ -232,7 +289,8 @@ BACKUP=$(backups_of "$A")
 mode=$(stat -c '%a' "$BACKUP" 2>/dev/null || stat -f '%Lp' "$BACKUP")
 [[ $mode == 700 ]] || fail "the backup is $mode, not private"
 [[ ! -e $A/.ghost-docker.lock ]] || fail "the lock was left behind"
-ok "$BACKUP, checked, private"
+[[ $(jq -r .consistency "$BACKUP/manifest.json") == quiesced ]] || fail "the manifest does not record a quiesced backup"
+ok "$BACKUP, checked, private, consistent; Ghost and ActivityPub running again in the same containers"
 
 # --- Restore over the site -----------------------------------------------------
 
@@ -240,6 +298,8 @@ step "Change the site, then restore the backup over it"
 api "$A" DELETE "posts/$POST_ID/" >/dev/null
 # shellcheck disable=SC2016 # expanded by the container's shell
 compose_in "$A" exec -T --user ghost ghost sh -c 'rm "$GHOST_CONTENT/images/2026/10/marker.png"'
+root_sql "$A" "$AP_CHANGES" || fail "changing ActivityPub's records failed"
+[[ $(root_sql "$A" "$AP_RECORDS") != "$AP_EXPECTED" ]] || fail "ActivityPub's records did not change"
 run gd "$A" config set ghost.env "$SETTING_KEY" changed
 expect_status 0
 run gd "$A" restore "$BACKUP"
@@ -291,16 +351,32 @@ ok "check reports a stale lock and how to remove it"
 
 # --- A dump that fails -----------------------------------------------------------
 
-step "A dump that fails is an error, not a backup"
+step "A consistent backup whose dump fails is an error, not a backup, and leaves the writers running"
 before=$(backups_of "$B")
+writers_before=$(writers "$B")
 root_sql "$B" "REVOKE SELECT ON \`ghost\`.* FROM 'ghost'@'%'"
-run gd "$B" backup
+run gd "$B" backup --consistent
 root_sql "$B" "GRANT SELECT ON \`ghost\`.* TO 'ghost'@'%'"
 expect_status 1
 expect_output 'the ghost database could not be dumped'
 [[ $(backups_of "$B") == "$before" ]] || fail "a failed dump left a backup behind" "$(backups_of "$B")"
 find "$B/backups" -maxdepth 1 -name '.*.partial' | grep -q . && fail "a partial backup was left behind"
 [[ ! -e $B/.ghost-docker.lock ]] || fail "the lock was left behind"
-ok "exit 1, and nothing left in backups/"
+[[ $(writers "$B") == "$writers_before" ]] ||
+    fail "the writers are not as they were before the failed backup" "$(printf 'before:\n%s\nafter:\n%s' "$writers_before" "$(writers "$B")")"
+ok "exit 1, nothing left in backups/, and Ghost and ActivityPub running again"
+
+step "A backup is live by default: it never stops the writers, and says what it guarantees"
+writers_before=$(writers "$B")
+started_before=$(started_at "$B")
+run gd "$B" backup
+expect_status 0
+expect_output 'captured at different moments'
+LIVE=$(backups_of "$B" | tail -n 1)
+[[ $(jq -r .consistency "$LIVE/manifest.json") == live ]] || fail "the manifest does not record a live backup"
+[[ $(writers "$B") == "$writers_before" ]] || fail "a live backup changed the writers"
+[[ $(started_at "$B") == "$started_before" ]] ||
+    fail "a live backup restarted Ghost or ActivityPub"
+ok "$LIVE, recorded as live; Ghost and ActivityPub never restarted"
 
 printf '\nAll backup and restore checks passed.\n'

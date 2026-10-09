@@ -15,13 +15,18 @@ import { installedSite, siteContext } from './common.ts';
 
 export const backupCommand = defineCommand({
     brief: 'Back up the site: its databases, content and configuration, into backups/. See docs/install.md.',
-    async run(_flags, _positionals, io) {
+    options: z.object({
+        consistent: flag(
+            'Stop Ghost and ActivityPub while the databases and content are captured, so they are one moment of the site; the site is down for that time.',
+        ),
+    }),
+    async run(flags, _positionals, io) {
         const { site } = installedSite(io);
         const metadata = requireMetadata(site.dir, 'backup cannot tell how it was installed');
         const lock = acquireLock(site.dir, 'backup');
         let path: string;
         try {
-            path = await takeBackup({ io, site, metadata });
+            path = await takeBackup({ io, site, metadata, consistent: flags.consistent });
         } finally {
             lock.release();
         }

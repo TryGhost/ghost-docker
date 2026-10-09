@@ -13,6 +13,16 @@
 // has been checked: every dump loaded into a scratch MySQL, and the archive
 // listed. A backup directory without `.partial` is a checked one; a failure
 // removes the partial, so a dump that fails is an error, not a backup.
+//
+// Consistency (docs/install.md, "What a backup captures"). By default a
+// backup is live, as Ghost-CLI's was: the site keeps running, each dump is
+// one consistent snapshot of its database, but the databases and the content
+// are captured at different moments, and the manifest says so. A consistent
+// backup stops the services that write them (WRITERS) while they are
+// captured, so the dumps and the archive are one moment of the site, and
+// starts them again before the slower check: the site is down for the
+// capture alone. Writers that were not running are not started, and those
+// that were run again whether the backup succeeds or fails.
 import { createHash } from 'node:crypto';
 import {
     chmodSync,
@@ -40,14 +50,21 @@ import {
     SITE_FILES_DIR,
     type BackupManifest,
 } from './backup/manifest.ts';
-import { compose, composeConfig, composeError, composePs, composeUp } from './compose.ts';
+import {
+    compose,
+    composeConfig,
+    composeError,
+    composePs,
+    composeUp,
+    READY_SECONDS,
+} from './compose.ts';
 import { runOnce } from './docker/client.ts';
 import { CliError } from './errors.ts';
 import { atomicWrite, copyPresent, PRIVATE } from './fs.ts';
 import { DATABASE_MS, tableCount, withSiteDatabase } from './import/database.ts';
 import type { Io } from './io.ts';
 import { isoSeconds, siteFiles, type Metadata } from './meta.ts';
-import { ok } from './report.ts';
+import { ok, printChecks } from './report.ts';
 import { BACKUPS_DIR, DATA_DIRS, hasProfile, splitProfiles, type SiteFacts } from './site.ts';
 
 /** mysqldump's last line, which a dump cut short never has. */
@@ -82,6 +99,12 @@ for db in "$@"; do
   client -N -B -e "SELECT CONCAT('SELECT ''', table_name, ''', COUNT(*) FROM \\\`', table_name, '\\\`;') FROM information_schema.tables WHERE table_schema = '$db' AND table_type = 'BASE TABLE'" | client -N -B "$db"
 done
 `;
+
+/**
+ * The services that write the site's databases and content: stopped while a
+ * consistent backup captures them. Caddy and MySQL itself keep running.
+ */
+export const WRITERS = ['ghost', 'activitypub'] as const;
 
 /** `2026-10-09T14-03-22Z`: sortable, and a valid file name everywhere. */
 export const backupId = (now: Date): string =>
@@ -222,6 +245,72 @@ export interface BackupInput {
     readonly site: SiteFacts;
     readonly metadata: Metadata;
     readonly now?: Date;
+    /** Stop the writers for the capture: one moment of the site, at the cost of a brief outage. */
+    readonly consistent?: boolean;
+}
+
+/**
+ * Writers stopped for the capture, then started again as they were: not
+ * recreated, and their dependencies, which kept running, left alone.
+ */
+class Quiesced {
+    private stopped: string[] = [];
+    private readonly io: Io;
+    private readonly dir: string;
+
+    constructor(io: Io, dir: string) {
+        this.io = io;
+        this.dir = dir;
+    }
+
+    async stop(running: readonly string[]): Promise<void> {
+        const writers = WRITERS.filter((service) => running.includes(service));
+        if (writers.length === 0) {
+            ok(this.io, 'writers', 'none running, so nothing writes during the capture');
+            return;
+        }
+        // Recorded first: a stop that fails part-way is started again too.
+        this.stopped = writers;
+        const stop = await this.io.busy(
+            `Stopping ${writers.join(' and ')} for the capture`,
+            () =>
+                compose(this.io, { dir: this.dir, timeout: 300_000 })`stop --timeout 20 ${writers}`,
+        );
+        if (stop.exitCode !== 0) {
+            throw new CliError(
+                `${writers.join(' and ')} could not be stopped for the capture: ${composeError(stop)}`,
+            );
+        }
+        ok(
+            this.io,
+            'writers',
+            `${writers.join(' and ')} stopped, so nothing writes during the capture`,
+        );
+    }
+
+    /** The writers stopped for the capture, running again; a no-op once done. */
+    async resume(): Promise<void> {
+        const writers = this.stopped;
+        if (writers.length === 0) {
+            return;
+        }
+        this.stopped = [];
+        const up = await this.io.busy(
+            `Starting ${writers.join(' and ')} again`,
+            () =>
+                compose(this.io, {
+                    dir: this.dir,
+                    timeout: (READY_SECONDS + 60) * 1000,
+                })`up --detach --wait --wait-timeout ${READY_SECONDS} --no-recreate --no-deps ${writers}`,
+        );
+        if (up.exitCode !== 0) {
+            throw new CliError(
+                `${writers.join(' and ')} did not start again after the capture: ${composeError(up)}\n` +
+                    '  Start them with: docker compose up -d',
+            );
+        }
+        ok(this.io, 'writers', `${writers.join(' and ')} running again, and healthy`);
+    }
 }
 
 /**
@@ -233,6 +322,7 @@ export async function takeBackup({
     site,
     metadata,
     now = new Date(),
+    consistent = false,
 }: BackupInput): Promise<string> {
     const dir = site.dir;
     refuseMovedData(site);
@@ -270,19 +360,38 @@ export async function takeBackup({
     mkdirSync(partial, { mode: 0o700 });
 
     let startedDb = false;
+    const quiesced = new Quiesced(io, dir);
     try {
         io.stdout(`Backing up ${site.dir} to ${final}\n`);
 
         // The database has to be running to be dumped; one that was not is
         // started for the dump and stopped again afterwards.
         const ps = await composePs(io, dir);
-        const db = ps?.find((service) => service.Service === 'db');
+        if (ps === null) {
+            throw new CliError('Compose could not say which of the site’s services are running');
+        }
+        const db = ps.find((service) => service.Service === 'db');
         if (db?.State !== 'running') {
             const up = await io.busy('Starting the database', () => composeUp(io, dir, ['db']));
             startedDb = true;
             if (up.exitCode !== 0) {
                 throw new CliError(`the database did not start: ${composeError(up)}`);
             }
+        }
+
+        io.stdout('\nThe capture\n');
+        if (!consistent) {
+            ok(
+                io,
+                'live',
+                'Ghost and ActivityPub keep running: each database is one snapshot, but the databases and the content are captured at different moments (--consistent stops them for the capture)',
+            );
+        } else {
+            await quiesced.stop(
+                ps
+                    .filter((service) => service.State === 'running')
+                    .map((service) => service.Service),
+            );
         }
 
         io.stdout('\nThe databases\n');
@@ -327,6 +436,28 @@ export async function takeBackup({
             ok(io, name, `dumped, ${(statSync(file).size / 1024 ** 2).toFixed(1)} MB`);
         }
 
+        io.stdout('\nThe content\n');
+        const archive = join(partial, CONTENT_ARCHIVE);
+        const content = join(dir, DATA_DIRS[0]);
+        try {
+            await io.busy(`Archiving ${DATA_DIRS[0]}`, () =>
+                tar.c({ gzip: true, file: archive, cwd: content, portable: true }, ['.']),
+            );
+        } catch (error) {
+            throw new CliError(
+                `${DATA_DIRS[0]} could not be archived: ${(error as Error).message}`,
+            );
+        }
+        chmodSync(archive, PRIVATE);
+
+        io.stdout('\nThe site’s files\n');
+        const copied = copyPresent(dir, siteFiles(metadata), join(partial, SITE_FILES_DIR)).length;
+        ok(io, SITE_FILES_DIR, `${copied} files and directories: configuration, metadata, Caddy`);
+
+        // Captured: the site runs again before the slower checks.
+        await quiesced.resume();
+
+        io.stdout('\nThe checks\n');
         // Checked means the dump loads: into a scratch server, never the site's.
         const check = await io.busy('Loading the dumps into a scratch MySQL to check them', () =>
             runOnce(io.docker, {
@@ -375,19 +506,6 @@ export async function takeBackup({
                 .join(', ') + ', loaded into a scratch MySQL',
         );
 
-        io.stdout('\nThe content\n');
-        const archive = join(partial, CONTENT_ARCHIVE);
-        const content = join(dir, DATA_DIRS[0]);
-        try {
-            await io.busy(`Archiving ${DATA_DIRS[0]}`, () =>
-                tar.c({ gzip: true, file: archive, cwd: content, portable: true }, ['.']),
-            );
-        } catch (error) {
-            throw new CliError(
-                `${DATA_DIRS[0]} could not be archived: ${(error as Error).message}`,
-            );
-        }
-        chmodSync(archive, PRIVATE);
         let entries: number;
         try {
             entries = await io.busy('Listing the archive', () => archiveEntries(archive));
@@ -395,10 +513,6 @@ export async function takeBackup({
             throw new CliError(`the content archive does not list: ${(error as Error).message}`);
         }
         ok(io, CONTENT_ARCHIVE, `${entries} entries, listed`);
-
-        io.stdout('\nThe site’s files\n');
-        const copied = copyPresent(dir, siteFiles(metadata), join(partial, SITE_FILES_DIR)).length;
-        ok(io, SITE_FILES_DIR, `${copied} files and directories: configuration, metadata, Caddy`);
 
         const files: Record<string, string> = {};
         for (const path of filesUnder(partial)) {
@@ -408,6 +522,7 @@ export async function takeBackup({
             format: BACKUP_FORMAT,
             version: BACKUP_VERSION,
             createdAt: isoSeconds(now),
+            consistency: consistent ? 'quiesced' : 'live',
             manager: {
                 version: metadata.stack.version,
                 commit: metadata.stack.commit,
@@ -439,6 +554,14 @@ export async function takeBackup({
         rmSync(partial, { recursive: true, force: true });
         throw error;
     } finally {
+        // A failure during the capture still leaves the writers as they were.
+        try {
+            await quiesced.resume();
+        } catch (resumeError) {
+            printChecks(io, [
+                { status: 'error', label: 'writers', detail: (resumeError as Error).message },
+            ]);
+        }
         if (startedDb) {
             await compose(io, { dir })`stop db`;
         }

@@ -234,6 +234,8 @@ export interface ScriptedSite {
     ups: ProgramResult[];
     /** What each `down` answers, in order; then success. */
     downs: ProgramResult[];
+    /** What each `up --no-recreate`, starting stopped services again, answers; then success. */
+    resumes: ProgramResult[];
     /** The services running: what `up` started, until `down` or `stop`; none at first. */
     readonly running: Set<string>;
     /** Ghost's database, table by table, as the site's MySQL holds it. */
@@ -271,6 +273,7 @@ export function scriptSite(
         compose: [],
         ups: [],
         downs: [],
+        resumes: [],
         running: new Set(),
         rows: { posts: 3, users: 1, migrations: 120 },
         onUp: () => {},
@@ -320,14 +323,16 @@ export function scriptSite(
             }
             case 'up': {
                 // What `up --wait` starts stays running, healthy or not.
-                const named = args.slice(args.indexOf('--wait-timeout') + 2);
+                const named = args
+                    .slice(args.indexOf('--wait-timeout') + 2)
+                    .filter((arg) => !arg.startsWith('--'));
                 if (named.length === 0) {
                     site.onUp();
                 }
                 for (const service of named.length > 0 ? named : ['ghost', 'db']) {
                     site.running.add(service);
                 }
-                return site.ups.shift() ?? ok('');
+                return (args.includes('--no-recreate') ? site.resumes : site.ups).shift() ?? ok('');
             }
             case 'down': {
                 const answer = site.downs.shift() ?? ok('');
@@ -336,13 +341,15 @@ export function scriptSite(
                 }
                 return answer;
             }
-            case 'stop':
-                if (args.includes('db')) {
-                    site.running.delete('db');
-                } else {
-                    site.running.clear();
+            case 'stop': {
+                const named = args
+                    .slice(1)
+                    .filter((arg) => !arg.startsWith('--') && !/^\d+$/.test(arg));
+                for (const service of named.length > 0 ? named : [...site.running]) {
+                    site.running.delete(service);
                 }
                 return ok('');
+            }
             case 'ps':
                 return ok(
                     [...site.running]
