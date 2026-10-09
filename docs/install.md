@@ -452,7 +452,8 @@ site's launcher starts that image, not the one it is pinned to.
 | `--channel CHANNEL` | The newest release on `stable` or `beta`, which the site then follows. |
 | `--to vX.Y.Z` | Exactly that release. |
 
-The update refuses downgrades, incompatible Ghost versions, absent metadata,
+The update refuses downgrades, incompatible Ghost versions, absent metadata
+(except for [the released main layout](#moving-from-the-released-main-layout)),
 checkouts, another operation's lock and an unfinished update snapshot. It pulls
 images before the outage where possible, keeps a file snapshot in
 `.ghost-docker-update/`, then pauses Ghost and ActivityPub and takes a consistent
@@ -516,6 +517,63 @@ time it runs. If the site does not come back, check out the commit it ran
 before, and restore the backup (`./ghost-docker restore --yes backups/<backup>`):
 the backup records the commit checked out when it was taken, and restore
 refuses a clone at any other.
+
+### Moving from the released main layout
+
+An installation made from `main` before this layout (a git clone with one
+`.env`, a hand-edited `caddy/Caddyfile`, and no `ghost-docker` launcher) moves
+onto it once, with the launcher as docker.ghost.org serves it, run in the
+site directory:
+
+```bash
+cd /path/to/your/ghost-docker
+curl -fsSL https://docker.ghost.org/install.sh | bash -s -- self-update --check
+curl -fsSL https://docker.ghost.org/install.sh | bash -s -- self-update
+```
+
+**Do not `git pull` across this change.** The new layout's Compose file selects
+no services without the new settings, and a pull cannot write them.
+
+`self-update` finds no `.ghost-docker.json` and main's `.env`, and runs migration
+`0001-compose-profiles`. Ghost and its database must be running, so it can
+read the Ghost version the site runs and back the site up. Before changing
+anything it works out and checks all of this, and stops, naming what to
+resolve, if any of it cannot be carried over:
+
+| What | Becomes |
+| --- | --- |
+| `COMPOSE_PROFILES` | `production`, plus `analytics` and `activitypub` if they were on |
+| Compose project | The same name, set as `COMPOSE_PROJECT_NAME`, so Caddy's certificates and every volume stay the site's |
+| `DOMAIN`, `ADMIN_DOMAIN` | `URL`, `ADMIN_URL` |
+| Credentials, ports, data locations, Tinybird settings | Kept in `.env`, with `SITE_MODE`, `PROJECT_DIR` and the rest of this layout's settings added |
+| Ghost's configuration in `.env` (`mail__*`, `labs__*`, anything Ghost read) | Moved to `ghost.env`, with the values Ghost actually received. Keys the container sets itself (`url`, `database__*`) are listed and left out, as they were overridden on main too |
+| `ghost:6-alpine` | The `next` image of **exactly the running version**, pinned by digest (`GHOST_IMAGE_REF`). Ghost 6.61.0 is the first with one: upgrade an older Ghost on main first (`docker compose pull ghost && docker compose up -d`) |
+| `caddy/Caddyfile` | Kept as `caddy/Caddyfile.local`, and carried into `caddy/sites/site.caddy`: `{$DOMAIN}`-style variables filled in, snippet imports given their absolute paths and arguments, bare upstreams (`ghost:2368`) pointed at the site's aliases. Everything else you wrote is kept. A global options block moves to `caddy/global/legacy.caddy`. Caddy loads the result before anything changes |
+| `compose.override.yml`, `GD_COMPOSE_OVERRIDES` | Kept, and resolved with the new layout before anything changes |
+| Stack files (`compose.yml`, snippets, `mysql-init/`) | The release's. Git must show them unedited: a change in the work tree or in a commit no remote has stops the migration. Move such changes into `compose.override.yml` or a `.caddy` file of your own afterwards |
+
+Then it keeps a copy of every file it writes in `.ghost-docker-update/`, stops
+Ghost and ActivityPub, writes the new layout and `.ghost-docker.json`, takes a
+checked backup into `backups/`, starts the site on the new layout and verifies
+it through Caddy. Ghost is unavailable from the backup until the new layout
+starts.
+
+Recovery follows [self-update](#self-update)'s: a failure before startup puts
+main's files back and starts Ghost again in the same containers. A failure
+after startup stops the services, puts main's files back, leaves the data as
+it is, and says **the site needs you**. Ghost's version never changes, so
+`docker compose up -d` starts main's layout on that data. The backup holds the
+databases and content as they were before the migration started anything;
+once the migration has run, `./ghost-docker restore --yes backups/<backup>`
+puts them back.
+
+Afterwards the directory is a site installed from the image: update it with
+`./ghost-docker self-update`, not git (its `.git` is left in place, and shows
+the stack files as changed). Running the served command again is an ordinary
+self-update. Compose files you used with `-f` by hand, such as
+`compose.ipv6.yml`, are not seen by the manager: name them with
+`GD_COMPOSE_OVERRIDES` when you migrate, as for every manager command
+([configuration](configuration.md#the-compose-invocation-contract)).
 
 ## backup and restore
 

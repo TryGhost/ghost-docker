@@ -9,10 +9,18 @@ import { z } from 'zod';
 import { defineCommand, flag } from '../command.ts';
 import { findingErrors, validate } from '../config.ts';
 import { CliError, describeError, EXIT } from '../errors.ts';
-import { atomicWrite, copyPresent } from '../fs.ts';
+import { atomicWrite } from '../fs.ts';
 import type { Io } from '../io.ts';
 import { acquireLock } from '../lock.ts';
-import { isoSeconds, requireMetadata, siteFiles, writeMetadata, type Metadata } from '../meta.ts';
+import { isReleasedMainLayout, migrateReleasedMain } from '../legacy.ts';
+import {
+    isoSeconds,
+    readMetadata,
+    requireMetadata,
+    siteFiles,
+    writeMetadata,
+    type Metadata,
+} from '../meta.ts';
 import {
     LAUNCHER,
     launcherContent,
@@ -21,7 +29,7 @@ import {
     sha256,
     stackDir,
 } from '../payload.ts';
-import { describeServices, runningServices, stopServices } from '../recovery.ts';
+import { describeServices, runningServices, Snapshot, stopServices } from '../recovery.ts';
 import { compareReleases, isRelease } from '../release.ts';
 import { resolveSite } from '../resolved.ts';
 import { heading, ok, printChecks } from '../report.ts';
@@ -210,43 +218,6 @@ function writePayloadChanges(io: Io, dir: string, stack: string, payload: Payloa
     }
 }
 
-// --- The snapshot ---------------------------------------------------------------
-
-/** Copies of what an update may change, to put back if it fails. */
-class Snapshot {
-    readonly dir: string;
-    readonly root: string;
-    readonly paths: string[];
-
-    constructor(dir: string, paths: string[]) {
-        this.dir = dir;
-        this.root = join(dir, UPDATE_DIR);
-        this.paths = paths;
-    }
-
-    take(): void {
-        mkdirSync(join(this.root, 'files'), { recursive: true, mode: 0o700 });
-        copyPresent(this.dir, this.paths, join(this.root, 'files'));
-    }
-
-    /** Every path as it was: copied back, or removed when it did not exist. */
-    restore(): void {
-        for (const path of this.paths) {
-            const target = join(this.dir, path);
-            const kept = join(this.root, 'files', path);
-            rmSync(target, { recursive: true, force: true });
-            if (existsSync(kept)) {
-                mkdirSync(dirname(target), { recursive: true, mode: 0o755 });
-                cpSync(kept, target, { recursive: true, preserveTimestamps: true });
-            }
-        }
-    }
-
-    remove(): void {
-        rmSync(this.root, { recursive: true, force: true });
-    }
-}
-
 // --- Deciding -------------------------------------------------------------------
 
 type Direction = 'newer' | 'current' | 'downgrade';
@@ -300,6 +271,11 @@ export const selfUpdateCommand = defineCommand({
         const requested = requestedRelease(flags.channel, flags.to, '--to');
         const { context, site } = installedSite(io);
         const dir = site.dir;
+        // An installation of the released main layout has no metadata: this is
+        // how it moves onto this one (legacy.ts).
+        if (readMetadata(dir).state === 'absent' && isReleasedMainLayout(site.settings)) {
+            return migrateReleasedMain(io, context, site, requested, flags.check);
+        }
         const metadata = requireMetadata(dir, 'update cannot tell which files are its own');
         if (metadata.source === 'checkout') {
             throw new CliError(

@@ -322,7 +322,7 @@ export function writeSiteData(dir: string): void {
  */
 export function scriptSite(
     h: Harness,
-    config: (args: string[]) => ProgramResult | undefined,
+    config: (args: string[], envFile?: string) => ProgramResult | undefined,
     images: Record<string, string> = {
         ghost: REFERENCE,
         db: `mysql:8.0.44@sha256:${'4'.repeat(64)}`,
@@ -362,11 +362,11 @@ export function scriptSite(
         }
         return undefined;
     };
-    h.daemon.composeRun = (args, _env, input) => {
+    h.daemon.composeRun = (args, _env, input, _dir, envFile) => {
         site.compose.push(args);
         switch (args[0]) {
             case 'config': {
-                const answer = config(args);
+                const answer = config(args, envFile);
                 if (answer === undefined || answer.exitCode !== 0) {
                     return answer;
                 }

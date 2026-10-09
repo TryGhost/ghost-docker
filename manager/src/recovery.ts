@@ -13,7 +13,7 @@ import { copyPresent, sameTree } from './fs.ts';
 import { checkRows, loadFile } from './import/database.ts';
 import type { Io } from './io.ts';
 import { ok } from './report.ts';
-import { DATA_DIRS, readSettings } from './site.ts';
+import { DATA_DIRS, readSettings, UPDATE_DIR } from './site.ts';
 
 // --- The services -----------------------------------------------------------------
 
@@ -58,6 +58,47 @@ export function describeServices(running: string[] | null): string {
         return 'Its services are stopped.';
     }
     return `These of its services are still running: ${running.join(', ')}.`;
+}
+
+// --- Putting files back ---------------------------------------------------------
+
+/**
+ * Copies of the files an operation may change, kept in UPDATE_DIR, to put
+ * back if it fails before it may no longer: self-update and the migration
+ * from the released main layout.
+ */
+export class Snapshot {
+    readonly dir: string;
+    readonly root: string;
+    readonly paths: string[];
+
+    constructor(dir: string, paths: string[]) {
+        this.dir = dir;
+        this.root = join(dir, UPDATE_DIR);
+        this.paths = paths;
+    }
+
+    take(): void {
+        mkdirSync(join(this.root, 'files'), { recursive: true, mode: 0o700 });
+        copyPresent(this.dir, this.paths, join(this.root, 'files'));
+    }
+
+    /** Every path as it was: copied back, or removed when it did not exist. */
+    restore(): void {
+        for (const path of this.paths) {
+            const target = join(this.dir, path);
+            const kept = join(this.root, 'files', path);
+            rmSync(target, { recursive: true, force: true });
+            if (existsSync(kept)) {
+                mkdirSync(dirname(target), { recursive: true, mode: 0o755 });
+                cpSync(kept, target, { recursive: true, preserveTimestamps: true });
+            }
+        }
+    }
+
+    remove(): void {
+        rmSync(this.root, { recursive: true, force: true });
+    }
 }
 
 // --- Setting a site aside -------------------------------------------------------

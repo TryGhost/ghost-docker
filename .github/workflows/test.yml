@@ -118,6 +118,19 @@ jobs:
       - name: Self-update end to end
         run: tests/e2e/self-update.sh
 
+  # An installation of the released main layout, migrated by the served
+  # launcher: refusals before any change, recovery after a failed start, and
+  # the migration keeping its project, data, routes and overrides.
+  migrate-main-linux:
+    name: Migration from the released main layout on Linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Migration end to end
+        run: tests/e2e/migrate-main.sh
+
   # Real backups and restores on Docker Engine: a local site with ActivityPub
   # backed up, restored over itself and into a new directory, the lock
   # refusing a second operation, and a dump that fails.
@@ -180,6 +193,7 @@ jobs:
       - launcher-linux
       - install-linux
       - self-update-linux
+      - migrate-main-linux
       - backup-linux
       - import-linux
       - launcher-macos

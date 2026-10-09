@@ -365,8 +365,12 @@ const variables = z.record(z.string(), z.unknown());
  * and every override in use, merged, so one an override removes the only use
  * of is not among them. `$$` is a literal and is not among them either.
  */
-export async function composeVariables(io: Io, dir: string): Promise<Set<string> | null> {
-    const result = await compose(io, { dir })`config --variables --format json`;
+export async function composeVariables(
+    io: Io,
+    dir: string,
+    inputs?: ComposeInputs,
+): Promise<Set<string> | null> {
+    const result = await compose(io, { dir, inputs })`config --variables --format json`;
     if (result.exitCode !== 0) {
         return null;
     }

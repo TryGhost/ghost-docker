@@ -295,8 +295,9 @@ minimum and exact source-version requirement.
 ## Existing installations
 
 Do not use `git pull` to move a released `main` installation to this layout.
-That migration is still [roadmap work](ghost-cli-replacement.md#s6b--migration-from-the-released-main-layout).
-Moving a Ghost-CLI site is a separate, supported local import described in
+The served launcher's `self-update` migrates it, splitting its `.env` into
+`.env` and `ghost.env` as this page describes; [install.md](install.md#moving-from-the-released-main-layout)
+lists what each setting becomes. Moving a Ghost-CLI site is a separate, supported local import described in
 [install.md](install.md#importing-a-ghost-cli-site).
 
 ## Installed image pins
