@@ -157,6 +157,18 @@ beforeEach(async () => {
         }
         return undefined;
     };
+    // The site's own user, asked over the site network.
+    h.daemon.sql = (sql, { database }) => {
+        if (sql.includes('information_schema')) {
+            return [[String(liveTables(database))]];
+        }
+        if (sql.includes('COUNT(*)')) {
+            return Object.entries(loaded[database] ?? ROWS[database] ?? {}).map(
+                ([table, count]) => [table, String(count)],
+            );
+        }
+        return undefined;
+    };
     h.daemon.composeRun = (args, _env, input) => {
         compose.push(args);
         switch (args[0]) {
@@ -181,19 +193,8 @@ beforeEach(async () => {
                 if (script.includes('mysqldump')) {
                     return dump(database);
                 }
-                if (input?.includes('information_schema')) {
-                    return ok(`${liveTables(database)}\n`);
-                }
-                if (input?.includes('COUNT(*)')) {
-                    const rows = loaded[database] ?? ROWS[database] ?? {};
-                    return ok(
-                        Object.entries(rows)
-                            .map(([table, count]) => `${table}\t${count}`)
-                            .join('\n'),
-                    );
-                }
                 // Loading a dump: its input is a stream.
-                return ok('');
+                return input === undefined ? ok('') : failed(1, `unexpected input: ${input}`);
             }
             default:
                 return ok('');
@@ -290,8 +291,13 @@ describe('backup', () => {
 
     test('a database that is not running is started for the dump, and stopped again', async () => {
         const answer = h.daemon.composeRun!;
-        h.daemon.composeRun = (args, env, input) =>
-            args[0] === 'ps' ? (compose.push(args), ok('')) : answer(args, env, input);
+        let started = false;
+        h.daemon.composeRun = (args, env, input) => {
+            started ||= args[0] === 'up';
+            return args[0] === 'ps' && !started
+                ? (compose.push(args), ok(''))
+                : answer(args, env, input);
+        };
         await backUp();
         assert.deepEqual(composed('up')[0]?.at(-1), 'db');
         assert.deepEqual(composed('stop'), [['stop', 'db']]);
@@ -376,6 +382,7 @@ describe('restore over the site', () => {
         writeFileSync(join(h.dir, 'data', 'ghost', 'images', '2026', 'later.jpg'), 'new');
         compose = [];
         containers = [];
+        h.network.queries.length = 0;
 
         const result = await h.run('restore', '--yes', root);
         assert.equal(result.code, 0, result.stderr);
@@ -390,14 +397,21 @@ describe('restore over the site', () => {
 
         assert.deepEqual(
             compose.map((args) => args[0]),
-            ['down', 'config', 'up', 'exec', 'exec', 'exec', 'exec', 'up', 'ps'],
+            ['down', 'config', 'up', 'exec', 'ps', 'exec', 'ps', 'up', 'ps'],
         );
         assert.equal(composed('up')[0]?.at(-1), 'db');
-        // Loaded and counted as the site's user, each into its own database.
+        // Loaded by the db container's client and counted over the site
+        // network, as the site's user, each in its own database.
         assert.deepEqual(
             composed('exec').map((args) => args.find((arg) => arg.startsWith('DB='))),
-            ['DB=ghost', 'DB=ghost', 'DB=activitypub', 'DB=activitypub'],
+            ['DB=ghost', 'DB=activitypub'],
         );
+        assert.deepEqual(
+            h.network.queries.map(({ database }) => database),
+            ['ghost', 'activitypub'],
+        );
+        const project = JSON.parse(readSite('.ghost-docker.json')).site.project;
+        assert.ok(h.network.queries.every(({ host }) => host === `db-${project}`));
         assert.deepEqual(
             containers.map((spec) => spec.entrypoint[0]),
             ['mv', 'rm'],

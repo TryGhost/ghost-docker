@@ -38,11 +38,11 @@ import * as env from './env.ts';
 import { CliError, UsageError } from './errors.ts';
 import { atomicWrite, readIfExists } from './fs.ts';
 import {
-    BATCH,
     DefinerFilter,
-    rowCountQuery,
+    loadDatabase,
+    rowCounts,
     rowMismatches,
-    siteMysql,
+    withSiteDatabase,
 } from './import/database.ts';
 import type { Io } from './io.ts';
 import { acquireLock } from './lock.ts';
@@ -515,7 +515,6 @@ async function restoreDatabases(
     }
     const profiles = readSettings(dir)?.get('COMPOSE_PROFILES') ?? '';
     for (const database of manifest.databases) {
-        const mysql = siteMysql(io, dir, profiles, database.name);
         const file = createReadStream(join(root, database.file));
         const input = file.pipe(new DefinerFilter());
         let unreadable: Error | null = null;
@@ -524,7 +523,7 @@ async function restoreDatabases(
             input.destroy(error);
         });
         const load = await io.busy(`Loading the ${database.name} database`, () =>
-            mysql.run(input, [], LOAD_MS),
+            loadDatabase(io, dir, { profiles, database: database.name }, input, LOAD_MS),
         );
         input.destroy();
         if (unreadable !== null) {
@@ -539,13 +538,17 @@ async function restoreDatabases(
         }
         const tables = Object.keys(database.tables);
         if (tables.length > 0) {
-            const counted = await mysql.run(rowCountQuery(tables), BATCH);
-            if (counted.exitCode !== 0) {
-                throw new CliError(
-                    `the ${database.name} database's tables could not be counted: ${composeError(counted)}`,
-                );
-            }
-            const mismatches = rowMismatches(database.tables, counted.stdout, 'the backup');
+            const counted = await withSiteDatabase(
+                io,
+                dir,
+                {
+                    profiles,
+                    database: database.name,
+                    failure: `the ${database.name} database's tables could not be counted`,
+                },
+                (sql) => rowCounts(sql, tables),
+            );
+            const mismatches = rowMismatches(database.tables, counted, 'the backup');
             if (mismatches.length > 0) {
                 throw new CliError(
                     `the loaded ${database.name} database does not match the backup:\n${mismatches.map((line) => `  ${line}`).join('\n')}`,

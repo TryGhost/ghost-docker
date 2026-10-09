@@ -23,6 +23,25 @@ RUN npm install -g corepack@0.36.0 \
     && pnpm install --frozen-lockfile --prod \
     && find node_modules/.pnpm \( -name '*.d.ts' -o -name '*.d.cts' -o -name '*.d.mts' -o -name '*.map' -o -name '*.md' \) -delete
 
+# The integration tests' image (manager/test/integration/run.sh), never
+# shipped: `docker build` without --target stops at the last stage. Node and
+# the production dependencies above, Compose from the same release, and this
+# repository's own layout under /opt/ghost-docker, so the tests find
+# compose.yml and the stack files where the unit tests do. The manager joins
+# its own container to a site's network, so the tests have to run in one.
+FROM deps AS integration
+COPY --from=docker /usr/local/libexec/docker/cli-plugins/docker-compose \
+    /usr/local/bin/docker-compose
+WORKDIR /opt/ghost-docker
+COPY compose.yml compose.ipv6.yml .env.example ghost.env.example ./
+COPY caddy ./caddy
+COPY mysql-init ./mysql-init
+WORKDIR /opt/ghost-docker/manager
+COPY manager/src ./src
+COPY manager/templates ./templates
+COPY manager/test/integration ./test/integration
+ENTRYPOINT ["node", "--test", "--test-timeout=900000", "test/integration/*.test.ts"]
+
 # Plain Alpine with Node's binary copied in: the image only runs node, and the
 # Node image's npm, npx and C headers would be dead weight. Keep this Alpine on
 # the release the Node image above is built on, for its libstdc++.

@@ -1,9 +1,18 @@
 // A fake Io: captured output, a scripted daemon and `docker-compose`, a
 // temporary site directory.
+import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { run } from '../src/cli.ts';
+import {
+    ServiceUnreachable,
+    type Certificate,
+    type Clients,
+    type HttpAnswer,
+    type SqlTarget,
+    type Target,
+} from '../src/clients.ts';
 import { frame } from '../src/docker/client.ts';
 import {
     DaemonTimeout,
@@ -12,7 +21,10 @@ import {
     type DockerResponse,
 } from '../src/docker/transport.ts';
 import type { Io } from '../src/io.ts';
+import type { ServiceState } from '../src/compose.ts';
+import { NetworkUnavailable, type SiteNetwork } from '../src/network.ts';
 import type { Exec } from '../src/process.ts';
+import { readSettings } from '../src/site.ts';
 
 /** How the daemon treats a sibling container asked to read the probe file. */
 export type Sibling = 'sees' | 'other-directory' | 'cannot-run' | 'hangs';
@@ -50,6 +62,35 @@ export interface Daemon {
     run?: (
         spec: CreatedContainer,
     ) => { status: number; stdout?: string; stderr?: string } | undefined;
+    /**
+     * The manager joining the site's network: `refuse` is why it cannot.
+     * Otherwise each service `ps` reports running is at `<service>-<project>`;
+     * which network that is, and how it is found, tests/integration proves.
+     */
+    network?: { refuse?: string };
+    /** What the database answers, as rows of columns; an Error is MySQL refusing it. */
+    sql?: (sql: string, target: SqlTarget) => unknown[][] | Error | undefined;
+    /** What an HTTP GET is answered with, or how it fails. */
+    http?: (
+        target: Target & { path: string; headers?: Record<string, string> },
+    ) => HttpAnswer | Error;
+    /** The certificate a TLS server presents, or how the handshake fails. */
+    certificate?: (target: Target & { servername: string }) => Certificate | Error;
+    /** A server's first line, or how connecting fails. */
+    greeting?: (target: Target) => string | Error;
+}
+
+/** What the manager did on the site network, so tests can see nothing leaks. */
+export interface NetworkLog {
+    /** Phases on the site network now. */
+    held: number;
+    /** Database connections opened, and closed. */
+    opened: number;
+    closed: number;
+    /** Each query, with the database and host it was asked of. */
+    queries: { sql: string; database: string; host: string }[];
+    /** Each probe, as `kind host:port`. */
+    probes: string[];
 }
 
 /** A container the manager asked the fake daemon to create. */
@@ -73,6 +114,8 @@ export interface Harness {
     requests: DockerRequest[];
     /** Every program run, with its arguments. */
     calls: string[][];
+    /** The manager's joins, probes and queries. */
+    network: NetworkLog;
     run: (...argv: string[]) => Promise<{ code: number; stdout: string; stderr: string }>;
     /** What each spinner said, in order; the fake terminal draws none. */
     spun: string[];
@@ -129,6 +172,7 @@ export function harness(): Harness {
         daemon: { info: HEALTHY, compose: '2.40.3' },
         requests: [],
         calls: [],
+        network: { held: 0, opened: 0, closed: 0, queries: [], probes: [] },
         spun: [],
         asked: [],
         answers: null,
@@ -142,7 +186,17 @@ export function harness(): Harness {
             GD_IMAGE: 'ghost-docker:checkout',
             GD_VERSION_FILE: join(dir, 'no-such-version-file'),
         },
-        cleanup: () => rmSync(dir, { recursive: true, force: true }),
+        // Whatever a test did, the manager left the site network and closed
+        // every connection it opened: a leak would stop `compose down`.
+        cleanup: () => {
+            rmSync(dir, { recursive: true, force: true });
+            assert.equal(state.network.held, 0, 'the manager is still on the site network');
+            assert.equal(
+                state.network.opened,
+                state.network.closed,
+                'a database connection was left open',
+            );
+        },
         io: (out = { stdout: '', stderr: '' }) => ({
             stdout: (text) => void (out.stdout += text),
             stderr: (text) => void (out.stderr += text),
@@ -176,6 +230,9 @@ export function harness(): Harness {
                               return answer;
                           },
                       },
+            containerId: () => 'manager',
+            siteNetwork: (services, wanted, work) => siteNetwork(state, services, wanted, work),
+            clients: fakeClients(state),
             freeBytes: () => state.daemon.freeBytes ?? 50 * 1024 ** 3,
             hostListens: async (port) =>
                 state.daemon.hostPorts === null
@@ -462,3 +519,112 @@ function parseTemplate(strings: TemplateStringsArray, values: unknown[]): string
     flush();
     return args;
 }
+
+// --- The site network ----------------------------------------------------------
+
+/**
+ * The manager on the site's network, as the commands see it: each service
+ * `ps` reports running is at its per-site alias. Joining for real is
+ * tests/integration's; this counts phases, so a leak fails the test.
+ */
+async function siteNetwork<T>(
+    state: Harness,
+    services: readonly ServiceState[],
+    wanted: readonly string[],
+    work: (network: SiteNetwork) => Promise<T>,
+): Promise<T> {
+    if (state.daemon.network?.refuse) {
+        throw new NetworkUnavailable(state.daemon.network.refuse);
+    }
+    if (!services.some((entry) => wanted.includes(entry.Service) && entry.State === 'running')) {
+        throw new NetworkUnavailable(`no ${wanted.join(' or ')} container is running`);
+    }
+    const project = readSettings(state.dir)?.get('COMPOSE_PROJECT_NAME') || 'ghost';
+    state.network.held += 1;
+    try {
+        return await work({
+            name: `${project}_ghost_network`,
+            address: (service) =>
+                wanted.includes(service) &&
+                services.some((entry) => entry.Service === service && entry.State === 'running')
+                    ? { host: `${service}-${project}`, name: `${service}-${project}` }
+                    : null,
+        });
+    } finally {
+        state.network.held -= 1;
+    }
+}
+
+/** The manager's clients, answered by the test. */
+function fakeClients(state: Harness): Clients {
+    const reach = (kind: string, target: Target) => {
+        state.network.probes.push(`${kind} ${target.host}:${target.port}`);
+        assert.ok(state.network.held > 0, `${kind} ${target.host} asked off the site network`);
+    };
+    const answer = <T>(value: T | Error): T => {
+        if (value instanceof ServiceUnreachable) {
+            throw value;
+        }
+        if (value instanceof Error) {
+            throw new ServiceUnreachable('connect', value.message);
+        }
+        return value;
+    };
+    return {
+        http: async (target) => {
+            reach('http', target);
+            return answer(
+                state.daemon.http?.(target) ??
+                    (target.port === 2368
+                        ? { status: 200, location: '' }
+                        : new Error('connect ECONNREFUSED')),
+            );
+        },
+        certificate: async (target) => {
+            reach('tls', target);
+            return answer(
+                state.daemon.certificate?.(target) ??
+                    new ServiceUnreachable('tls', 'tlsv1 alert internal error'),
+            );
+        },
+        greeting: async (target) => {
+            reach('greeting', target);
+            return answer(state.daemon.greeting?.(target) ?? '220 fake ESMTP');
+        },
+        mysql: async (target) => {
+            reach('mysql', target);
+            state.network.opened += 1;
+            let closed = false;
+            return {
+                query: async (sql) => {
+                    state.network.queries.push({
+                        sql,
+                        database: target.database,
+                        host: target.host,
+                    });
+                    const rows = state.daemon.sql?.(sql, target);
+                    if (rows instanceof Error) {
+                        throw new ServiceUnreachable('query', rows.message);
+                    }
+                    if (rows !== undefined) {
+                        return rows;
+                    }
+                    if (sql === 'SELECT 1') {
+                        return [[1]];
+                    }
+                    throw new ServiceUnreachable('query', `unexpected SQL: ${sql}`);
+                },
+                close: async () => {
+                    if (!closed) {
+                        closed = true;
+                        state.network.closed += 1;
+                    }
+                },
+            };
+        },
+    };
+}
+
+/** `docker compose ps` lines for running services: `ok(ps({ Service: 'db' }))`. */
+export const ps = (...services: Record<string, unknown>[]): string =>
+    services.map((service) => JSON.stringify({ State: 'running', ...service })).join('\n');

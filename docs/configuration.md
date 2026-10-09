@@ -184,6 +184,13 @@ Generated proxy routes and helper clients use these, never the bare service
 name. `COMPOSE_PROJECT_NAME` is the site's stable identity and is kept
 independent of the directory name.
 
+The manager uses them too. `check`, `install`, `update`, `backup`, `restore`
+and an import join the site's network while they ask its services
+something, and leave it afterwards. They find the network from the site's
+running containers, so one an override renames or makes external works the
+same way. A service whose alias an override removes is reached by its
+address on the network instead.
+
 ## Database connection
 
 `DATABASE_HOST`, `DATABASE_PORT`, `DATABASE_NAME` and `DATABASE_USER` are

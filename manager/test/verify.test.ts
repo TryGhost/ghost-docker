@@ -1,9 +1,10 @@
 // Verification: what each container's answer means.
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, test } from 'node:test';
+import { ServiceUnreachable } from '../src/clients.ts';
 import { readSettings, siteFacts } from '../src/site.ts';
 import { verifyIngress } from '../src/verify.ts';
-import { failed, harness, ok, type Harness } from './helpers.ts';
+import { harness, ok, type Harness } from './helpers.ts';
 import { LOCAL, makeSite, PRODUCTION } from './site.ts';
 
 let h: Harness;
@@ -17,6 +18,19 @@ beforeEach(() => {
         mailpit: 'healthy',
         smtp: '220 a1b2c3 Mailpit ESMTP Service ready',
     };
+    // Asked directly, from the manager on the site network.
+    h.daemon.http = ({ port }) => {
+        if (port === 2368) {
+            return { status: 200, location: '' };
+        }
+        const [status = '0', location = ''] = site.redirect.split(' ');
+        return { status: Number(status), location };
+    };
+    h.daemon.certificate = () =>
+        site.certificate
+            ? { issuer: "Let's Encrypt", covers: true }
+            : new ServiceUnreachable('tls', 'tlsv1 alert internal error');
+    h.daemon.greeting = () => (site.smtp.startsWith('220') ? site.smtp : new Error(site.smtp));
     h.daemon.composeRun = (args) => {
         if (args[0] === 'ps') {
             return ok(
@@ -42,16 +56,6 @@ beforeEach(() => {
                     .map((entry) => JSON.stringify(entry))
                     .join('\n'),
             );
-        }
-        if (args[0] === 'exec' && args[2] === 'ghost') {
-            return ok(`${args.at(-1)?.startsWith('mailpit-') ? site.smtp : site.redirect}\n`);
-        }
-        if (args[0] === 'exec' && args[2] === 'caddy') {
-            return site.certificate
-                ? ok(
-                      '/data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/example.com\n',
-                  )
-                : failed(1, 'ls: no such file');
         }
         return undefined;
     };
@@ -84,7 +88,10 @@ describe('a production site', () => {
         site.certificate = true;
         const checks = await verify(PRODUCTION);
         assert.equal(checks.https!.status, 'ok');
-        assert.match(checks.https!.detail, /from acme-v02\.api\.letsencrypt\.org-directory/);
+        assert.match(
+            checks.https!.detail,
+            /presents a certificate for example\.com from Let's Encrypt/,
+        );
     });
 
     test('a name Caddy does not serve, and an unhealthy Ghost, are errors', async () => {
@@ -127,4 +134,17 @@ describe('a local site with Mailpit', () => {
         assert.equal(checks.mailpit!.status, 'error');
         assert.match(checks.mailpit!.detail, /did not answer SMTP .*ECONNREFUSED/);
     });
+});
+
+test('a site network the manager cannot join makes each check an error, never a pass', async () => {
+    h.daemon.network = { refuse: 'the manager could not join the site network: permission denied' };
+    const checks = await verify({ ...PRODUCTION, COMPOSE_PROFILES: 'production' });
+    for (const label of ['ghost', 'caddy', 'https']) {
+        assert.equal(checks[label]!.status, 'error', label);
+        assert.match(
+            checks[label]!.detail,
+            /could not be asked on the site network: .*permission denied/,
+        );
+    }
+    assert.deepEqual(h.network.probes, []);
 });

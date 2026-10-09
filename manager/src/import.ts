@@ -10,6 +10,7 @@ import { existsSync, readdirSync, renameSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import type { BundleManifest } from './bundle/manifest.ts';
 import { BundleRefused, removeStaging, stageBundle, type StagedBundle } from './bundle/stage.ts';
+import { ServiceUnreachable } from './clients.ts';
 import { compose, composeError } from './compose.ts';
 import type { Context } from './context.ts';
 import * as env from './env.ts';
@@ -18,11 +19,13 @@ import { atomicWrite, readIfExists } from './fs.ts';
 import { resolveExactGhost, type ResolvedGhost } from './ghost.ts';
 import { replaceMailTransport, sourceConfig, type CarriedConfig } from './import/config.ts';
 import {
-    BATCH,
+    countOf,
     databaseInput,
-    rowCountQuery,
+    loadDatabase,
+    rowCounts,
     rowMismatches,
-    siteMysql,
+    tableCount,
+    withSiteDatabase,
 } from './import/database.ts';
 import type { Io } from './io.ts';
 import { printChecks } from './report.ts';
@@ -381,7 +384,6 @@ export async function importSite(
     }
     say(io, 'database', 'ready');
 
-    const mysql = siteMysql(io, dir, profiles);
     if (manifest.kind === 'mysql-data') {
         // Rows only: Ghost creates the schema they are loaded into.
         await io.busy(`Starting Ghost ${version} once to create its schema`, async () => {
@@ -407,16 +409,15 @@ export async function importSite(
         });
         say(io, 'schema', `created by Ghost ${version}`);
     } else {
-        const tables = await mysql.run(
-            'SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE();\n',
-            BATCH,
+        const tables = await withSiteDatabase(
+            io,
+            dir,
+            { profiles, failure: 'the database could not be queried' },
+            (sql) => tableCount(sql),
         );
-        if (tables.exitCode !== 0) {
-            throw new CliError(`the database could not be queried: ${composeError(tables)}`);
-        }
-        if (tables.stdout.trim() !== '0') {
+        if (tables !== 0) {
             throw new CliError(
-                `the database already holds ${tables.stdout.trim()} tables; refusing to load a dump over them`,
+                `the database already holds ${tables} tables; refusing to load a dump over them`,
             );
         }
     }
@@ -427,7 +428,9 @@ export async function importSite(
     input.on('error', (error) => {
         unreadable ??= error;
     });
-    const load = await io.busy('Loading the database', () => mysql.run(input, [], LOAD_MS));
+    const load = await io.busy('Loading the database', () =>
+        loadDatabase(io, dir, { profiles }, input, LOAD_MS),
+    );
     input.destroy();
     if (unreadable !== null) {
         throw new CliError(
@@ -447,22 +450,37 @@ export async function importSite(
     say(io, 'database', `loaded ${manifest.database.path}`);
 
     if (manifest.kind === 'mysql-data') {
-        const tables = Object.keys(manifest.database.rows);
-        const counted = await mysql.run(rowCountQuery(tables), BATCH);
-        if (counted.exitCode !== 0) {
-            throw new CliError(`the loaded tables could not be counted: ${composeError(counted)}`);
-        }
-        const mismatches = rowMismatches(manifest.database.rows, counted.stdout);
+        const { rows } = manifest.database;
+        const counted = await withSiteDatabase(
+            io,
+            dir,
+            { profiles, failure: 'the loaded tables could not be counted' },
+            (sql) => rowCounts(sql, Object.keys(rows)),
+        );
+        const mismatches = rowMismatches(rows, counted);
         if (mismatches.length > 0) {
             throw new CliError(
                 `the loaded database does not match the bundle's recorded row counts:\n${mismatches.map((line) => `  ${line}`).join('\n')}`,
             );
         }
-        say(io, 'rows', `every count matches the bundle (${tables.length} tables)`);
+        say(io, 'rows', `every count matches the bundle (${Object.keys(rows).length} tables)`);
     } else {
         // A dump has no counts to compare; it has to be a Ghost database at all.
-        const history = await mysql.run('SELECT COUNT(*) FROM `migrations`;\n', BATCH);
-        if (history.exitCode !== 0 || !/^[1-9]\d*$/.test(history.stdout.trim())) {
+        const history = await withSiteDatabase(
+            io,
+            dir,
+            { profiles, failure: 'the loaded database could not be queried' },
+            // A query MySQL refuses, such as one of a table that does not
+            // exist, is an answer: there is no history.
+            (sql) =>
+                sql.query('SELECT COUNT(*) FROM `migrations`').then(countOf, (error) => {
+                    if (error instanceof ServiceUnreachable && error.stage === 'query') {
+                        return Number.NaN;
+                    }
+                    throw error;
+                }),
+        );
+        if (!(history > 0)) {
             throw new CliError(
                 'the loaded database has no Ghost migration history; it does not look like a Ghost database',
             );

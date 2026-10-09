@@ -2,11 +2,12 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { defineCommand } from '../command.ts';
-import { compose, composeError, composePs } from '../compose.ts';
+import { composePs, type ServiceState } from '../compose.ts';
 import { validate } from '../config.ts';
 import { loadContext } from '../context.ts';
 import { listContainers } from '../docker/client.ts';
-import { EXIT } from '../errors.ts';
+import { CliError, EXIT } from '../errors.ts';
+import { withSiteDatabase } from '../import/database.ts';
 import type { Io } from '../io.ts';
 import { describeLock, readLock } from '../lock.ts';
 import { describeMetadata, readMetadata } from '../meta.ts';
@@ -131,9 +132,7 @@ export async function check(io: Io): Promise<number> {
         });
     }
     serviceChecks.push(
-        await io.busy('Connecting to the database', () =>
-            database(io, site.dir, site.settings.get),
-        ),
+        await io.busy('Connecting to the database', () => database(io, site.dir, services)),
     );
     section('Services', serviceChecks);
 
@@ -157,45 +156,31 @@ export async function check(io: Io): Promise<number> {
 
 /**
  * A real client connection to the application database, as the application
- * user. The password reaches the client through MYSQL_PWD in its
- * environment, not its arguments.
+ * user, from the manager over the site's network.
  */
 async function database(
     io: Io,
     dir: string,
-    get: (key: string) => string | undefined,
+    services: readonly ServiceState[] | null,
 ): Promise<Check> {
-    const result = await compose(
-        io,
-        dir,
-        [
-            'exec',
-            '-T',
-            '-e',
-            'MYSQL_PWD',
-            'db',
-            'mysql',
-            '-h',
-            '127.0.0.1',
-            '-u',
-            get('DATABASE_USER') || 'ghost',
-            '-e',
-            'SELECT 1',
-            get('DATABASE_NAME') || 'ghost',
-        ],
-        { timeoutMs: 60_000, env: { MYSQL_PWD: get('DATABASE_PASSWORD') ?? '' } },
-    );
-    return result.exitCode === 0
-        ? {
-              status: 'ok',
-              label: 'database',
-              detail: 'accepts a client connection to the application database',
-          }
-        : {
-              status: 'error',
-              label: 'database',
-              detail: `could not be reached with the configured credentials: ${composeError(result, 1) || 'no answer'}`,
-          };
+    try {
+        await withSiteDatabase(
+            io,
+            dir,
+            { services, failure: 'could not be reached with the configured credentials' },
+            (sql) => sql.query('SELECT 1'),
+        );
+    } catch (error) {
+        if (error instanceof CliError) {
+            return { status: 'error', label: 'database', detail: error.message };
+        }
+        throw error;
+    }
+    return {
+        status: 'ok',
+        label: 'database',
+        detail: 'accepts a client connection to the application database',
+    };
 }
 
 export const checkCommand = defineCommand({
