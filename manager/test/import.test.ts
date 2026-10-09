@@ -420,6 +420,43 @@ describe('importing a local site', () => {
         assert.equal(profilesAtUp, undefined);
     });
 
+    test('a portable bundle: content placed, no database loaded, the Ghost Admin steps named', async () => {
+        const result = await install('--import', bundle(local('portable')), '--no-start');
+        assert.equal(result.code, 0, result.stderr);
+        assert.equal(
+            readFileSync(join(h.dir, 'data/ghost/images/2026/photo.jpg'), 'utf8'),
+            'pixels',
+        );
+        assert.match(
+            result.stdout,
+            /none to load: Ghost Admin imports data\/ghost\/data\/content\.json and data\/ghost\/data\/members\.csv/,
+        );
+        // Ghost creates its own database; nothing is started or asked for one.
+        assert.deepEqual(
+            ran().filter((call) => !call.startsWith('config ')),
+            ['down --remove-orphans'],
+        );
+        assert.deepEqual(h.network.queries, []);
+        assert.equal(setting('COMPOSE_PROFILES'), 'local');
+        assert.match(result.stdout, /Imported +portable bundle of https:\/\/example\.com/);
+        assert.match(
+            result.stdout,
+            /create the owner account, then import:\n +data\/ghost\/data\/content\.json in Settings, Import\/Export\n +data\/ghost\/data\/members\.csv in Members, Import\n/,
+        );
+    });
+
+    test("a portable bundle's files outside content/ go to data/ghost/data; no members, no step", async () => {
+        const manifest = local('portable');
+        manifest.database = { path: 'export.json', members: 'members.csv' };
+        const root = bundle(manifest);
+        writeFileSync(join(root, 'members.csv'), '');
+        const result = await install('--import', root, '--no-start');
+        assert.equal(result.code, 0, result.stderr);
+        assert.ok(existsSync(join(h.dir, 'data/ghost/data/export.json')));
+        assert.match(result.stdout, /data\/ghost\/data\/export\.json in Settings, Import\/Export/);
+        assert.doesNotMatch(result.stdout, /Members, Import/);
+    });
+
     test('an older release is found in the previous image layout', async () => {
         images = { [`${VERSION}-alpine`]: VERSION };
         const result = await install('--import', bundle(local('mysql-data')), '--no-start');
@@ -455,14 +492,6 @@ describe('refusals that change nothing', () => {
             ['--import', path, '--version', '6.3.0'],
             2,
             /--version is 6\.3\.0 but the bundle was exported from Ghost 6\.2\.0/,
-        );
-    });
-
-    test('a portable bundle says how to move the site through Ghost Admin', async () => {
-        await refusedWith(
-            ['--import', bundle(local('portable'))],
-            1,
-            /portable bundle.*Ghost Admin[\s\S]*content\/data\/content\.json[\s\S]*without --sqlite-format portable/,
         );
     });
 

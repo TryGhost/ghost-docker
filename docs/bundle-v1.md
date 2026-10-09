@@ -29,9 +29,9 @@ Status of the work:
 - Moving a local site: **S5c**, documented rather than automated ("Moving a
   site to Docker" in `docs/install.md`): `ghost stop`, `ghost migrate-export`,
   then `install --import` on the source's port.
-- **S5e** (production import and cutover): not yet implemented. `portable` bundles are not imported by the manager;
-  their content JSON and members CSV are imported through Ghost Admin (plan
-  §2.4).
+- **S5e** (production import and cutover): not yet implemented. A `portable`
+  bundle's site and content are imported by the manager; its content JSON and
+  members CSV are imported through Ghost Admin (plan §2.4).
 - Updating existing ghost-docker installations from the pre-S1 layout: **S6b**.
 
 The importer's target is `ghost.env`. Replacing it with a mounted Ghost JSON
@@ -300,8 +300,9 @@ separate configuration.
 See the exporter's [fidelity and recovery documentation](https://github.com/TryGhost/Ghost-CLI/blob/v1.33.0/docs/migration-bundle.md).
 S3 verifies schema, source lifecycle, private output, system-tar extraction,
 real Compose value transport, and a `mysql-data` load into a MySQL schema
-created by the Ghost image. The manager does not import `portable` bundles,
-so their fidelity is that of Ghost Admin's own import. S3 does not implement
+created by the Ghost image. The manager places a `portable` bundle's content
+and leaves its content JSON and members CSV to Ghost Admin, so their fidelity
+is that of Ghost Admin's own import. S3 does not implement
 the Docker importer.
 
 ## Remaining S5 work
