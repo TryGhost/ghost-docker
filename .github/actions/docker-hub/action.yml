@@ -1,0 +1,45 @@
+name: Docker Hub
+description: >-
+  Keeps a job's Docker Hub pulls under the anonymous rate limit: the daemon
+  pulls through mirror.gcr.io, and the client logs in with a read-only token
+  when the repository's secrets reach the job.
+
+# The mirror is for every pull, not only those without the token: the manager
+# runs Compose in its own container with the daemon's socket and none of the
+# host's credentials, so its pulls of Ghost, MySQL and Caddy are anonymous
+# whatever the host logged in with. The daemon falls back to Docker Hub for an
+# image the mirror does not have. The login covers the host's own builds and
+# pulls, and whatever falls back. Pull requests from forks, and Dependabot's,
+# get no secrets, so they run with the mirror alone.
+inputs:
+  username:
+    description: The Docker Hub user the token belongs to
+    required: false
+  token:
+    description: A read-only Docker Hub access token
+    required: false
+
+runs:
+  using: composite
+  steps:
+    - name: Pull Docker Hub images through mirror.gcr.io
+      shell: bash
+      run: |
+        set -euo pipefail
+        config=/etc/docker/daemon.json
+        current=$(sudo cat "$config" 2>/dev/null || printf '{}')
+        jq '.["registry-mirrors"] = ["https://mirror.gcr.io"]' <<<"$current" | sudo tee "$config" >/dev/null
+        sudo systemctl restart docker
+        echo "Registry mirrors: $(docker info --format '{{json .RegistryConfig.Mirrors}}')"
+
+    - name: Log in to Docker Hub
+      if: inputs.username != '' && inputs.token != ''
+      uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+      with:
+        username: ${{ inputs.username }}
+        password: ${{ inputs.token }}
+
+    - name: No Docker Hub token
+      if: inputs.username == '' || inputs.token == ''
+      shell: bash
+      run: echo "::notice::No Docker Hub token reached this job, so what the mirror does not have is pulled anonymously"
