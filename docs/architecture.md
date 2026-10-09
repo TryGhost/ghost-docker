@@ -260,7 +260,10 @@ managers.
 `src/legacy.ts` is migration `0001-compose-profiles`: the one way an installation
 of the released `main` layout (a clone with no metadata) reaches this layout,
 entered through the served launcher's `self-update`. `src/legacy/caddy.ts`
-translates the operator's Caddyfile and `src/legacy/config.ts` splits its `.env`.
+carries the operator's Caddyfile as written, with main's environment variables
+filled in and main's snippets kept beside it rather than translated into this
+layout's shape; Caddy decides whether it loads. `src/legacy/config.ts` splits
+its `.env`.
 It decides everything before changing anything: Compose resolves the staged
 configuration with the operator's overrides and Caddy loads the staged routes.
 It then follows self-update's recovery boundary, reusing its snapshot, writer

@@ -255,7 +255,10 @@ setting() { "$S/ghost-docker" --dir "$S" config get "$1" 2>/dev/null; }
     fail "the SMTP password did not move to ghost.env"
 grep -q '^DOMAIN=' "$S/.env" && fail ".env still has DOMAIN"
 grep -q 'local_certs' "$S/caddy/global/legacy.caddy" || fail "the global options were not carried"
-grep -q "activitypub-$project:8080" "$S/caddy/sites/site.caddy" || fail "ActivityPub is not this site's" "$(cat "$S/caddy/sites/site.caddy")"
+grep -q 'import /etc/caddy/sites/legacy-snippets/ActivityPub' "$S/caddy/sites/site.caddy" ||
+    fail "the routes do not import main's snippets" "$(cat "$S/caddy/sites/site.caddy")"
+grep -q 'reverse_proxy activitypub:8080' "$S/caddy/sites/legacy-snippets/ActivityPub" ||
+    fail "ActivityPub is not where main sent it" "$(cat "$S/caddy/sites/legacy-snippets/ActivityPub")"
 cmp -s "$S/caddy/Caddyfile" "$ROOT/caddy/Caddyfile" || fail "caddy/Caddyfile is not the release's"
 [[ -f $S/caddy/Caddyfile.local ]] || fail "the old Caddyfile was not kept"
 running=$(docker inspect -f '{{.Config.Image}}' "$(ghost_id)")

@@ -1,90 +1,51 @@
 // The operator's own Caddyfile from the released `main` layout, carried into
-// this layout's routes (docs/install.md#moving-from-the-released-main-layout).
+// this layout's routes as it is (docs/install.md#moving-from-the-released-main-layout).
 //
-// On `main`, caddy/Caddyfile was copied from Caddyfile.example and then edited
-// by hand. It read DOMAIN, ADMIN_DOMAIN and ACTIVITYPUB_TARGET from Caddy's
-// environment, imported snippets by relative path with no arguments, and
-// proxied to bare service names. This layout gives Caddy no environment, its
-// snippets take arguments, and upstreams are the site's unique aliases. The
-// translation changes exactly those things and keeps everything else the
-// operator wrote, so their routes keep working; Caddy itself then validates
-// the result before anything live is changed.
+// On `main`, caddy/Caddyfile was copied from Caddyfile.example and edited by
+// hand. It read DOMAIN, ADMIN_DOMAIN and ACTIVITYPUB_TARGET from Caddy's
+// environment and imported main's snippets, which take no arguments, by
+// relative path. Here Caddy has no environment and the snippets take
+// arguments. Rather than rewrite the operator's routes into this layout's
+// shape, the file is kept as written: the three variables are filled in, and
+// its snippet imports point at main's snippets, kept beside it. Bare service
+// upstreams (`ghost:2368`) still resolve on the site's own network. Caddy
+// itself then decides whether the result loads, before anything is changed.
 import { join } from 'node:path';
 
 /** The original, kept beside the routes it became; .gitignore leaves it out. */
 export const LEGACY_CADDYFILE = join('caddy', 'Caddyfile');
 export const KEPT_CADDYFILE = join('caddy', 'Caddyfile.local');
+/** main's snippets, which the carried routes import. Not `*.caddy`, so never loaded as sites. */
+export const LEGACY_SNIPPETS = join('caddy', 'sites', 'legacy-snippets');
 /** A global options block, which this layout's Caddyfile imports from caddy/global/. */
 export const GLOBAL_FILE = join('caddy', 'global', 'legacy.caddy');
 
-/** Services whose bare `name:port` is rewritten to the site's unique alias. */
-const ALIASED = ['ghost', 'db', 'traffic-analytics', 'activitypub'] as const;
-
-/** What the old Caddy container's environment held, as Compose set it on `main`. */
+/** What the old Caddy container's environment held, as main's compose.yml set it. */
 export interface LegacyCaddyValues {
-    readonly project: string;
     readonly domain: string;
     readonly adminDomain: string;
-    /** ACTIVITYPUB_TARGET, already pointing at the site's alias when it was `activitypub:8080`. */
     readonly activitypub: string;
 }
 
-export interface TranslatedCaddyfile {
+export interface CarriedCaddyfile {
     /** caddy/sites/site.caddy. */
     readonly site: string;
-    /** The global options block's body, for GLOBAL_FILE; null when there was none. */
+    /** A leading global options block's body, for GLOBAL_FILE; null when there was none. */
     readonly global: string | null;
-    /** What was changed, for the operator. */
-    readonly changes: readonly string[];
-}
-
-/** A Caddyfile this cannot carry over automatically; nothing has been changed. */
-export class UntranslatableCaddyfile extends Error {}
-
-/** Snippets the stack ships, and the arguments each now takes, in order. */
-function snippetArguments(name: string, values: LegacyCaddyValues): string | null {
-    switch (name) {
-        case 'Logging':
-            return '';
-        case 'TrafficAnalytics':
-            return ` traffic-analytics-${values.project}:3000`;
-        case 'ActivityPub':
-            return ` ${values.activitypub}`;
-        case 'SecurityHeaders':
-            return ` "${values.adminDomain}"`;
-        default:
-            return null;
-    }
-}
-
-/** Splits a line into its code and its comment: `#` starts one only at a token's start. */
-function splitComment(line: string): { code: string; comment: string } {
-    let quoted = false;
-    for (let i = 0; i < line.length; i += 1) {
-        const char = line[i]!;
-        if (char === '\\') {
-            i += 1;
-        } else if (char === '"') {
-            quoted = !quoted;
-        } else if (char === '#' && !quoted && (i === 0 || /\s/.test(line[i - 1]!))) {
-            return { code: line.slice(0, i), comment: line.slice(i) };
-        }
-    }
-    return { code: line, comment: '' };
 }
 
 /**
- * `{$NAME}` and `{$NAME:default}` are substituted when the file is loaded,
- * `{env.NAME}` when a request is served. Both read Caddy's environment, which
- * no longer holds these three.
+ * `{$NAME}` and `{$NAME:default}`, filled in when the file is loaded, and
+ * `{env.NAME}`, when a request is served: both read Caddy's environment,
+ * which no longer holds these three. Anything else is left as written.
  */
-function substituteEnvironment(code: string, values: LegacyCaddyValues): string {
+export function fillEnvironment(text: string, values: LegacyCaddyValues): string {
     const known: Record<string, string> = {
         DOMAIN: values.domain,
         ADMIN_DOMAIN: values.adminDomain,
         ACTIVITYPUB_TARGET: values.activitypub,
     };
-    return code
+    return text
         .replace(/\{\$([A-Za-z_][A-Za-z0-9_]*)(?::([^}]*))?\}/g, (whole, name: string, fallback) =>
             name in known ? known[name] || (fallback ?? '') : whole,
         )
@@ -93,177 +54,38 @@ function substituteEnvironment(code: string, values: LegacyCaddyValues): string 
         );
 }
 
-const ALIAS = new RegExp(
-    `(^|[\\s/])(${ALIASED.map((name) => name.replace('-', '\\-')).join('|')}):(\\d+)(?=$|[\\s/])`,
-    'g',
-);
-
 /**
- * An import of a shipped snippet gains its absolute path and arguments; any
- * other relative import is made absolute, since it now sits in caddy/sites/
- * rather than beside the Caddyfile it was relative to. Named snippets the
- * file defines are left alone.
+ * The operator's Caddyfile as caddy/sites/site.caddy. A global options block
+ * must come first in Caddy's whole configuration, which the stack's
+ * Caddyfile opens with its own, so one written first, `{` and `}` alone on
+ * their lines, moves to caddy/global/. Whatever else does not load, Caddy says.
  */
-function rewriteImport(
-    code: string,
-    values: LegacyCaddyValues,
-    named: ReadonlySet<string>,
-    changes: Set<string>,
-): string {
-    const match = /^(\s*)import(\s+)(\S+)(.*)$/.exec(code);
-    if (match === null) {
-        return code;
-    }
-    const [, indent, space, path, rest] = match as unknown as [
-        string,
-        string,
-        string,
-        string,
-        string,
-    ];
-    if (named.has(path)) {
-        return code;
-    }
-    const snippet = /^(?:\.\/|\/etc\/caddy\/)?snippets\/([A-Za-z]+)$/.exec(path);
-    if (snippet !== null) {
-        const name = snippet[1]!;
-        const args = snippetArguments(name, values);
-        if (args !== null) {
-            if (rest.trim() !== '') {
-                throw new UntranslatableCaddyfile(
-                    `caddy/Caddyfile imports snippets/${name} with arguments (${rest.trim()}); on main it took none,\n` +
-                        '  so it cannot be told what they were meant to be.',
-                );
-            }
-            changes.add('snippet imports given their absolute paths and arguments');
-            return `${indent}import${space}/etc/caddy/snippets/${name}${args}`;
-        }
-    }
-    if (path.startsWith('/')) {
-        return code;
-    }
-    changes.add('relative imports made absolute');
-    return `${indent}import${space}/etc/caddy/${path.replace(/^\.\//, '')}${rest}`;
-}
-
-/** Does this line's code open a block, close one, or neither? */
-function braces(code: string): { opens: boolean; closes: boolean } {
-    const tokens = code.trim().split(/\s+/);
-    return {
-        opens: tokens.at(-1) === '{',
-        closes: tokens[0] === '}',
-    };
-}
-
-/**
- * The operator's Caddyfile, as routes for this layout. Throws
- * UntranslatableCaddyfile for what it cannot carry over; Caddy validates the
- * rest before anything is written.
- */
-export function translateCaddyfile(text: string, values: LegacyCaddyValues): TranslatedCaddyfile {
-    if (/<<[A-Za-z]/.test(text)) {
-        throw new UntranslatableCaddyfile(
-            'caddy/Caddyfile uses a heredoc, which this migration does not translate',
-        );
-    }
-    const lines = text.replace(/\r\n/g, '\n').split('\n');
-    const named = new Set(
-        lines
-            .map((line) => /^\s*\(([^)\s]+)\)\s*\{\s*$/.exec(splitComment(line).code)?.[1])
-            .filter((name): name is string => name !== undefined),
+export function carryCaddyfile(text: string, values: LegacyCaddyValues): CarriedCaddyfile {
+    let routes = fillEnvironment(text.replace(/\r\n/g, '\n'), values).replace(
+        /^([ \t]*import[ \t]+)(?:\.\/)?snippets\//gm,
+        `$1/etc/caddy/sites/legacy-snippets/`,
     );
-    const changes = new Set<string>();
-
-    const site: string[] = [];
-    const global: string[] = [];
-    let depth = 0;
-    /** In the global options block, which is the first block and has no address. */
-    let inGlobal = false;
-    let seenBlock = false;
-    for (const line of lines) {
-        const { code: original, comment } = splitComment(line);
-        let code = substituteEnvironment(original, values);
-        if (code !== original) {
-            changes.add(
-                '{$DOMAIN}, {$ADMIN_DOMAIN} and {$ACTIVITYPUB_TARGET} replaced by their values',
-            );
-        }
-        const aliased = code.replace(
-            ALIAS,
-            (_, before: string, service: string, port: string) =>
-                `${before}${service}-${values.project}:${port}`,
-        );
-        if (aliased !== code) {
-            changes.add('bare service upstreams pointed at the site’s unique aliases');
-            code = aliased;
-        }
-        code = rewriteImport(code, values, named, changes);
-        const { opens, closes } = braces(code);
-
-        if (depth === 0 && opens) {
-            // Only a block written with no address is global options: one
-            // whose address is a variable that turned out empty is a mistake.
-            if (original.trim() === '{' && !seenBlock) {
-                inGlobal = true;
-                seenBlock = true;
-                depth += 1;
-                changes.add(`the global options block moved to ${GLOBAL_FILE}`);
-                continue;
-            }
-            const addresses = code
-                .trim()
-                .slice(0, -1)
-                .trim()
-                .split(/\s*,\s*|\s+/);
-            if (addresses.some((address) => address === '')) {
-                throw new UntranslatableCaddyfile(
-                    `caddy/Caddyfile has a site block with an empty address once DOMAIN and ADMIN_DOMAIN are\n` +
-                        `  filled in (${original.trim()}). Set ADMIN_DOMAIN in .env, or remove that block.`,
-                );
-            }
-        }
-        if (closes) {
-            depth -= 1;
-            if (depth < 0) {
-                throw new UntranslatableCaddyfile(
-                    'caddy/Caddyfile closes more blocks than it opens',
-                );
-            }
-            if (depth === 0 && inGlobal) {
-                inGlobal = false;
-                continue;
-            }
-        }
-        if (opens) {
-            depth += 1;
-            seenBlock = true;
-        }
-        if (inGlobal) {
-            // One level shallower: the stack's Caddyfile supplies the braces.
-            global.push(`${code}${comment}`.replace(/^\t/, ''));
-        } else {
-            site.push(`${code}${comment}`);
+    let global: string | null = null;
+    const lines = routes.split('\n');
+    const first = lines.findIndex((line) => line.trim() !== '' && !line.trim().startsWith('#'));
+    if (first >= 0 && lines[first]!.trim() === '{') {
+        const close = lines.findIndex((line, index) => index > first && line === '}');
+        if (close > first) {
+            global = `# Global options carried over from caddy/Caddyfile.\n${lines
+                .slice(first + 1, close)
+                .map((line) => line.replace(/^\t/, ''))
+                .join('\n')
+                .trim()}\n`;
+            routes = [...lines.slice(0, first), ...lines.slice(close + 1)].join('\n');
         }
     }
-    if (depth !== 0) {
-        throw new UntranslatableCaddyfile('caddy/Caddyfile opens more blocks than it closes');
-    }
-
     const header = [
-        `# Routes for ${values.project}, carried over from caddy/Caddyfile, which is kept as`,
-        '# caddy/Caddyfile.local. This file is yours: edit it, then reload Caddy:',
+        '# Routes carried over from caddy/Caddyfile, which is kept as caddy/Caddyfile.local.',
+        '# They import the released main layout’s snippets, kept in legacy-snippets/ beside',
+        '# this file. This file is yours: edit it, then reload Caddy:',
         '#',
         '#   docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile',
-        '#',
-        '# docs/caddy.md lists the snippets and the arguments each one takes.',
         '',
     ];
-    return {
-        site: `${[...header, ...site].join('\n').trimEnd()}\n`,
-        global:
-            global.length === 0
-                ? null
-                : `# Global options carried over from caddy/Caddyfile.\n${global.join('\n').trimEnd()}\n`,
-        changes: [...changes],
-    };
+    return { site: `${[...header, routes.trim()].join('\n')}\n`, global };
 }

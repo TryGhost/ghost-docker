@@ -32,6 +32,7 @@ import {
     cpSync,
     existsSync,
     mkdirSync,
+    readdirSync,
     readFileSync,
     rmSync,
     statSync,
@@ -61,8 +62,9 @@ import {
     GLOBAL_FILE,
     KEPT_CADDYFILE,
     LEGACY_CADDYFILE,
-    translateCaddyfile,
-    UntranslatableCaddyfile,
+    carryCaddyfile,
+    fillEnvironment,
+    LEGACY_SNIPPETS,
 } from './legacy/caddy.ts';
 import {
     readLegacyEnv,
@@ -150,7 +152,8 @@ interface Plan {
     readonly split: SplitEnv;
     readonly routes: string;
     readonly global: string | null;
-    readonly caddyChanges: readonly string[];
+    /** main's snippets, by name, for LEGACY_SNIPPETS. */
+    readonly snippets: Readonly<Record<string, string>>;
     readonly hadCaddyfile: boolean;
     /** Overrides other than compose.override.yml, relative to the site. */
     readonly overrides: string[];
@@ -418,55 +421,42 @@ async function prepare(
     }
     ok(io, 'configuration', `.env and ghost.env for a production site, resolved by Compose`);
 
-    // The routes, loaded by the Caddy image the site will run.
-    // Where main sent ActivityPub, which with the profile on was still the
-    // hosted service unless ACTIVITYPUB_TARGET said otherwise: moving it would
-    // move the site's followers.
-    const activitypub = (old.ACTIVITYPUB_TARGET || HOSTED_ACTIVITYPUB).replace(
-        /^(?:https?:\/\/)?activitypub:8080$/,
-        `activitypub-${project}:8080`,
-    );
+    // The routes, loaded by the Caddy image the site will run. ActivityPub
+    // goes where main sent it, which with the profile on was still the hosted
+    // service unless ACTIVITYPUB_TARGET said otherwise: moving it would move
+    // the site's followers.
+    const values = {
+        domain,
+        adminDomain,
+        activitypub: old.ACTIVITYPUB_TARGET || HOSTED_ACTIVITYPUB,
+    };
     const original = readIfExists(join(dir, LEGACY_CADDYFILE));
     let routes: string;
     let global: string | null = null;
-    let caddyChanges: readonly string[] = [];
+    // main's snippets, read before the release replaces them; git has shown them unedited.
+    const snippets: Record<string, string> = {};
     if (original === undefined) {
         routes = renderRoutes({
             project,
             domain,
             adminDomain,
             email: '',
-            activitypub: activitypub === `activitypub-${project}:8080`,
+            activitypub: /^(?:https?:\/\/)?activitypub:8080$/.test(values.activitypub),
         });
     } else {
-        try {
-            ({
-                site: routes,
-                global,
-                changes: caddyChanges,
-            } = translateCaddyfile(original, {
-                project,
-                domain,
-                adminDomain,
-                activitypub,
-            }));
-        } catch (error) {
-            if (error instanceof UntranslatableCaddyfile) {
-                refuse(
-                    `${error.message}\n  Change caddy/Caddyfile so it can be carried over, or move what it does into\n` +
-                        '  compose.override.yml or caddy/custom/ afterwards (docs/caddy.md).',
-                );
-            }
-            throw error;
+        ({ site: routes, global } = carryCaddyfile(original, values));
+        const kept = join(dir, 'caddy', 'snippets');
+        for (const name of existsSync(kept) ? readdirSync(kept) : []) {
+            snippets[name] = fillEnvironment(readFileSync(join(kept, name), 'utf8'), values);
         }
     }
-    await validateRoutes(io, staged, stack, after, routes, global);
+    await validateRoutes(io, staged, stack, after, routes, global, snippets);
     ok(
         io,
         SITE_FILE,
         original === undefined
             ? 'written: there was no caddy/Caddyfile'
-            : `carried over from caddy/Caddyfile, and loaded by Caddy`,
+            : 'carried over from caddy/Caddyfile, and loaded by Caddy',
     );
 
     return {
@@ -487,7 +477,7 @@ async function prepare(
         split,
         routes,
         global,
-        caddyChanges,
+        snippets,
         hadCaddyfile: original !== undefined,
         overrides,
         port,
@@ -575,10 +565,12 @@ async function validateRoutes(
     after: ResolvedSite,
     routes: string,
     global: string | null,
+    snippets: Readonly<Record<string, string>>,
 ): Promise<void> {
     const caddy = join(staged, 'caddy');
     cpSync(join(stack, 'caddy'), caddy, { recursive: true });
     atomicWrite(join(staged, SITE_FILE), routes, 0o644);
+    writeSnippets(staged, snippets);
     if (global !== null) {
         atomicWrite(join(staged, GLOBAL_FILE), global, 0o644);
     }
@@ -612,8 +604,18 @@ async function validateRoutes(
         refuse(
             'Caddy does not load the routes carried over from caddy/Caddyfile:\n' +
                 said.map((line) => `    ${line}\n`).join('') +
-                '  Change caddy/Caddyfile so they load, then run this again.',
+                '  They are carried as written, with DOMAIN, ADMIN_DOMAIN and ACTIVITYPUB_TARGET filled in\n' +
+                "  and main's snippets kept beside them. Change caddy/Caddyfile so they load, then run\n" +
+                '  this again.',
         );
+    }
+}
+
+/** main's snippets beside the carried routes, which import them. */
+function writeSnippets(root: string, snippets: Readonly<Record<string, string>>): void {
+    for (const [name, content] of Object.entries(snippets)) {
+        mkdirSync(join(root, LEGACY_SNIPPETS), { recursive: true, mode: 0o755 });
+        atomicWrite(join(root, LEGACY_SNIPPETS, name), content, 0o644);
     }
 }
 
@@ -633,7 +635,6 @@ function report(plan: Plan): number {
                 ({ key, reason }) => `               ${key} not carried: ${reason}`,
             ),
             `  Routes       ${SITE_FILE}${plan.hadCaddyfile ? ', from caddy/Caddyfile, kept as caddy/Caddyfile.local' : ''}`,
-            ...plan.caddyChanges.map((change) => `               ${change}`),
             `  Loopback     Ghost published on 127.0.0.1:${plan.port}`,
             `  Launcher     ./${LAUNCHER}, pinned to ${plan.pin}`,
             '',
@@ -745,6 +746,7 @@ function write(plan: Plan): Metadata {
         printChecks(io, [{ status: 'note', label: 'not carried', detail: `${key}: ${reason}` }]);
     }
     atomicWrite(join(dir, SITE_FILE), plan.routes, 0o644);
+    writeSnippets(dir, plan.snippets);
     if (plan.global !== null) {
         atomicWrite(join(dir, GLOBAL_FILE), plan.global, 0o644);
     }

@@ -230,8 +230,12 @@ describe('migrating the released main layout', () => {
 
         const routes = readSite('caddy/sites/site.caddy');
         assert.match(routes, /^example\.com \{$/m);
-        assert.match(routes, new RegExp(`snippets/ActivityPub activitypub-${project}:8080$`, 'm'));
-        assert.match(routes, new RegExp(`reverse_proxy ghost-${project}:2368$`, 'm'));
+        assert.match(routes, /^\timport \/etc\/caddy\/sites\/legacy-snippets\/ActivityPub$/m);
+        assert.match(routes, /reverse_proxy ghost:2368$/m);
+        assert.match(
+            readSite('caddy/sites/legacy-snippets/ActivityPub'),
+            /reverse_proxy activitypub:8080$/m,
+        );
         assert.equal(
             readSite('caddy/Caddyfile.local'),
             readFileSync(join(MAIN, 'caddy', 'Caddyfile.example'), 'utf8'),
@@ -266,8 +270,8 @@ describe('migrating the released main layout', () => {
         const result = await migrate();
         assert.equal(result.code, 0, result.stderr);
         assert.match(
-            readSite('caddy/sites/site.caddy'),
-            /snippets\/ActivityPub https:\/\/ap\.ghost\.org$/m,
+            readSite('caddy/sites/legacy-snippets/ActivityPub'),
+            /reverse_proxy https:\/\/ap\.ghost\.org$/m,
         );
         assert.equal(envOf('.env').COMPOSE_PROFILES, 'production,activitypub');
     });
