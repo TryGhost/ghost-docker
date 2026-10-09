@@ -22,6 +22,11 @@ on:
         description: The release tag to publish
         type: string
         required: true
+    secrets:
+      DOCKERHUB_USERNAME:
+        required: false
+      DOCKERHUB_TOKEN:
+        required: false
 
 permissions:
   contents: read
@@ -44,6 +49,11 @@ jobs:
           ref: ${{ inputs.tag || github.ref }}
           # Every release tag, to tell whether this one is the newest.
           fetch-depth: 0
+
+      - uses: ./.github/actions/docker-hub
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          token: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
         with:
@@ -77,7 +87,10 @@ jobs:
 
           # arm64 is built under emulation.
           docker run --privileged --rm tonistiigi/binfmt --install arm64 >/dev/null
-          docker buildx create --use >/dev/null
+          # The builder runs in a container of its own, which does not use the
+          # daemon's mirror, so it is given the same one.
+          printf '[registry."docker.io"]\n  mirrors = ["mirror.gcr.io"]\n' >"$RUNNER_TEMP/buildkitd.toml"
+          docker buildx create --use --buildkitd-config "$RUNNER_TEMP/buildkitd.toml" >/dev/null
 
           docker buildx build \
             --platform linux/amd64,linux/arm64 \

@@ -99,6 +99,9 @@ jobs:
     uses: ./.github/workflows/image.yml
     with:
       tag: ${{ needs.tag.outputs.tag }}
+    secrets:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
 
   notes:
     name: GitHub release
@@ -143,3 +146,6 @@ jobs:
     uses: ./.github/workflows/launcher.yml
     with:
       tag: ${{ needs.tag.outputs.tag }}
+    secrets:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
