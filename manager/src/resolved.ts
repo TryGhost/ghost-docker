@@ -63,6 +63,19 @@ export interface ResolvedSite {
  * belong to another directory: whatever was done next would be done to them.
  */
 export async function resolveSite(io: Io, dir: string): Promise<ResolvedSite> {
+    const site = await resolveConfig(io, dir);
+    if (site.project !== '') {
+        await refuseForeignProject(io, site.project, dir);
+    }
+    return site;
+}
+
+/**
+ * The configuration in `dir` as Compose resolves it, asking nothing of the
+ * daemon: also of a directory that is not where the site runs, such as a
+ * backup's files staged to be checked before a restore writes them.
+ */
+export async function resolveConfig(io: Io, dir: string): Promise<ResolvedSite> {
     const resolved = await composeConfig(io, dir);
     if (!resolved.ok) {
         throw new CliError(`Compose cannot resolve the project: ${resolved.reason}`);
@@ -94,9 +107,6 @@ export async function resolveSite(io: Io, dir: string): Promise<ResolvedSite> {
         ),
         services,
     };
-    if (site.project !== '') {
-        await refuseForeignProject(io, site.project, dir);
-    }
     return site;
 }
 

@@ -236,7 +236,7 @@ async function unappliedImages(io: Io, resolved: ResolvedSite): Promise<Check[]>
     return drift.map((detail) => ({
         status: 'warn',
         label: 'images',
-        detail: `${detail}; docker compose up -d applies the configuration`,
+        detail: `${detail}; docker compose up -d applies the configuration, and backup and self-update refuse until it is applied`,
     }));
 }
 

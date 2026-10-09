@@ -129,14 +129,28 @@ describe('an update between releases', () => {
         assert.equal(after.installedAt, before.installedAt);
         assert.match(after.updatedAt, /^\d{4}-\d\d-\d\dT/);
 
-        // Backed up with Ghost stopped for the capture and started again,
-        // then validated, pulled, started and verified, in that order.
+        // The site resolved, to refuse what its backup would; backed up with
+        // Ghost stopped for the capture and started again; then validated,
+        // pulled, started and verified, in that order.
         assert.deepEqual(
             compose.map((args) => args[0]),
-            ['config', 'ps', 'stop', 'exec', 'ps', 'up', 'config', 'config', 'pull', 'up', 'ps'],
+            [
+                'config',
+                'config',
+                'ps',
+                'stop',
+                'exec',
+                'ps',
+                'up',
+                'config',
+                'config',
+                'pull',
+                'up',
+                'ps',
+            ],
         );
-        assert.deepEqual(compose[2]!.slice(-1), ['ghost']);
-        assert.ok(compose[5]!.includes('--no-recreate'));
+        assert.deepEqual(compose[3]!.slice(-1), ['ghost']);
+        assert.ok(compose[6]!.includes('--no-recreate'));
         const [backup] = readdirSync(join(h.dir, 'backups'));
         assert.match(
             result.stdout,
@@ -327,15 +341,47 @@ describe('refusals that change nothing', () => {
     });
 });
 
+describe('a site running other images than its configuration names', () => {
+    test('is refused before the snapshot, the lock or the backup', async () => {
+        const before = snapshot();
+        h.daemon.containers = [
+            {
+                Id: 'ghost-id',
+                Names: ['/ghost-local-site-ghost-1'],
+                State: 'running',
+                Image: 'ghost:6.0.0',
+                ImageID: INDEX,
+                Labels: {
+                    'com.docker.compose.project': metadata().site.project,
+                    'com.docker.compose.project.working_dir': h.dir,
+                    'com.docker.compose.service': 'ghost',
+                },
+            },
+        ];
+        const result = await update();
+        assert.equal(result.code, 1);
+        assert.match(result.stderr, /the site runs other images than its configuration names/);
+        assert.match(result.stderr, /ghost runs ghost:6\.0\.0/);
+        assert.deepEqual(snapshot(), before);
+        assert.deepEqual(
+            compose.map((args) => args[0]),
+            ['config'],
+        );
+        assert.ok(!existsSync(join(h.dir, '.ghost-docker-update')));
+        assert.ok(!existsSync(join(h.dir, 'backups')));
+    });
+});
+
 describe('a failed update', () => {
     test('validation failing puts the files back; the services were never changed', async () => {
         const before = snapshot();
-        // The backup resolves the site as it is; the release does not.
+        // The refusals and the backup resolve the site as it is; the release does not.
         const resolves = config;
-        config = () => {
-            config = () => failed(1, 'service "ghost" refers to undefined volume nope');
-            return resolves();
-        };
+        let resolved = 0;
+        config = () =>
+            (resolved += 1) <= 2
+                ? resolves()
+                : failed(1, 'service "ghost" refers to undefined volume nope');
         const result = await update();
         assert.equal(result.code, 1);
         assert.match(

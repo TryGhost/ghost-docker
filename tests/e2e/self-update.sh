@@ -266,6 +266,19 @@ backup=$(find "$C/backups" -mindepth 1 -maxdepth 1 -type d -not -name '.*' | sor
 grep -q "\"commit\": \"$later\"" "$backup/manifest.json" || fail "the manifest does not record $later" "$(cat "$backup/manifest.json")"
 ok "at ${later:0:12}, not the ${installed:0:12} it was installed at"
 
+step "A compose.yml whose MySQL bump is not applied is refused a backup"
+sed -i.bak 's/image: mysql:8\.0\.[0-9]*@sha256:[0-9a-f]*/image: mysql:8.0.43/' "$C/compose.yml"
+rm -f "$C/compose.yml.bak"
+grep -q 'image: mysql:8.0.43$' "$C/compose.yml" || fail "compose.yml's MySQL was not changed"
+before=$(find "$C/backups" -mindepth 1 -maxdepth 1 | sort)
+run env -u GD_IMAGE "$C/ghost-docker" --dir "$C" backup
+expect_status 1
+expect_output 'the site runs other images than its configuration names'
+expect_output 'db runs mysql:8\.0\.[0-9]+@sha256:[0-9a-f]+, and the configuration names mysql:8\.0\.43'
+[[ $(find "$C/backups" -mindepth 1 -maxdepth 1 | sort) == "$before" ]] || fail "a refused backup left something in backups/"
+git_c checkout --quiet compose.yml
+ok "before anything was captured, naming what runs and what is configured"
+
 step "It restores over its site only at that commit"
 git_c checkout --quiet --detach "$installed"
 run env -u GD_IMAGE "$C/ghost-docker" --dir "$C" restore --yes "$backup"

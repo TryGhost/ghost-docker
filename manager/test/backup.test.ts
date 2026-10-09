@@ -380,8 +380,8 @@ const containerOf = (service: string, extra: Record<string, unknown> = {}, dir =
 });
 
 describe('backup records what the site runs', () => {
-    test('each running service by its exact image, and the dumps checked with the MySQL that wrote them', async () => {
-        h.daemon.containers = [containerOf('ghost'), containerOf('db', { ImageID: RUNNING_DB })];
+    /** The daemon holds the db's image by RUNNING_DB, and `configured` names it, or not. */
+    const dbImage = (configured: string) => {
         const images = h.daemon.api!;
         h.daemon.api = (request) =>
             request.method === 'GET' && request.path === `/images/${RUNNING_DB}/json`
@@ -390,7 +390,14 @@ describe('backup records what the site runs', () => {
                       RepoDigests: [IMAGES.db.replace(/:[^:@]+@/, '@')],
                       Config: { Env: [] },
                   })
-                : images(request);
+                : request.method === 'GET' && request.path === `/images/${IMAGES.db}/json`
+                  ? json(200, { Id: configured, RepoDigests: [], Config: { Env: [] } })
+                  : images(request);
+    };
+
+    test('each running service by its exact image, and the dumps checked with the MySQL that wrote them', async () => {
+        h.daemon.containers = [containerOf('ghost'), containerOf('db', { ImageID: RUNNING_DB })];
+        dbImage(RUNNING_DB);
         const result = await h.run('backup');
         assert.equal(result.code, 0, result.stderr);
         const read = readBackupManifest(join(h.dir, 'backups', backups()[0]!));
@@ -400,26 +407,38 @@ describe('backup records what the site runs', () => {
             ghost: { image: IMAGES.ghost, id: INDEX, digests: [] },
         });
         assert.equal(containers[0]!.image, RUNNING_DB);
-        // The db's tag-and-digest now names another image than the one running.
-        assert.match(
-            result.stderr,
-            /warning +images +db runs sha256:6{12}, and mysql:8\.0\.44@sha256:4{64} now names sha256:1{12}\./,
-        );
+        assert.doesNotMatch(result.stderr, /warning/);
     });
 
-    test('a service whose configuration names another image is reported, and both are recorded', async () => {
-        h.daemon.containers = [containerOf('ghost', { Image: 'ghost:6.0.0' })];
-        const result = await h.run('backup');
-        assert.equal(result.code, 0, result.stderr);
-        assert.match(
-            result.stderr,
-            /ghost runs ghost:6\.0\.0, and the configuration names ghost@sha256:1{64}/,
-        );
-        assert.match(result.stderr, /docker compose up -d applies the configuration/);
-        const read = readBackupManifest(join(h.dir, 'backups', backups()[0]!));
-        const manifest = read.state === 'present' ? read.manifest : null!;
-        assert.equal(manifest.images.ghost, IMAGES.ghost);
-        assert.equal(manifest.running.ghost!.image, 'ghost:6.0.0');
+    test('a site running other images than its configuration names is refused before anything is captured', async () => {
+        for (const [why, setUp, said] of [
+            [
+                'the configuration names another image',
+                () => {
+                    h.daemon.containers = [containerOf('ghost', { Image: 'ghost:6.0.0' })];
+                },
+                /ghost runs ghost:6\.0\.0, and the configuration names ghost@sha256:1{64}/,
+            ],
+            [
+                'the reference now names another image',
+                () => {
+                    h.daemon.containers = [containerOf('db', { ImageID: RUNNING_DB })];
+                    dbImage(INDEX);
+                },
+                /db runs sha256:6{12}, and mysql:8\.0\.44@sha256:4{64} now names sha256:1{12}/,
+            ],
+        ] as const) {
+            setUp();
+            compose = [];
+            const result = await h.run('backup');
+            assert.equal(result.code, 1, why);
+            assert.match(result.stderr, /the site runs other images than its configuration names/);
+            assert.match(result.stderr, said);
+            assert.match(result.stderr, /docker compose up -d\), or put it back as it was/);
+            assert.deepEqual(backups(), [], why);
+            assert.deepEqual(composed('exec'), [], why);
+            assert.deepEqual(composed('up'), [], why);
+        }
     });
 
     test('a mount an override puts inside the content is refused, not half backed up', async () => {
@@ -494,7 +513,8 @@ describe('restore over the site', () => {
 
         assert.deepEqual(
             compose.map((args) => args[0]),
-            ['down', 'ps', 'config', 'up', 'exec', 'ps', 'exec', 'ps', 'up', 'ps'],
+            // The backup's configuration resolved, staged, before anything stops.
+            ['config', 'down', 'ps', 'config', 'up', 'exec', 'ps', 'exec', 'ps', 'up', 'ps'],
         );
         assert.equal(composed('up')[0]?.at(-1), 'db');
         // Loaded by the db container's client and counted over the site
@@ -553,6 +573,84 @@ describe('restore over the site', () => {
             /database\/ghost\.sql in the backup does not match its checksum.*Nothing has been changed/,
         );
         assert.deepEqual(compose, []);
+    });
+
+    test('an override the restore replaces is set aside with the rest, and kept when it fails', async () => {
+        writeFileSync(join(h.dir, 'compose.custom.yml'), '# as backed up\n');
+        h.env.GD_COMPOSE_OVERRIDES = 'compose.custom.yml';
+        const root = await backUp();
+        writeFileSync(join(h.dir, 'compose.custom.yml'), '# edited since\n');
+        loaded = { ghost: { ...ROWS.ghost, posts: 2 } };
+        const result = await h.run('restore', '--yes', root);
+        assert.equal(result.code, 1);
+        assert.match(result.stderr, /the site needs you/);
+        assert.equal(readSite('compose.custom.yml'), '# as backed up\n');
+        assert.equal(
+            readFileSync(
+                join(h.dir, '.ghost-docker-restore', 'files', 'compose.custom.yml'),
+                'utf8',
+            ),
+            '# edited since\n',
+        );
+        assert.match(result.stderr, /cp -a \.ghost-docker-restore\/files\/\. \./);
+    });
+
+    test('an image that is not, here, the one the site ran is refused before anything stops', async () => {
+        h.daemon.containers = [containerOf('ghost')];
+        const root = await backUp();
+        const images = h.daemon.api!;
+        // The recorded reference names another image on this host.
+        h.daemon.api = (request) =>
+            request.method === 'GET' && request.path.startsWith('/images/ghost@')
+                ? json(200, { Id: RUNNING_DB, RepoDigests: [], Config: { Env: [] } })
+                : images(request);
+        compose = [];
+        containers = [];
+        const result = await h.run('restore', '--yes', root);
+        assert.equal(result.code, 1);
+        assert.match(
+            result.stderr,
+            /the backup's configuration does not name the images its site ran:\n +ghost ran sha256:1{12}, and ghost@sha256:1{64} is sha256:6{12} here/,
+        );
+        assert.match(result.stderr, /Nothing has been changed/);
+        assert.deepEqual(composed('down'), []);
+        assert.deepEqual(containers, []);
+        assert.ok(!existsSync(join(h.dir, '.ghost-docker-restore')));
+    });
+
+    test('a backup recording another image than its configuration names is refused before anything stops', async () => {
+        h.daemon.containers = [containerOf('ghost')];
+        const root = await backUp();
+        const manifest = JSON.parse(readFileSync(join(root, 'manifest.json'), 'utf8'));
+        manifest.running.ghost.image = 'ghost:6.0.0';
+        writeFileSync(join(root, 'manifest.json'), JSON.stringify(manifest));
+        compose = [];
+        const result = await h.run('restore', '--yes', root);
+        assert.equal(result.code, 1);
+        assert.match(
+            result.stderr,
+            /ghost ran ghost:6\.0\.0, and the backup's configuration names ghost@sha256:1{64}/,
+        );
+        assert.deepEqual(composed('down'), []);
+    });
+
+    test('a backup whose configuration resolves other images than it records is refused before anything stops', async () => {
+        const root = await backUp();
+        const answer = h.daemon.composeRun!;
+        // As a checkout's compose.yml at another commit would.
+        h.daemon.composeRun = (args, env, input, dir) =>
+            args[0] === 'config' && dir !== undefined && dir !== h.dir
+                ? ok(resolvedProject(dir, { ...IMAGES, db: 'mysql:8.0.45' }))
+                : answer(args, env, input, dir);
+        compose = [];
+        const result = await h.run('restore', '--yes', root);
+        assert.equal(result.code, 1);
+        assert.match(
+            result.stderr,
+            /resolves other images than it records:\n +db: the backup records mysql:8\.0\.44@sha256:4{64}, its configuration resolves mysql:8\.0\.45/,
+        );
+        assert.deepEqual(composed('down'), []);
+        assert.ok(!existsSync(join(h.dir, '.ghost-docker-restore')));
     });
 
     test('rows that do not match the backup need the operator, with the old site kept', async () => {
@@ -695,7 +793,11 @@ describe('restore over the site', () => {
         lock.release();
         assert.equal(result.code, 1);
         assert.match(result.stderr, /held by backup/);
-        assert.deepEqual(compose, []);
+        // Only the backup's configuration resolved, which changes nothing.
+        assert.deepEqual(
+            compose.map((args) => args[0]),
+            ['config'],
+        );
     });
 
     test('a directory holding another site is refused', async () => {
@@ -728,7 +830,7 @@ describe('check and the project', () => {
         const result = await h.run('check');
         assert.match(
             result.stderr,
-            /warning +images +ghost runs ghost:6\.0\.0, and the configuration names ghost@sha256:1{64}; docker compose up -d applies the configuration/,
+            /warning +images +ghost runs ghost:6\.0\.0, and the configuration names ghost@sha256:1{64}; docker compose up -d applies the configuration, and backup and self-update refuse until it is applied/,
         );
     });
 });
@@ -859,6 +961,21 @@ describe('a checkout', () => {
         assert.equal(read.state === 'present' && read.manifest.site.source, 'checkout');
     });
 
+    test('a checkout whose compose.yml bumps MySQL without applying it is refused before anything is captured', async () => {
+        h.daemon.gitRun = (args) =>
+            args.includes('rev-parse') ? ok(`${HEAD}\n`) : failed(1, 'unexpected');
+        // The container runs 8.0.43; the checked-out compose.yml names 8.0.44.
+        h.daemon.containers = [containerOf('db', { Image: 'mysql:8.0.43' })];
+        const result = await h.run('backup');
+        assert.equal(result.code, 1);
+        assert.match(
+            result.stderr,
+            /db runs mysql:8\.0\.43, and the configuration names mysql:8\.0\.44@sha256:4{64}/,
+        );
+        assert.deepEqual(backups(), []);
+        assert.deepEqual(composed('exec'), []);
+    });
+
     test('a checkout git cannot read is backed up, saying its commit is not recorded', async () => {
         h.daemon.gitRun = () => failed(128, 'fatal: not a git repository');
         const result = await h.run('backup');
@@ -891,8 +1008,8 @@ describe('consistency', () => {
         running.add('activitypub');
         events = [];
         const answer = h.daemon.composeRun!;
-        h.daemon.composeRun = (args, env, input) => {
-            const result = answer(args, env, input);
+        h.daemon.composeRun = (args, env, input, dir) => {
+            const result = answer(args, env, input, dir);
             const services = args
                 .slice(1)
                 .filter((arg) => /^[a-z]+$/.test(arg))

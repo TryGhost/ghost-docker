@@ -19,7 +19,7 @@ import type { BackupManifest } from './backup/manifest.ts';
 import { ALL_PROFILES, composeDown, composeError, composePs, composeUp } from './compose.ts';
 import type { Context } from './context.ts';
 import { CliError } from './errors.ts';
-import { copyPresent } from './fs.ts';
+import { copyPresent, sameTree } from './fs.ts';
 import { checkRows, loadFile } from './import/database.ts';
 import type { Io } from './io.ts';
 import { ok } from './report.ts';
@@ -137,10 +137,21 @@ export class SetAside {
         }
     }
 
-    /** The files copied aside, then removed from the site. */
+    /**
+     * The files copied aside, each copy compared with its original, then the
+     * originals removed from the site. A copy that differs removes nothing.
+     */
     keepFiles(paths: readonly string[]): void {
         mkdirSync(join(this.root, 'files'), { recursive: true, mode: 0o700 });
         this.copied.push(...copyPresent(this.dir, paths, join(this.root, 'files')));
+        const differ = this.copied.filter(
+            (path) => !sameTree(join(this.dir, path), join(this.root, 'files', path)),
+        );
+        if (differ.length > 0) {
+            throw new CliError(
+                `the copies of ${differ.join(', ')} in ${this.name}/files are not the same as the originals`,
+            );
+        }
         for (const path of this.copied) {
             rmSync(join(this.dir, path), { recursive: true, force: true });
             this.removed.push(path);

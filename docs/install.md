@@ -590,9 +590,15 @@ runs with, and what the daemon runs, not what `.env` alone says:
 - An override `GD_COMPOSE_OVERRIDES` names is backed up with the site, and
   recorded; one outside the site directory is refused. A restore must run with
   the same `GD_COMPOSE_OVERRIDES`.
-- A service running another image than its configuration now names, because
-  the configuration changed and `docker compose up -d` has not run since, is
-  reported as a warning; the manifest records both.
+- A site running other images than its configuration now names, because the
+  configuration changed and `docker compose up -d` has not run since (say, a
+  clone checked out at a commit that bumps MySQL), is **refused** before
+  anything is captured, naming each service, what it runs and what is
+  configured. A restore runs the configuration a backup holds, and its data
+  was written by what ran; a backup of both could not be restored as the site
+  ran. Apply the configuration, or put it back, then back up again.
+  `self-update` refuses such a site too, before it changes anything, and
+  `check` warns of it.
 - A Compose project whose containers another directory made is refused
   before anything runs (see [the project name](configuration.md#service-names-on-the-network)).
 
@@ -621,13 +627,19 @@ In order:
    at another commit than the backup records, another site's directory, a directory
    with data in it, another operation holding the lock, and a restore that
    did not finish are refused. In a new directory, containers of the same
-   project and busy ports are refused, named, and never stopped. Nothing has
-   changed.
+   project and busy ports are refused, named, and never stopped. The
+   backup's configuration (for a clone, with the clone's `compose.yml`) is
+   resolved outside the site, and must name exactly the images the backup
+   records and mount the data where restore loads it. Nothing has changed.
 2. **The lock**, then every image the backup records is pulled before anything
-   stops.
+   stops, and each service that was running must get, by its image ID or a
+   registry digest, the very image it ran. A reference that names another
+   image on this host is refused. Nothing has changed.
 3. **Over the site:** it is stopped (`docker compose down`; volumes, such as
-   Caddy's certificates, are kept), and its files, `data/ghost` and
-   `data/mysql` are moved aside into `.ghost-docker-restore/`.
+   Caddy's certificates, are kept), and `data/ghost`, `data/mysql` and every
+   file the restore replaces (the site's own and the backup's, overrides
+   included) are moved aside into `.ghost-docker-restore/`, each copy checked
+   against its original before the original is removed.
 4. **The backup's files** are written, with the directory's own path in
    `PROJECT_DIR` and the metadata, and Compose must resolve exactly the images
    the backup records: the site is pinned to them. The content is unpacked

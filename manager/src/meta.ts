@@ -89,13 +89,21 @@ export function requireMetadata(dir: string, why: string): Metadata {
 }
 
 /**
- * The site's own files a backup keeps and a restore replaces: the
- * operator's, and in image mode the stack files and launcher it runs, so a
- * restore anywhere runs exactly the images this one did.
+ * The site's own files, the one inventory a backup keeps, a restore replaces
+ * and sets aside, and an update snapshots: the operator's, the overrides
+ * GD_COMPOSE_OVERRIDES adds (relative to the site), and in image mode the
+ * stack files and launcher it runs, so a restore anywhere runs exactly the
+ * images this one did.
  */
-export const siteFiles = (metadata: Metadata | null): string[] => [
-    ...OPERATOR_FILES,
-    ...(metadata?.source === 'image' ? Object.keys(metadata.payload) : []),
+export const siteFiles = (
+    metadata: Metadata | null,
+    overrides: readonly string[] = [],
+): string[] => [
+    ...new Set([
+        ...OPERATOR_FILES,
+        ...overrides,
+        ...(metadata?.source === 'image' ? Object.keys(metadata.payload) : []),
+    ]),
 ];
 
 export type MetadataRead =

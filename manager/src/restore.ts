@@ -6,10 +6,15 @@
 //      site, or empty; in a new directory, nothing on the daemon already
 //      uses the site's project name or ports, and over the site, no other
 //      directory's; the overrides in effect are the ones the backup was
-//      taken with. Then the lock, and the
-//      recorded images are pulled before anything stops.
-//   2. Over the site itself: the site is stopped, and its data and files are
-//      moved aside into RESTORE_DIR, one at a time (recovery.ts), which is
+//      taken with; the backup's own configuration, staged outside the site,
+//      resolves exactly the images it records, and mounts the data where
+//      backup and restore handle it. Then the lock, and the recorded images
+//      are pulled before anything stops, and each must be, by its immutable
+//      identity, the image the site ran when it was backed up.
+//   2. Over the site itself: the site is stopped, and its data and every file
+//      the restore writes or replaces (siteFiles, with the overrides, and the
+//      backup's own) are moved aside into RESTORE_DIR, one at a time
+//      (recovery.ts), each copy checked against its original, which is
 //      kept until the restore has been verified. A failure here, before
 //      anything is written, moves back what had been moved.
 //   3. The backup's files are written, with the site's own path, and Compose
@@ -21,15 +26,17 @@
 // The outcome is done, or needs the operator with what to do: a restore that
 // fails once it has written stops the services and does not put the old site
 // back by itself. What it says to do names only copies that exist.
-import { cpSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
-import { backupSiteFiles, readBackup } from './backup.ts';
+import { backupSiteFiles, readBackup, refuseMovedData } from './backup.ts';
 import { SITE_FILES_DIR, type BackupManifest } from './backup/manifest.ts';
 import { composeFileList, upAndWait } from './compose.ts';
 import type { Context } from './context.ts';
 import {
     DaemonError,
     inspectImage,
+    type ImageFacts,
     listContainers,
     pullImage,
     splitReference,
@@ -52,7 +59,7 @@ import {
     stopServices,
 } from './recovery.ts';
 import { heading, ok, printChecks } from './report.ts';
-import { insideSite, resolveSite } from './resolved.ts';
+import { insideSite, resolveConfig, resolveSite } from './resolved.ts';
 import {
     COMPOSE_FILE,
     COMPOSE_OVERRIDE_FILE,
@@ -62,6 +69,7 @@ import {
     META_FILE,
     readSettings,
     RESTORE_DIR,
+    siteFacts,
 } from './site.ts';
 import { verifySite } from './verify.ts';
 
@@ -98,6 +106,7 @@ export async function restoreSite({ io, context, root, yes }: RestoreInput): Pro
     if (manifest.site.source === 'checkout') {
         await refuseOtherCommit(io, dir, manifest);
     }
+    await refuseOtherConfiguration(io, root, dir, manifest);
     if (existsSync(join(dir, RESTORE_DIR))) {
         throw new CliError(
             `${join(dir, RESTORE_DIR)} is left from a restore that did not finish, and holds the site as\n` +
@@ -112,13 +121,19 @@ export async function restoreSite({ io, context, root, yes }: RestoreInput): Pro
     let writing = false;
     try {
         heading(io, 'Pulling the recorded images');
+        const pulled = new Map<string, ImageFacts>();
         for (const image of new Set(Object.values(manifest.images))) {
-            await io.busy(`Pulling ${image}`, () => ensureImage(io, image));
+            pulled.set(image, await io.busy(`Pulling ${image}`, () => ensureImage(io, image)));
         }
-        ok(io, 'images', `${Object.keys(manifest.images).length} services, as the backup records`);
+        refuseOtherImages(manifest, pulled);
+        ok(
+            io,
+            'images',
+            `${Object.keys(manifest.images).length} services, as the backup records; each that ran is the image it ran`,
+        );
 
         if (aside !== null) {
-            await setAside(io, dir, aside);
+            await setAside(io, dir, aside, manifest);
         }
         writing = true;
         heading(io, 'Restoring the site');
@@ -238,6 +253,72 @@ function refuseOtherOverrides(io: Io, dir: string, manifest: BackupManifest): vo
 }
 
 /**
+ * The backup's configuration resolves exactly the images it records, and
+ * mounts the data where restore loads it, checked before anything changes:
+ * its files are staged outside the site, with, in a checkout, the
+ * checkout's compose.yml, which a checkout's backup does not hold, and
+ * resolved there as Compose will resolve them once written.
+ */
+async function refuseOtherConfiguration(
+    io: Io,
+    root: string,
+    dir: string,
+    manifest: BackupManifest,
+): Promise<void> {
+    const staging = mkdtempSync(join(tmpdir(), 'gd-restore-'));
+    try {
+        cpSync(join(root, SITE_FILES_DIR), staging, { recursive: true });
+        if (!existsSync(join(staging, COMPOSE_FILE)) && existsSync(join(dir, COMPOSE_FILE))) {
+            cpSync(join(dir, COMPOSE_FILE), join(staging, COMPOSE_FILE));
+        }
+        // As writeSiteFiles will: the site's path is the directory it is in.
+        const envPath = join(staging, ENV_FILE);
+        const text = readIfExists(envPath);
+        if (text !== undefined && env.get(text, 'PROJECT_DIR') !== undefined) {
+            atomicWrite(envPath, env.set(text, 'PROJECT_DIR', staging));
+        }
+        let resolved;
+        try {
+            resolved = await io.busy("Resolving the backup's configuration", () =>
+                resolveConfig(io, staging),
+            );
+        } catch (error) {
+            throw new CliError(
+                `the backup's configuration does not resolve${manifest.site.source === 'checkout' ? ' with this checkout' : ''}: ${(error as Error).message}. Nothing has been changed.`,
+            );
+        }
+        const services = new Set([
+            ...Object.keys(manifest.images),
+            ...Object.entries(resolved.services)
+                .filter(([, service]) => service.image !== null)
+                .map(([service]) => service),
+        ]);
+        const differ = [...services]
+            .sort()
+            .filter((service) => resolved.services[service]?.image !== manifest.images[service])
+            .map(
+                (service) =>
+                    `${service}: the backup records ${manifest.images[service] ?? 'nothing'}, its configuration resolves ${resolved.services[service]?.image ?? 'nothing'}`,
+            );
+        if (differ.length > 0) {
+            throw new CliError(
+                `the backup's configuration${manifest.site.source === 'checkout' ? ', with this checkout,' : ''} resolves other images than it records:\n` +
+                    differ.map((line) => `    ${line}\n`).join('') +
+                    '  Nothing has been changed.',
+            );
+        }
+        try {
+            refuseMovedData(siteFacts(staging, readSettings(staging)!), resolved);
+        } catch (error) {
+            throw new CliError(`in the backup's configuration, ${(error as Error).message}`);
+        }
+    } finally {
+        rmSync(staging, { recursive: true, force: true });
+    }
+    ok(io, 'configuration', "the backup's resolves the images it records");
+}
+
+/**
  * A site restored into a new directory keeps its project name and its ports,
  * so nothing on this daemon may already use them. The site the backup was
  * taken from is the usual one, and it is named, never stopped.
@@ -321,7 +402,7 @@ async function refuseOtherCommit(io: Io, dir: string, manifest: BackupManifest):
 }
 
 /** The image by its exact reference, pulled when the daemon does not hold it. */
-async function ensureImage(io: Io, reference: string): Promise<void> {
+async function ensureImage(io: Io, reference: string): Promise<ImageFacts> {
     // `name:tag@sha256:...` is found, and pulled, by its digest alone.
     const at = reference.indexOf('@');
     const { repository, tag } =
@@ -332,8 +413,9 @@ async function ensureImage(io: Io, reference: string): Promise<void> {
                   tag: reference.slice(at + 1),
               };
     const exact = at === -1 ? reference : `${repository}@${tag}`;
-    if ((await inspectImage(io.docker, exact)) !== null) {
-        return;
+    const held = await inspectImage(io.docker, exact);
+    if (held !== null) {
+        return held;
     }
     try {
         await pullImage(io.docker, repository, tag);
@@ -345,6 +427,52 @@ async function ensureImage(io: Io, reference: string): Promise<void> {
         }
         throw error;
     }
+    const pulled = await inspectImage(io.docker, exact);
+    if (pulled === null) {
+        throw new CliError(
+            `${reference} was pulled, and the daemon does not hold it. Nothing has been changed.`,
+        );
+    }
+    return pulled;
+}
+
+/**
+ * Each service that ran when the backup was taken is restored with the image
+ * it ran, by its immutable identity: the image ID, or a registry digest the
+ * daemon knew it by. A backup records no other kind (backup refuses a site
+ * whose configuration names other images than it runs), so a mismatch is a
+ * reference that names another image on this host than it did there.
+ */
+function refuseOtherImages(manifest: BackupManifest, pulled: ReadonlyMap<string, ImageFacts>) {
+    const differ: string[] = [];
+    for (const [service, ran] of Object.entries(manifest.running)) {
+        const configured = manifest.images[service];
+        if (configured === undefined) {
+            continue;
+        }
+        if (configured !== ran.image) {
+            differ.push(
+                `${service} ran ${ran.image}, and the backup's configuration names ${configured}`,
+            );
+            continue;
+        }
+        const now = pulled.get(configured);
+        if (
+            now === undefined ||
+            (now.id !== ran.id && !now.repoDigests.some((digest) => ran.digests.includes(digest)))
+        ) {
+            differ.push(
+                `${service} ran ${ran.id.slice(0, 19)}, and ${configured} is ${now?.id.slice(0, 19) ?? 'nothing'} here`,
+            );
+        }
+    }
+    if (differ.length > 0) {
+        throw new CliError(
+            "the backup's configuration does not name the images its site ran:\n" +
+                differ.map((line) => `    ${line}\n`).join('') +
+                '  Restoring it would run its data with other images. Nothing has been changed.',
+        );
+    }
 }
 
 // --- Replacing the site -----------------------------------------------------------
@@ -353,7 +481,12 @@ async function ensureImage(io: Io, reference: string): Promise<void> {
  * Stops the site, then moves its data and files aside, each recorded as it
  * is done. Stopping that fails moves nothing.
  */
-async function setAside(io: Io, dir: string, aside: SetAside): Promise<void> {
+async function setAside(
+    io: Io,
+    dir: string,
+    aside: SetAside,
+    manifest: BackupManifest,
+): Promise<void> {
     heading(io, 'Setting the current site aside');
     const stopped = await stopServices(io, dir);
     if (stopped.error !== null) {
@@ -368,7 +501,13 @@ async function setAside(io: Io, dir: string, aside: SetAside): Promise<void> {
     const metadata = readMetadata(dir);
     // The stack files of the release the site ran are replaced by the
     // backup's; the operator's directories are emptied, then refilled.
-    aside.keepFiles(siteFiles(metadata.state === 'present' ? metadata.metadata : null));
+    aside.keepFiles([
+        ...siteFiles(
+            metadata.state === 'present' ? metadata.metadata : null,
+            manifest.site.overrides,
+        ),
+        ...backupSiteFiles(manifest),
+    ]);
     ok(
         io,
         RESTORE_DIR,
@@ -524,7 +663,6 @@ function summarize(
             ),
             `  ${'content'.padEnd(12)} ${manifest.content.entries} entries`,
             `  ${'ghost'.padEnd(12)} ${manifest.images.ghost ?? 'as recorded'}`,
-            ...unapplied(manifest).map((line) => `  ${line}`),
             ...(manifest.consistency === 'live'
                 ? [
                       '',
@@ -543,18 +681,3 @@ function summarize(
         ].join('\n'),
     );
 }
-
-/**
- * Services that ran another image than their configuration named when the
- * backup was taken: the restore runs the configured one.
- */
-const unapplied = (manifest: BackupManifest): string[] =>
-    Object.entries(manifest.running)
-        .filter(([service, ran]) => {
-            const configured = manifest.images[service];
-            return configured !== undefined && ran.image !== configured;
-        })
-        .map(
-            ([service, ran]) =>
-                `${service.padEnd(12)} ran ${ran.image} when backed up; restored as configured`,
-        );

@@ -29,7 +29,7 @@
 //      records the release, and the snapshot is removed.
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
-import { readBackup, takeBackup } from '../backup.ts';
+import { readBackup, refuseDrift, takeBackup } from '../backup.ts';
 import { compose, composeConfig, composeError, upAndWait } from '../compose.ts';
 import { z } from 'zod';
 import { defineCommand, flag } from '../command.ts';
@@ -39,7 +39,7 @@ import { CliError, describeError, EXIT } from '../errors.ts';
 import { atomicWrite, copyPresent } from '../fs.ts';
 import type { Io } from '../io.ts';
 import { acquireLock } from '../lock.ts';
-import { isoSeconds, requireMetadata, writeMetadata, type Metadata } from '../meta.ts';
+import { isoSeconds, requireMetadata, siteFiles, writeMetadata, type Metadata } from '../meta.ts';
 import {
     LAUNCHER,
     launcherContent,
@@ -56,9 +56,9 @@ import {
     stopServices,
 } from '../recovery.ts';
 import { compareReleases, isRelease } from '../release.ts';
-import { refuseForeignProject } from '../project.ts';
+import { resolveSite } from '../resolved.ts';
 import { heading, ok, printChecks } from '../report.ts';
-import { META_FILE, OPERATOR_FILES, UPDATE_DIR, type SiteFacts } from '../site.ts';
+import { META_FILE, UPDATE_DIR, type SiteFacts } from '../site.ts';
 import { verifySite } from '../verify.ts';
 import { atLeast, MINIMUM } from '../versions.ts';
 import {
@@ -171,9 +171,13 @@ function planPayload(dir: string, stack: string, recorded: Record<string, string
 
 const newPath = (file: string) => `${file}.new`;
 
-/** Every path an update may write or remove, relative to the site: what the snapshot holds. */
-function touched(payload: Payload): string[] {
-    const paths: string[] = [...OPERATOR_FILES];
+/**
+ * Every path an update may write or remove, relative to the site: what the
+ * snapshot holds. The site's own files, as a backup and a restore know them,
+ * and what this release adds.
+ */
+function touched(metadata: Metadata, payload: Payload): string[] {
+    const paths: string[] = siteFiles(metadata);
     for (const { file, action } of payload.changes) {
         paths.push(file);
         if (action === 'keep') {
@@ -386,7 +390,12 @@ export const selfUpdateCommand = defineCommand({
             );
         }
 
-        await refuseForeignProject(io, site.settings.get('COMPOSE_PROJECT_NAME') || '', dir);
+        // A project another directory owns, or running images its configuration
+        // does not name, which the backup an update takes would refuse.
+        await refuseDrift(
+            io,
+            await io.busy('Resolving the Compose project', () => resolveSite(io, dir)),
+        );
 
         const lock = acquireLock(dir, `update to ${describeStack(to)}`);
         try {
@@ -442,7 +451,7 @@ async function apply(update: Update): Promise<number> {
     io.stdout(`Updating from ${describeStack(from)} to ${describeStack(to)}\n`);
 
     heading(io, 'Keeping the current files');
-    const snapshot = new Snapshot(dir, touched(payload));
+    const snapshot = new Snapshot(dir, touched(update.metadata, payload));
     snapshot.take();
     ok(io, UPDATE_DIR, 'the configuration, the metadata and the files this update writes');
 
