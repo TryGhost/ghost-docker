@@ -489,20 +489,27 @@ In order:
    is kept as `ghost-docker.edited`. The metadata records the release, the
    one before it, and the files' new checksums. The snapshot is removed.
 
-When a step after the snapshot fails, the snapshot is put back. When the
-services had not been changed, Ghost and ActivityPub are then started again,
-the same containers, on the files as they were. When they had been, they are
-stopped first; `data/ghost` and
-`data/mysql` are moved aside into `.ghost-docker-update/data/`, the backup's
-content and databases are loaded as `restore` loads them, and the previous
-release is started again and must become healthy and verify. The update then
-says either **restored** (the site is back on the release it ran, its files,
-databases and content as they were) or that **the site needs you**, with what
-could not be put back, which of its services are running, and the
-`./ghost-docker restore` command that puts the site back from the backup. In
-that case the snapshot is left in `.ghost-docker-update/` and the site's
-launcher still runs the previous image. An update is never reported as done
-because `up` returned zero.
+When a step after the snapshot fails before the release's services have
+started, the snapshot is put back and Ghost and ActivityPub are started
+again, the same containers, on the files as they were: **restored**. Nothing
+was written meanwhile, since they were stopped from before the backup.
+
+Once the release's services have started, Ghost may accept writes, and the
+release may change the databases and content, before a later step fails.
+Loading the backup would discard those, so the update never does it by
+itself. It stops the services, puts the files back (the launcher still runs
+the previous image), leaves the data as it is, and says **the site needs
+you**, with two ways on:
+
+- `./ghost-docker restore --yes backups/<backup>`, the backup the update took:
+  the site exactly as it was when the update began, discarding anything
+  written since.
+- If the release did not change the data (`docker compose logs` says what it
+  did), `docker compose up -d` starts the previous release on it as it is.
+
+The snapshot is left in `.ghost-docker-update/` until you remove it, and
+another update is refused while it is there. An update is never reported as
+done because `up` returned zero.
 
 Exit statuses: `0` updated, or nothing to update; `1` refused or failed; `2` a
 usage error.
@@ -589,8 +596,8 @@ If they do not start again, `backup` fails and says so; start them with
 `docker compose up -d`. In either mode, if the database was not running, it
 is started for the dump and stopped again.
 
-`self-update` takes a consistent backup, and a failed update is put back from
-it. It keeps the writers stopped from the backup until the release starts or
+`self-update` takes a consistent backup, which it names when a failed update
+needs you to restore it. It keeps the writers stopped from the backup until the release starts or
 the site is put back, rather than for the capture alone: see
 [self-update](#self-update).
 
@@ -608,7 +615,9 @@ runs with, and what the daemon runs, not what `.env` alone says:
   configuration changed and `docker compose up -d` has not run since (say, a
   clone checked out at a commit that bumps MySQL), is **refused** before
   anything is captured, naming each service, what it runs and what is
-  configured. A restore runs the configuration a backup holds, and its data
+  configured. A stopped container counts too: starting a stopped database
+  for the dump with another MySQL image could upgrade its data before
+  anything was backed up. A restore runs the configuration a backup holds, and its data
   was written by what ran; a backup of both could not be restored as the site
   ran. Apply the configuration, or put it back, then back up again.
   `self-update` refuses such a site too, before it changes anything, and

@@ -3,16 +3,17 @@
 // A consistent backup pauses them for its capture alone, and resumes them
 // at once. An operation that may load that backup back over the site
 // (self-update now; Ghost updates and the supervisor when they land) owns
-// the pause instead, from before the checkpoint until the site it leaves
-// running is verified, so nothing a writer accepts after the checkpoint can
-// be lost by loading it:
+// the pause instead, from before the checkpoint until it starts the
+// services itself, so nothing a writer accepts after the checkpoint can be
+// lost by loading it:
 //
 //   - the writers are paused before the checkpoint is taken;
 //   - a failure before any service changed puts the files back, then
 //     resumes the writers as they were;
 //   - once the operation starts the services, they are the new site's, and
-//     the pause is over: a recovery stops everything, loads the checkpoint
-//     and starts the site again.
+//     the pause is over: Ghost may accept writes, so a recovery stops
+//     everything and never loads the checkpoint by itself; the operator
+//     chooses.
 //
 // Writers that were not running are never started by resuming.
 import { compose, composeError, READY_SECONDS } from './compose.ts';

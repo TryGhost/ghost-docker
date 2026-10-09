@@ -44,6 +44,12 @@ export interface ComposeOptions {
      * site as a release that is not yet written would run it.
      */
     readonly composeFile?: string;
+    /**
+     * The files and `.env` to run with instead of the site's own, still in
+     * the site's directory: the site as files not yet written there would
+     * run it.
+     */
+    readonly inputs?: ComposeInputs;
     /** COMPOSE_PROFILES for this run, over the site's `.env`; ALL_PROFILES is every one. */
     readonly profiles?: string;
     /** How long Compose may run before it is killed: two minutes unless set. */
@@ -52,6 +58,12 @@ export interface ComposeOptions {
     readonly input?: string | Readable;
     /** A file standard output is written to, rather than read into `stdout`. */
     readonly output?: string;
+}
+
+/** What Compose reads besides the project directory: its files, in order, and its `.env`. */
+export interface ComposeInputs {
+    readonly files: readonly string[];
+    readonly envFile: string;
 }
 
 /** The fields of execa's result that a ComposeResult is made from. */
@@ -142,7 +154,7 @@ const prefixed = (parts: readonly string[]): string[] => [
  */
 export function compose(
     io: Io,
-    { dir, composeFile, profiles, timeout = 120_000, input, output }: ComposeOptions = {},
+    { dir, composeFile, inputs, profiles, timeout = 120_000, input, output }: ComposeOptions = {},
 ): Compose {
     const run = io.exec({
         timeout,
@@ -157,7 +169,13 @@ export function compose(
             : [
                   '--project-directory',
                   dir,
-                  ...composeFiles(dir, io.env.GD_COMPOSE_OVERRIDES, composeFile),
+                  ...(inputs === undefined
+                      ? composeFiles(dir, io.env.GD_COMPOSE_OVERRIDES, composeFile)
+                      : [
+                            ...inputs.files.flatMap((file) => ['-f', file]),
+                            '--env-file',
+                            inputs.envFile,
+                        ]),
               ];
     return async (strings, ...values) => {
         const template = Object.assign(prefixed(strings), { raw: prefixed(strings.raw) });
@@ -283,8 +301,12 @@ export type ConfigResult = { ok: true; project: ResolvedProject } | { ok: false;
  * works before anything has started. `$` in values comes back as `$$`, which
  * is undone here so values compare with decoded ones.
  */
-export async function composeConfig(io: Io, dir: string): Promise<ConfigResult> {
-    const result = await compose(io, { dir })`config --format json`;
+export async function composeConfig(
+    io: Io,
+    dir: string,
+    inputs?: ComposeInputs,
+): Promise<ConfigResult> {
+    const result = await compose(io, { dir, inputs })`config --format json`;
     if (result.exitCode !== 0) {
         return { ok: false, reason: composeError(result) || 'docker compose config failed' };
     }

@@ -237,8 +237,11 @@ export function resolvedProject(
     dir: string,
     images: Record<string, string>,
     mounts: Record<string, { type: string; source: string; target: string }[]> = {},
+    envFile?: string,
 ): string {
-    const settings = readSettings(dir);
+    // Compose reads the `.env` it is given, or the site's.
+    const values = envFile === undefined ? null : env.toRecord(readFileSync(envFile, 'utf8'));
+    const settings = values === null ? readSettings(dir) : { get: (key: string) => values[key] };
     const get = (key: string, fallback: string) => settings?.get(key) || fallback;
     const at = (path: string) => (isAbsolute(path) ? path : join(dir, path));
     const project = get('COMPOSE_PROJECT_NAME', basename(dir));

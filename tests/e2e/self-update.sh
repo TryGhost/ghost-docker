@@ -338,7 +338,7 @@ seeded=$(post_titles "$S")
 grep -qx 'Kept through the update' <<<"$seeded" || fail "the post does not read back" "$seeded"
 ok "an owner, $(wc -l <<<"$seeded" | tr -d ' ') posts, images/2026/10/marker.png and $SETTING_KEY"
 
-step "A release that migrates, then never becomes healthy, is put back from the backup"
+step "A release that migrates, then never becomes healthy, is stopped for the operator, who restores the backup"
 before=$(fingerprint "$S")
 backups_before=$(find "$S/backups" -mindepth 1 -maxdepth 1 -type d -not -name '.*' | sort)
 accepted=$WORK/accepted
@@ -352,14 +352,30 @@ WRITER=""
 expect_status 1
 expect_output 'images +pulled, while the site kept running'
 expect_output 'did not start and become healthy'
-expect_output "Restored: the site is back on $R2, with its files as they were, its databases and content from the backup, and its services running and healthy\\."
-expect_output 'The backup taken before the update is kept in backups/'
-[[ $(fingerprint "$S") == "$before" ]] || fail "the files were not put back" "$(diff <(printf '%s\n' "$before") <(fingerprint "$S"))"
+expect_output 'The site needs you\.'
+expect_output 'Ghost may have accepted writes, since the backup'
+expect_output "The files are $R2's again\\."
+expect_output 'restore --yes backups/'
 [[ $(pinned "$S") == "$(image_id "$REGISTRY:$R2")" ]] || fail "the launcher was re-pinned by a failed update"
 records "$S" version "$R2" || fail "the metadata does not record $R2" "$(cat "$S/.ghost-docker.json")"
+[[ -z $(compose_in "$S" ps -q ghost) ]] || fail "the release's Ghost is still running"
+[[ -e $S/.ghost-docker-update/files/.env && ! -e $S/.ghost-docker.lock ]] || fail "the update did not keep its snapshot, or left its lock"
+# Nothing was loaded over the data: what the release migrated, and every
+# post it accepted, is still there for the operator to keep or discard.
+compose_in "$S" up --detach --wait db >/dev/null 2>&1 || fail "the database did not start for a look"
+[[ -n $(root_sql "$S" "SHOW TABLES LIKE 'e2e_migrated_by_r4'") ]] || fail "the release's migration was undone without the operator"
+left=$(root_sql "$S" "SELECT title FROM posts")
+ok "$R2's files and launcher again, the services stopped, and the data as the release left it"
+
+# The operator's choice: the backup the update named, discarding what the release did.
+backup=$(sed -n 's/^ *\.\/ghost-docker restore --yes \(backups\/[^ ]*\)$/\1/p' <<<"$OUT" | head -1)
+[[ -n $backup ]] || fail "the update did not name the backup to restore" "$OUT"
+run "$S/ghost-docker" --dir "$S" restore --yes "$backup"
+expect_status 0
+rm -rf "$S/.ghost-docker-update"
+[[ $(fingerprint "$S") == "$before" ]] || fail "the files are not as before the update" "$(diff <(printf '%s\n' "$before") <(fingerprint "$S"))"
 [[ $(http_status "$port") == 200 ]] || fail "the site does not answer on 127.0.0.1:$port"
-[[ ! -e $S/.ghost-docker-update && ! -e $S/.ghost-docker.lock ]] || fail "the update left its snapshot or lock"
-ok "$R2 again, its databases and content loaded from the backup, and the site answers"
+ok "restored from $backup, and the site answers"
 
 sign_in "$S"
 titles=$(post_titles "$S")
@@ -370,10 +386,12 @@ grep -q 'migrated by' <<<"$titles" && fail "the migration's change to the posts 
     fail "the image is not served as it was"
 ok "the migration's records, table and content are gone; the image is served"
 
-missing=$(comm -23 <(sort -u "$accepted") <(printf '%s\n' "$titles"))
-[[ -z $missing ]] || fail "posts Ghost accepted during the update were lost" "$missing"
+# Each post Ghost accepted is in the backup the operator restored, or, accepted
+# by the release after it started, was in the data the update left for them.
+missing=$(comm -23 <(sort -u "$accepted") <(printf '%s\n%s\n' "$titles" "$left" | sort -u))
+[[ -z $missing ]] || fail "posts Ghost accepted during the update were lost before the operator chose" "$missing"
 grep -qx 'Kept through the update' <<<"$titles" || fail "the seeded post was lost" "$titles"
-ok "every one of the $(wc -l <"$accepted" | tr -d ' ') posts Ghost accepted during the update is there"
+ok "each of the $(wc -l <"$accepted" | tr -d ' ') posts Ghost accepted during the update was kept until the operator chose"
 
 step "The backup that update took restores the site, its records, configuration and images"
 backup=$(comm -13 <(printf '%s\n' "$backups_before") \

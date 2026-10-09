@@ -6,8 +6,9 @@
 //      site, or empty; in a new directory, nothing on the daemon already
 //      uses the site's project name or ports, and over the site, no other
 //      directory's; the overrides in effect are the ones the backup was
-//      taken with; the backup's own configuration, staged outside the site,
-//      resolves exactly the images it records, and mounts the data where
+//      taken with; Compose, in this directory, resolves the files and
+//      `.env` the restore will write, read where the backup holds them, to
+//      exactly the images the backup records, with the data mounted where
 //      backup and restore handle it. Then the lock, and the recorded images
 //      are pulled before anything stops, and each must be, by its immutable
 //      identity, the image the site ran when it was backed up.
@@ -253,11 +254,31 @@ function refuseOtherOverrides(io: Io, dir: string, manifest: BackupManifest): vo
 }
 
 /**
+ * What Compose runs the restored site with, other than its directory: the
+ * backup's files where the backup holds them (in a checkout, the checkout's
+ * own compose.yml, which a checkout's backup does not hold), in the order
+ * Compose merges them once they are written, with the overrides the
+ * manifest records. Validation reads them there; the restore writes them.
+ */
+function restoredFiles(root: string, dir: string, manifest: BackupManifest): string[] {
+    const held = (file: string) => join(root, SITE_FILES_DIR, file);
+    const holds = (file: string) => `${SITE_FILES_DIR}/${file}` in manifest.files;
+    return [
+        holds(COMPOSE_FILE) ? held(COMPOSE_FILE) : join(dir, COMPOSE_FILE),
+        ...(holds(COMPOSE_OVERRIDE_FILE) ? [held(COMPOSE_OVERRIDE_FILE)] : []),
+        ...manifest.site.overrides.map(held),
+    ];
+}
+
+/** The restored site's `.env`: the backup's, with this directory as its own. */
+const restoredEnv = (text: string, dir: string): string =>
+    env.get(text, 'PROJECT_DIR') === dir ? text : env.set(text, 'PROJECT_DIR', dir);
+
+/**
  * The backup's configuration resolves exactly the images it records, and
  * mounts the data where restore loads it, checked before anything changes:
- * its files are staged outside the site, with, in a checkout, the
- * checkout's compose.yml, which a checkout's backup does not hold, and
- * resolved there as Compose will resolve them once written.
+ * Compose resolves, in this directory, the files the restore will write
+ * (restoredFiles) and the `.env` it will write, as they will be written.
  */
 async function refuseOtherConfiguration(
     io: Io,
@@ -265,55 +286,53 @@ async function refuseOtherConfiguration(
     dir: string,
     manifest: BackupManifest,
 ): Promise<void> {
-    const staging = mkdtempSync(join(tmpdir(), 'gd-restore-'));
+    const text = readIfExists(join(root, SITE_FILES_DIR, ENV_FILE));
+    if (text === undefined) {
+        throw new CliError(`the backup holds no ${ENV_FILE}. Nothing has been changed.`);
+    }
+    const restored = restoredEnv(text, dir);
+    // Compose reads an `.env` only from a file; this one is the restored
+    // site's, outside the site, removed once read.
+    const scratch = mkdtempSync(join(tmpdir(), 'gd-restore-'));
+    const envFile = join(scratch, ENV_FILE);
+    let resolved;
     try {
-        cpSync(join(root, SITE_FILES_DIR), staging, { recursive: true });
-        if (!existsSync(join(staging, COMPOSE_FILE)) && existsSync(join(dir, COMPOSE_FILE))) {
-            cpSync(join(dir, COMPOSE_FILE), join(staging, COMPOSE_FILE));
-        }
-        // As writeSiteFiles will: the site's path is the directory it is in.
-        const envPath = join(staging, ENV_FILE);
-        const text = readIfExists(envPath);
-        if (text !== undefined && env.get(text, 'PROJECT_DIR') !== undefined) {
-            atomicWrite(envPath, env.set(text, 'PROJECT_DIR', staging));
-        }
-        let resolved;
-        try {
-            resolved = await io.busy("Resolving the backup's configuration", () =>
-                resolveConfig(io, staging),
-            );
-        } catch (error) {
-            throw new CliError(
-                `the backup's configuration does not resolve${manifest.site.source === 'checkout' ? ' with this checkout' : ''}: ${(error as Error).message}. Nothing has been changed.`,
-            );
-        }
-        const services = new Set([
-            ...Object.keys(manifest.images),
-            ...Object.entries(resolved.services)
-                .filter(([, service]) => service.image !== null)
-                .map(([service]) => service),
-        ]);
-        const differ = [...services]
-            .sort()
-            .filter((service) => resolved.services[service]?.image !== manifest.images[service])
-            .map(
-                (service) =>
-                    `${service}: the backup records ${manifest.images[service] ?? 'nothing'}, its configuration resolves ${resolved.services[service]?.image ?? 'nothing'}`,
-            );
-        if (differ.length > 0) {
-            throw new CliError(
-                `the backup's configuration${manifest.site.source === 'checkout' ? ', with this checkout,' : ''} resolves other images than it records:\n` +
-                    differ.map((line) => `    ${line}\n`).join('') +
-                    '  Nothing has been changed.',
-            );
-        }
-        try {
-            refuseMovedData(siteFacts(staging, readSettings(staging)!), resolved);
-        } catch (error) {
-            throw new CliError(`in the backup's configuration, ${(error as Error).message}`);
-        }
+        atomicWrite(envFile, restored);
+        resolved = await io.busy("Resolving the backup's configuration", () =>
+            resolveConfig(io, dir, { files: restoredFiles(root, dir, manifest), envFile }),
+        );
+    } catch (error) {
+        throw new CliError(
+            `the backup's configuration does not resolve${manifest.site.source === 'checkout' ? ' with this checkout' : ''}: ${(error as Error).message}. Nothing has been changed.`,
+        );
     } finally {
-        rmSync(staging, { recursive: true, force: true });
+        rmSync(scratch, { recursive: true, force: true });
+    }
+    const services = new Set([
+        ...Object.keys(manifest.images),
+        ...Object.entries(resolved.services)
+            .filter(([, service]) => service.image !== null)
+            .map(([service]) => service),
+    ]);
+    const differ = [...services]
+        .sort()
+        .filter((service) => resolved.services[service]?.image !== manifest.images[service])
+        .map(
+            (service) =>
+                `${service}: the backup records ${manifest.images[service] ?? 'nothing'}, its configuration resolves ${resolved.services[service]?.image ?? 'nothing'}`,
+        );
+    if (differ.length > 0) {
+        throw new CliError(
+            `the backup's configuration${manifest.site.source === 'checkout' ? ', with this checkout,' : ''} resolves other images than it records:\n` +
+                differ.map((line) => `    ${line}\n`).join('') +
+                '  Nothing has been changed.',
+        );
+    }
+    const values = env.toRecord(restored);
+    try {
+        refuseMovedData(siteFacts(dir, { get: (key) => values[key] }), resolved);
+    } catch (error) {
+        throw new CliError(`in the backup's configuration, ${(error as Error).message}`);
     }
     ok(io, 'configuration', "the backup's resolves the images it records");
 }
@@ -528,8 +547,8 @@ function writeSiteFiles(io: Io, root: string, dir: string, manifest: BackupManif
     if (text === undefined) {
         throw new CliError(`the backup holds no ${ENV_FILE}`);
     }
-    if (env.get(text, 'PROJECT_DIR') !== dir) {
-        atomicWrite(envPath, env.set(text, 'PROJECT_DIR', dir));
+    if (restoredEnv(text, dir) !== text) {
+        atomicWrite(envPath, restoredEnv(text, dir));
     }
     const metadata = readMetadata(dir);
     if (metadata.state === 'present' && metadata.metadata.site.dir !== dir) {

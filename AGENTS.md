@@ -101,8 +101,10 @@ delivers it. `docs/install.md` describes what exists.
   release's images pulled while the site runs, a snapshot in
   `.ghost-docker-update/`, the writers paused and a backup taken, managed
   files by checksum (an edited one is kept beside `<file>.new`), validate,
-  pull, `up --wait`, verify, and on failure put back and report restored or
-  needs-the-operator. It refuses a clone,
+  pull, `up --wait`, verify. A failure before the release's services start
+  puts the files back and resumes the writers (restored); after, it stops
+  them, puts the files back, loads nothing, and names the backup for the
+  operator to restore. It refuses a clone,
   whose update is git's and Compose's. `src/lock.ts` is the site lock (§2.2).
 - Until the first stable release, `.ghost-docker.json`, the backup manifest and
   the launcher's `GD_*` contract are development formats (plan §2.7,
@@ -124,9 +126,10 @@ delivers it. `docs/install.md` describes what exists.
   `siteFiles` (`src/meta.ts`), with the overrides, is the one inventory of a
   site's files that backup copies, self-update snapshots and restore sets
   aside. Backup refuses a site whose running images are not what its
-  configuration names; restore checks the backup's configuration, staged
-  outside the site, and the pulled images' identities before it changes
-  anything.
+  configuration names, stopped ones included; restore resolves the inputs
+  it will write (`restoredFiles` and the restored `.env`, through
+  `ComposeInputs`) in the destination, and checks the pulled images'
+  identities, before it changes anything.
 - The manager asks a site's services directly: `src/network.ts` joins the
   manager's own container to the network the site's running containers share
   (discovered, never guessed) and leaves it however the work ends, and
