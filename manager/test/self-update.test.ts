@@ -17,19 +17,28 @@ import { afterEach, beforeEach, describe, test } from 'node:test';
 import { acquireLock } from '../src/lock.ts';
 import { SCHEMA_VERSION, writeMetadata } from '../src/meta.ts';
 import { failed, harness, ok, type Harness, type ProgramResult } from './helpers.ts';
-import { imageApi, imageStack, INDEX, LOCAL, makeSite, REFERENCE } from './site.ts';
+import {
+    imageApi,
+    imageStack,
+    INDEX,
+    LOCAL,
+    makeSite,
+    REFERENCE,
+    scriptSite,
+    writeSiteData,
+    type ScriptedSite,
+} from './site.ts';
 
 const FIRST = `sha256:${'2'.repeat(64)}`;
 const SECOND = `sha256:${'3'.repeat(64)}`;
-const HEALTHY_GHOST = JSON.stringify({ Service: 'ghost', State: 'running', Health: 'healthy' });
 
 let h: Harness;
 let stack: string;
+/** The running site: its Compose, its services and its database. */
+let site: ScriptedSite;
 let compose: string[][];
 /** The manager image's ID, which the launcher is pinned to (it has no repository digest). */
 let managerId: string;
-/** What each `up` answers, in order; then success. */
-let ups: ProgramResult[];
 let config: () => ProgramResult;
 
 const release = (version: string) =>
@@ -40,10 +49,16 @@ const pinnedImage = () => /^readonly GD_PINNED_IMAGE="(.*)"$/m.exec(readSite('gh
 const update = (...args: string[]) => h.run('self-update', ...args);
 const composed = (command: string) => compose.filter((args) => args[0] === command).length;
 
-/** Every file in the site, with its content, to compare before and after. */
+/**
+ * Every file in the site, with its content, to compare before and after:
+ * the data and the backups aside, which tests compare by what they hold.
+ */
 function snapshot(dir = h.dir, prefix = ''): Record<string, string> {
     const files: Record<string, string> = {};
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        if (prefix === '' && (entry.name === 'data' || entry.name === 'backups')) {
+            continue;
+        }
         const path = join(dir, entry.name);
         if (entry.isDirectory()) {
             Object.assign(files, snapshot(path, `${prefix}${entry.name}/`));
@@ -59,30 +74,19 @@ beforeEach(async () => {
     stack = imageStack(h);
     h.env.GD_VERSION_FILE = `${stack}-version.json`;
 
-    compose = [];
     managerId = FIRST;
-    ups = [];
     config = () => ok(JSON.stringify({ services: { ghost: { environment: {} } } }));
     h.daemon.api = imageApi({ manager: () => managerId });
-    h.daemon.composeRun = (args) => {
-        compose.push(args);
-        switch (args[0]) {
-            case 'config':
-                return config();
-            case 'up':
-                return ups.shift() ?? ok('');
-            case 'ps':
-                return ok(`${HEALTHY_GHOST}\n`);
-            default:
-                return ok('');
-        }
-    };
+    site = scriptSite(h, () => config());
+    compose = site.compose;
 
     release('v0.1.0-beta.1');
     h.env.GD_CHANNEL = 'beta';
     const installed = await h.run('install', '--local', '--no-start');
     assert.equal(installed.code, 0, installed.stderr);
-    compose = [];
+    writeSiteData(h.dir);
+    site.running.add('ghost').add('db');
+    compose.length = 0;
 
     // The next release: a new image, with a changed and a new file.
     release('v0.1.0-beta.2');
@@ -123,10 +127,15 @@ describe('an update between releases', () => {
         assert.equal(after.installedAt, before.installedAt);
         assert.match(after.updatedAt, /^\d{4}-\d\d-\d\dT/);
 
-        // Validated, pulled, started and verified, in that order.
+        // Backed up, then validated, pulled, started and verified, in that order.
         assert.deepEqual(
             compose.map((args) => args[0]),
-            ['config', 'config', 'pull', 'up', 'ps'],
+            ['config', 'ps', 'exec', 'ps', 'config', 'config', 'pull', 'up', 'ps'],
+        );
+        const [backup] = readdirSync(join(h.dir, 'backups'));
+        assert.match(
+            result.stdout,
+            new RegExp(`Backup +backups/${backup}, of the site before the update`),
         );
         assert.ok(!existsSync(join(h.dir, '.ghost-docker-update')));
         assert.ok(!existsSync(join(h.dir, '.ghost-docker.lock')));
@@ -226,7 +235,7 @@ describe('refusals that change nothing', () => {
         release('v0.1.0-beta.10');
         managerId = `sha256:${'5'.repeat(64)}`;
         assert.equal((await update()).code, 0);
-        compose = [];
+        compose.length = 0;
         release('v0.1.0-beta.9');
         managerId = SECOND;
         const before = snapshot();
@@ -316,7 +325,12 @@ describe('refusals that change nothing', () => {
 describe('a failed update', () => {
     test('validation failing puts the files back; the services were never changed', async () => {
         const before = snapshot();
-        config = () => failed(1, 'service "ghost" refers to undefined volume nope');
+        // The backup resolves the site as it is; the release does not.
+        const resolves = config;
+        config = () => {
+            config = () => failed(1, 'service "ghost" refers to undefined volume nope');
+            return resolves();
+        };
         const result = await update();
         assert.equal(result.code, 1);
         assert.match(
@@ -347,28 +361,116 @@ describe('a failed update', () => {
 
     test('services that do not start: the previous release is started again', async () => {
         const before = snapshot();
-        ups = [failed(1, 'container ghost is unhealthy')];
+        site.ups = [failed(1, 'container ghost is unhealthy')];
         const result = await update();
         assert.equal(result.code, 1);
         assert.match(result.stderr, /container ghost is unhealthy/);
-        assert.match(result.stderr, /Restored: .*, and its services running and healthy\./);
+        assert.match(
+            result.stderr,
+            /Restored: .*, its databases and content from the backup, and its services running and healthy\./,
+        );
         assert.match(result.stderr, /the update failed; v0\.1\.0-beta\.1 was restored/);
         assert.deepEqual(snapshot(), before);
         assert.equal(pinnedImage(), FIRST);
-        assert.equal(composed('up'), 2);
+        // The release's, a new database for the backup, then the previous release's.
+        assert.equal(composed('up'), 3);
+        assert.deepEqual([...site.running].sort(), ['db', 'ghost']);
+    });
+
+    test('a release that migrated the database, then failed, is put back from the backup', async () => {
+        const before = snapshot();
+        const rows = { ...site.rows };
+        // The release's services migrate the database as they start, and Ghost never becomes healthy.
+        site.onUp = () => {
+            site.rows = { ...site.rows, migrations: 121, activitypub_inbox: 0 };
+            site.onUp = () => {};
+        };
+        site.ups = [failed(1, 'container ghost is unhealthy')];
+        const result = await update();
+        assert.equal(result.code, 1);
+        assert.match(result.stderr, /Restored: the site is back on v0\.1\.0-beta\.1/);
+        assert.match(
+            result.stderr,
+            /The backup taken before the update is kept in backups\/\d{4}-\d\d-\d\dT/,
+        );
+
+        // The database as it was, its content, its files and the previous images.
+        assert.deepEqual(site.rows, rows);
+        assert.equal(readSite('data/ghost/images/photo.jpg'), 'jpeg');
+        // MySQL started on a new, empty data directory, and the dump was loaded into it.
+        assert.deepEqual(readdirSync(join(h.dir, 'data', 'mysql')), []);
+        assert.deepEqual(snapshot(), before);
+        assert.equal(pinnedImage(), FIRST);
+        assert.ok(!existsSync(join(h.dir, '.ghost-docker-update')));
+        assert.ok(!existsSync(join(h.dir, '.ghost-docker.lock')));
+
+        // Stopped before anything was put back, then started on the backup's data.
+        const after = compose.slice(compose.findIndex((args) => args[0] === 'up'));
+        assert.deepEqual(
+            after.map((args) => args[0]),
+            ['up', 'down', 'ps', 'up', 'exec', 'ps', 'up', 'ps'],
+        );
+        assert.equal(after[3]!.at(-1), 'db');
+        assert.deepEqual([...site.running].sort(), ['db', 'ghost']);
+    });
+
+    test('services that cannot be stopped are reported running, and nothing is put back over them', async () => {
+        const migrated = { ...site.rows, migrations: 121 };
+        site.onUp = () => {
+            site.rows = migrated;
+            site.onUp = () => {};
+        };
+        site.ups = [failed(1, 'container ghost is unhealthy')];
+        site.downs = [failed(1, 'cannot stop container')];
+        const result = await update();
+        assert.equal(result.code, 1);
+        assert.match(result.stderr, /the services could not be stopped: cannot stop container/);
+        assert.match(result.stderr, /These of its services are still running: db, ghost\./);
+        assert.match(result.stderr, /\.\/ghost-docker restore --yes backups\/\d{4}-/);
+        assert.match(result.stderr, /the site needs the operator/);
+        assert.deepEqual(site.rows, migrated);
+        assert.equal(readSite('data/mysql/ibdata1'), 'the database');
+        assert.ok(!existsSync(join(h.dir, '.ghost-docker-update', 'data')));
+        assert.deepEqual([...site.running].sort(), ['db', 'ghost']);
     });
 
     test('when the previous release does not start either, it says the operator is needed', async () => {
-        ups = [failed(1, 'container ghost is unhealthy'), failed(1, 'still unhealthy')];
+        site.ups = [
+            failed(1, 'container ghost is unhealthy'),
+            ok(''),
+            failed(1, 'still unhealthy'),
+        ];
         const result = await update();
         assert.equal(result.code, 1);
         assert.match(result.stderr, /The site needs you/);
         assert.match(result.stderr, /still unhealthy/);
-        assert.match(result.stderr, new RegExp(`its launcher still runs it`));
+        assert.match(result.stderr, /These of its services are still running: db, ghost\./);
+        assert.match(result.stderr, /\.\/ghost-docker restore --yes backups\/\d{4}-/);
+        assert.match(result.stderr, /its launcher still runs it/);
         assert.match(result.stderr, /the site needs the operator/);
-        // What it would have restored is kept for the operator.
+        // What it would have restored is kept for the operator, with the
+        // data the failed release ran on.
         assert.ok(existsSync(join(h.dir, '.ghost-docker-update', 'files', '.env')));
+        assert.equal(readSite('.ghost-docker-update/data/mysql/ibdata1'), 'the database');
+        assert.match(
+            result.stderr,
+            /The data the update's services ran on is in .*\.ghost-docker-update\/data/,
+        );
         assert.ok(!existsSync(join(h.dir, '.ghost-docker.lock')));
+    });
+
+    test('a backup that fails changes nothing', async () => {
+        const before = snapshot();
+        h.daemon.sql = () => [['0']];
+        const result = await update();
+        assert.equal(result.code, 1);
+        assert.match(result.stderr, /Its services were not changed/);
+        assert.deepEqual(snapshot(), before);
+        assert.ok(
+            !existsSync(join(h.dir, 'backups')) || readdirSync(join(h.dir, 'backups')).length === 0,
+        );
+        assert.equal(composed('up'), 0);
+        assert.equal(composed('pull'), 0);
     });
 });
 
@@ -383,19 +485,12 @@ describe('a checkout', () => {
         // A different directory: a checkout, not an installed image-mode site.
         h.cleanup();
         h = harness();
-        compose = [];
-        ups = [];
-        h.daemon.composeRun = (args) => {
-            compose.push(args);
-            if (args[0] === 'up') {
-                return ups.shift() ?? ok('');
-            }
-            if (args[0] === 'pull') {
-                return ok('');
-            }
-            return args[0] === 'ps' ? ok(`${HEALTHY_GHOST}\n`) : undefined;
-        };
         makeSite(h, LOCAL, {});
+        const made = h.daemon.composeRun!;
+        site = scriptSite(h, (args) => made(args, {}));
+        compose = site.compose;
+        writeSiteData(h.dir);
+        site.running.add('ghost').add('db');
         mkdirSync(join(h.dir, 'manager'));
         writeFileSync(join(h.dir, 'manager', 'Dockerfile'), 'FROM scratch\n');
         writeMetadata(h.dir, {
@@ -475,14 +570,15 @@ describe('a checkout', () => {
     });
 
     test('a failure checks the previous commit out and starts it again', async () => {
-        ups = [failed(1, 'container ghost is unhealthy')];
+        site.ups = [failed(1, 'container ghost is unhealthy')];
         const before = snapshot();
         const result = await update();
         assert.equal(result.code, 1);
         assert.deepEqual(gitCalls.at(-1), ['checkout', '--quiet', '--detach', PREVIOUS]);
         assert.match(result.stderr, /The checkout is at aaaaaaaaaaaa again, with a detached HEAD/);
         assert.deepEqual(snapshot(), before);
-        assert.equal(composed('up'), 2);
+        assert.equal(composed('up'), 3);
+        assert.deepEqual([...site.running].sort(), ['db', 'ghost']);
     });
 
     test('git that cannot read the checkout is refused', async () => {

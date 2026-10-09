@@ -17,7 +17,14 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { DockerRequest, DockerResponse } from '../src/docker/transport.ts';
 import * as env from '../src/env.ts';
-import { failed, json, ok, type CreatedContainer, type Harness } from './helpers.ts';
+import {
+    failed,
+    json,
+    ok,
+    type CreatedContainer,
+    type Harness,
+    type ProgramResult,
+} from './helpers.ts';
 
 export const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -215,4 +222,150 @@ export function rootContainer(spec: CreatedContainer): { status: number } | unde
         return { status: 0 };
     }
     return undefined;
+}
+
+// --- A running site, for backup and recovery ---------------------------------------
+
+/** What a scripted site's Compose, MySQL and one-shot containers do, and their state. */
+export interface ScriptedSite {
+    /** Every `docker-compose` run, by its arguments after the project options. */
+    readonly compose: string[][];
+    /** What each `up` answers, in order; then success. */
+    ups: ProgramResult[];
+    /** What each `down` answers, in order; then success. */
+    downs: ProgramResult[];
+    /** The services running: what `up` started, until `down` or `stop`; none at first. */
+    readonly running: Set<string>;
+    /** Ghost's database, table by table, as the site's MySQL holds it. */
+    rows: Record<string, number>;
+    /** Run as `up` starts every service: what a release's migrations do to `rows`. */
+    onUp: () => void;
+}
+
+const SITE_DUMP =
+    '-- MySQL dump\nCREATE TABLE `posts` (id int);\n-- Dump completed on 2026-10-09\n';
+
+/** The site's content and MySQL's data directory, with a file in each. */
+export function writeSiteData(dir: string): void {
+    mkdirSync(join(dir, 'data', 'ghost', 'images'), { recursive: true });
+    writeFileSync(join(dir, 'data', 'ghost', 'images', 'photo.jpg'), 'jpeg');
+    mkdirSync(join(dir, 'data', 'mysql'), { recursive: true });
+    writeFileSync(join(dir, 'data', 'mysql', 'ibdata1'), 'the database');
+}
+
+/**
+ * A site with a database to dump and load. A dump records
+ * `rows`; the scratch check and a load answer what it recorded. `config` is
+ * what the test's own Compose answers, and is given the images Compose
+ * resolves for a backup to record.
+ */
+export function scriptSite(
+    h: Harness,
+    config: (args: string[]) => ProgramResult | undefined,
+    images: Record<string, string> = {
+        ghost: REFERENCE,
+        db: `mysql:8.0.44@sha256:${'4'.repeat(64)}`,
+    },
+): ScriptedSite {
+    const site: ScriptedSite = {
+        compose: [],
+        ups: [],
+        downs: [],
+        running: new Set(),
+        rows: { posts: 3, users: 1, migrations: 120 },
+        onUp: () => {},
+    };
+    let dumped: Record<string, number> = {};
+
+    h.daemon.run = (spec) =>
+        spec.entrypoint[0] === 'sh'
+            ? {
+                  status: 0,
+                  stdout: spec.cmd
+                      .map(
+                          (database) =>
+                              `== ${database}\n${Object.entries(dumped)
+                                  .map(([table, rows]) => `${table}\t${rows}`)
+                                  .join('\n')}\n`,
+                      )
+                      .join(''),
+              }
+            : rootContainer(spec);
+    h.daemon.sql = (sql) => {
+        if (sql.includes('information_schema')) {
+            return [[String(Object.keys(site.rows).length)]];
+        }
+        if (sql.includes('COUNT(*)')) {
+            return Object.entries(site.rows).map(([table, rows]) => [table, String(rows)]);
+        }
+        return undefined;
+    };
+    h.daemon.composeRun = (args) => {
+        site.compose.push(args);
+        switch (args[0]) {
+            case 'config': {
+                const answer = config(args);
+                if (answer === undefined || answer.exitCode !== 0) {
+                    return answer;
+                }
+                const project = JSON.parse(String(answer.stdout));
+                for (const [service, image] of Object.entries(images)) {
+                    project.services[service] = {
+                        environment: {},
+                        ...project.services[service],
+                        image,
+                    };
+                }
+                return ok(JSON.stringify(project));
+            }
+            case 'up': {
+                // What `up --wait` starts stays running, healthy or not.
+                const named = args.slice(args.indexOf('--wait-timeout') + 2);
+                if (named.length === 0) {
+                    site.onUp();
+                }
+                for (const service of named.length > 0 ? named : ['ghost', 'db']) {
+                    site.running.add(service);
+                }
+                return site.ups.shift() ?? ok('');
+            }
+            case 'down': {
+                const answer = site.downs.shift() ?? ok('');
+                if (answer.exitCode === 0) {
+                    site.running.clear();
+                }
+                return answer;
+            }
+            case 'stop':
+                if (args.includes('db')) {
+                    site.running.delete('db');
+                } else {
+                    site.running.clear();
+                }
+                return ok('');
+            case 'ps':
+                return ok(
+                    [...site.running]
+                        .map((service) =>
+                            JSON.stringify({
+                                Service: service,
+                                State: 'running',
+                                Health: 'healthy',
+                            }),
+                        )
+                        .join('\n') + '\n',
+                );
+            case 'exec':
+                if ((args[args.indexOf('-c') + 1] ?? '').includes('mysqldump')) {
+                    dumped = { ...site.rows };
+                    return ok(SITE_DUMP);
+                }
+                // Loading a dump, into the new, empty database.
+                site.rows = { ...dumped };
+                return ok('');
+            default:
+                return ok('');
+        }
+    };
+    return site;
 }

@@ -430,6 +430,14 @@ and loads each dump as the site's user, checking every table's rows. Then
 the operator with what to do; the set-aside site is removed only once the
 restore is verified.
 
+**Recovery** is one module (`manager/src/recovery.ts`) that restore, stack
+updates and, when they land, Ghost upgrades and the supervisor share: services
+stopped and their state observed through Compose, never assumed; data and
+files set aside one boundary at a time, so instructions name only copies that
+exist and never direct a removal on the strength of a step that did not
+complete; and a backup's content and databases loaded into the site. It
+resumes nothing.
+
 **Ghost upgrade:**
 
 1. Take the lock. Resolve the target to one exact image of the same major and
@@ -593,15 +601,18 @@ Flow:
 1. Take the lock; in clone mode refuse a dirty tracked tree.
 2. Resolve the release, refuse a downgrade, and record the previous version and
    digest.
-3. Back up (§2.5), which also keeps the operator's files and, in image mode, the
-   payload being replaced. Until S4 a snapshot in `.ghost-docker-update/` keeps
-   the files; the database is not touched by a stack update.
+3. Back up (§2.5). A snapshot in `.ghost-docker-update/` keeps the operator's
+   files and, in image mode, the payload being replaced; the backup keeps the
+   databases and content, which a release's services may migrate even when
+   Ghost's pin does not change.
 4. Write the managed files, run the release's migration scripts in order (each
    recorded in metadata when it completes), validate Compose, pull images, `up
    --wait`, and verify as `check` does.
 5. On a failure, put the previous payload and configuration back (in clone mode,
-   by checking the previous commit out), `up --wait`, and report restored or
-   needs the operator. Never report success because `up -d` returned zero.
+   by checking the previous commit out). Once services had changed, stop them
+   first and load the backup's databases and content (recovery.ts) before `up
+   --wait` and verify. Report restored or needs the operator. Never report
+   success because `up -d` returned zero.
 6. On success, rewrite the site's launcher to pin the new digest. The launcher
    holds the pin, so it is replaced even when edited; an edited copy is kept as
    `ghost-docker.edited`.
@@ -1439,6 +1450,12 @@ while building it:
   `config validate` only warns about.
 - **Metadata** gained `updatedAt` and `stack.previous`, defaulting to `null`
   so files written before them still read; `schemaVersion` stays 1.
+- **Backup-backed recovery** (PLA-512, ahead of S6b): `self-update` takes a
+  backup after its snapshot. A failure once the services changed stops them,
+  sets the data aside in `.ghost-docker-update/data/`, loads the backup's
+  databases and content, and starts and verifies the previous release; if
+  that fails, it names the backup to `restore`. The backup is kept either way.
+  A site whose `.env` moves its data is refused, as `backup` refuses it.
 
 **S6b — Legacy-layout migration and transactional updates.** Deps: S4, S6a. The
 release migration scripts (run in order, recorded in metadata), migration
@@ -1492,11 +1509,14 @@ while building it:
   from a newer schema, and the root password always matches the restored
   `.env`.
 - **Over a site, `restore` asks** (`--yes` answers; with no terminal it is
-  required), and sets the site aside in `.ghost-docker-restore/`, moved as root
-  by a one-shot container because MySQL owns its data. A failure reports
-  "needs the operator" with the steps to put it back; it does not put it back
-  itself. `check` reports the directory and another restore is refused while
-  it is there.
+  required), and sets the site aside in `.ghost-docker-restore/`, each data
+  directory moved as root by its own one-shot container because MySQL owns its
+  data. A site that cannot be stopped is left in place; a set-aside that fails
+  is moved back before anything is written. Once writing, a failure stops the
+  services and reports "needs the operator", with the services' observed
+  state and the steps to put it back, naming only copies that exist; it does
+  not put it back itself. `check` reports the directory and another restore is
+  refused while it is there.
 - **Into a new directory**, the site keeps its project name and ports, so
   containers of the same project and busy ports are refused, named, never
   stopped. `PROJECT_DIR` and the metadata's `site.dir` are rewritten to the
