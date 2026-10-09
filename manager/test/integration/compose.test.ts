@@ -9,7 +9,7 @@ import { makeSite, NO_HOST_PORTS, realIo } from './site.ts';
 const io = realIo();
 
 test("the image's Compose is at least the minimum the stack needs", async () => {
-    const version = await composeVersion(io.exec);
+    const version = await composeVersion(io);
     assert.ok(version !== null, 'docker-compose did not run');
     assert.ok(atLeast(version, MINIMUM.compose), `${version} < ${MINIMUM.compose}`);
 });
@@ -34,9 +34,7 @@ test('the keys that belong in .env are what Compose interpolates, overrides incl
 
 test('every profile is `*` to Compose, so undo finds whatever a failed install started', async () => {
     const site = makeSite(io, 'profiles', { profiles: 'local' });
-    const listed = await compose(io, site.dir, ['config', '--services'], {
-        env: { COMPOSE_PROFILES: ALL_PROFILES },
-    });
+    const listed = await compose(io, { dir: site.dir, profiles: ALL_PROFILES })`config --services`;
     assert.equal(listed.exitCode, 0, listed.stderr);
     const services = listed.stdout.trim().split('\n').sort();
     for (const service of ['activitypub', 'caddy', 'db', 'ghost', 'mailpit', 'traffic-analytics']) {

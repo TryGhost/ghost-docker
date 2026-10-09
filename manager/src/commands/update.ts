@@ -59,6 +59,9 @@ import {
     type ManagerRelease,
 } from './common.ts';
 
+/** How long pulling a release's images may take. */
+const PULL_MS = 30 * 60 * 1000;
+
 const options = z
     .object({
         check: flag('Say whether there is an update and what it would change; change nothing.'),
@@ -554,8 +557,9 @@ async function apply(update: Update): Promise<number> {
 
         stage = 'pull';
         heading(io, 'Starting the services');
-        const pull = await io.busy('Pulling the images this release names', () =>
-            compose(io, dir, ['pull', '--quiet', '--ignore-buildable'], { timeoutMs: 1_800_000 }),
+        const pull = await io.busy(
+            'Pulling the images this release names',
+            () => compose(io, { dir, timeout: PULL_MS })`pull --quiet --ignore-buildable`,
         );
         if (pull.exitCode !== 0) {
             throw new CliError(`the images could not be pulled: ${composeError(pull)}`);

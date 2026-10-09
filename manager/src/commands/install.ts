@@ -745,11 +745,9 @@ async function undoInstall(
     io.stderr(`\n${describeError(error)}\n`);
     importing?.markIncomplete();
     if (created.project) {
-        const logs = await io.busy("Reading the services' logs", () =>
-            compose(io, dir, ['logs', '--no-color', '--tail', '30'], {
-                timeoutMs: 60_000,
-                env: { COMPOSE_PROFILES: ALL_PROFILES },
-            }),
+        const logs = await io.busy(
+            "Reading the services' logs",
+            () => compose(io, { dir, profiles: ALL_PROFILES })`logs --no-color --tail 30`,
         );
         if (logs.stdout.trim()) {
             io.stderr(`\nThe services' last words:\n${logs.stdout.trimEnd()}\n`);

@@ -11,7 +11,14 @@ import { join } from 'node:path';
 import type { BundleManifest } from './bundle/manifest.ts';
 import { BundleRefused, removeStaging, stageBundle, type StagedBundle } from './bundle/stage.ts';
 import { ServiceUnreachable } from './clients.ts';
-import { ALL_PROFILES, compose, composeDown, composeError, composeUp } from './compose.ts';
+import {
+    ALL_PROFILES,
+    compose,
+    composeDown,
+    composeError,
+    composeStop,
+    composeUp,
+} from './compose.ts';
 import type { Context } from './context.ts';
 import * as env from './env.ts';
 import { CliError, UsageError } from './errors.ts';
@@ -224,10 +231,7 @@ export class Importing {
         }
         if (created.project) {
             await this.io.busy('Stopping what the import started', () =>
-                compose(this.io, this.dir, ['stop', '--timeout', '20'], {
-                    timeoutMs: 300_000,
-                    env: { COMPOSE_PROFILES: ALL_PROFILES },
-                }),
+                composeStop(this.io, this.dir, ALL_PROFILES),
             );
         }
         this.io.stderr(
@@ -343,16 +347,13 @@ export async function importSite(
 ): Promise<void> {
     io.stdout('\nImporting the site\n');
     markIncomplete(dir);
-    const withProfiles = { env: { COMPOSE_PROFILES: profiles } };
 
     // Content first, while no container has mounted the directory.
     placeContent(root, join(dir, DATA_DIRS[0]));
     ok(io, 'content', `the bundle's content/ in ${DATA_DIRS[0]}`);
 
     started();
-    const db = await io.busy('Starting the database', () =>
-        composeUp(io, dir, ['db'], withProfiles.env),
-    );
+    const db = await io.busy('Starting the database', () => composeUp(io, dir, ['db'], profiles));
     if (db.exitCode !== 0) {
         throw new CliError(`the database did not become ready: ${composeError(db)}`);
     }
@@ -361,17 +362,14 @@ export async function importSite(
     if (manifest.kind === 'mysql-data') {
         // Rows only: Ghost creates the schema they are loaded into.
         await io.busy(`Starting Ghost ${version} once to create its schema`, async () => {
-            const up = await composeUp(io, dir, ['ghost'], withProfiles.env);
+            const up = await composeUp(io, dir, ['ghost'], profiles);
             if (up.exitCode !== 0) {
                 throw new CliError(
                     `Ghost ${version} did not finish creating its database schema: ${composeError(up)}`,
                 );
             }
             // Removed rather than only stopped, so the next start is a clean one.
-            const stop = await compose(io, dir, ['rm', '--stop', '--force', 'ghost'], {
-                ...withProfiles,
-                timeoutMs: 120_000,
-            });
+            const stop = await compose(io, { dir, profiles })`rm --stop --force ghost`;
             if (stop.exitCode !== 0) {
                 throw new CliError(`Ghost could not be stopped: ${composeError(stop)}`);
             }

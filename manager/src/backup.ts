@@ -290,11 +290,14 @@ export async function takeBackup({
         const liveTables = new Map<string, number>();
         for (const name of databases) {
             const file = join(partial, DATABASE_DIR, `${name}.sql`);
-            const dump = await io.busy(`Dumping the ${name} database`, () =>
-                compose(io, dir, ['exec', '-T', '-e', `DB=${name}`, 'db', 'sh', '-c', DUMP], {
-                    output: file,
-                    timeoutMs: DATABASE_MS,
-                }),
+            const dump = await io.busy(
+                `Dumping the ${name} database`,
+                () =>
+                    compose(io, {
+                        dir,
+                        output: file,
+                        timeout: DATABASE_MS,
+                    })`exec -T -e DB=${name} db sh -c ${DUMP}`,
             );
             if (dump.exitCode !== 0) {
                 throw new CliError(
@@ -437,7 +440,7 @@ export async function takeBackup({
         throw error;
     } finally {
         if (startedDb) {
-            await compose(io, dir, ['stop', 'db'], { timeoutMs: 120_000 });
+            await compose(io, { dir })`stop db`;
         }
     }
 }

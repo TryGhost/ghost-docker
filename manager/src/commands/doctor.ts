@@ -86,7 +86,7 @@ export async function collect(context: Context, io: Io, keepProbe = false): Prom
         keepProbe,
         cwd: io.cwd(),
         daemon: await daemonInfo(io.docker),
-        compose: await composeVersion(io.exec),
+        compose: await composeVersion(io),
     };
     const checks = await runChecks(HOST_CHECKS, facts);
 

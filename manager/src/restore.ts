@@ -23,7 +23,14 @@ import * as tar from 'tar';
 import { asRoot, removeAsRoot } from './asroot.ts';
 import { backupSiteFiles, readBackup } from './backup.ts';
 import { SITE_FILES_DIR, type BackupManifest } from './backup/manifest.ts';
-import { composeConfig, composeDown, composeError, composeUp, upAndWait } from './compose.ts';
+import {
+    ALL_PROFILES,
+    composeConfig,
+    composeDown,
+    composeError,
+    composeUp,
+    upAndWait,
+} from './compose.ts';
 import type { Context } from './context.ts';
 import {
     DaemonError,
@@ -320,7 +327,7 @@ async function ensureImage(io: Io, reference: string): Promise<void> {
 async function setAside(io: Io, context: Context, dir: string): Promise<void> {
     heading(io, 'Setting the current site aside');
     const down = await io.busy('Stopping the site', () =>
-        composeDown(io, dir, { allProfiles: true }),
+        composeDown(io, dir, { profiles: ALL_PROFILES }),
     );
     if (down.exitCode !== 0) {
         throw new CliError(`the site could not be stopped: ${composeError(down, 2)}`);

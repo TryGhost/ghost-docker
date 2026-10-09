@@ -30,24 +30,16 @@ const CLIENT =
 const loadDatabase = (
     io: Io,
     dir: string,
-    { profiles, database }: { profiles: string; database?: string },
+    { profiles, database = '' }: { profiles: string; database?: string },
     input: Readable,
-    timeoutMs: number,
 ): Promise<ComposeResult> =>
-    compose(
-        io,
+    // An empty DB is the site's own database.
+    compose(io, {
         dir,
-        [
-            'exec',
-            '-T',
-            ...(database === undefined ? [] : ['-e', `DB=${database}`]),
-            'db',
-            'sh',
-            '-c',
-            CLIENT,
-        ],
-        { env: { COMPOSE_PROFILES: profiles }, input, timeoutMs },
-    );
+        profiles,
+        input,
+        timeout: DATABASE_MS,
+    })`exec -T -e DB=${database} db sh -c ${CLIENT}`;
 
 export interface DatabaseSession {
     /** COMPOSE_PROFILES for finding the db container, when `.env` does not select it yet. */
@@ -74,13 +66,7 @@ export async function withSiteDatabase<T>(
 ): Promise<T> {
     const settings = readSettings(dir);
     const value = (key: string, fallback: string) => settings?.get(key) || fallback;
-    const known =
-        services ??
-        (await composePs(
-            io,
-            dir,
-            profiles === undefined ? undefined : { COMPOSE_PROFILES: profiles },
-        ));
+    const known = services ?? (await composePs(io, dir, profiles));
     if (known === null) {
         throw new CliError(
             `${failure}: docker compose ps failed, so the db container was not found`,
@@ -261,7 +247,7 @@ export async function loadFile(
     input.on('error', (error) => {
         unreadable ??= error;
     });
-    const load = await io.busy(spinner, () => loadDatabase(io, dir, session, input, DATABASE_MS));
+    const load = await io.busy(spinner, () => loadDatabase(io, dir, session, input));
     input.destroy();
     if (unreadable !== null) {
         throw new CliError(`${file} could not be read: ${(unreadable as Error).message}`);

@@ -7,7 +7,7 @@ import { existsSync, rmdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { removeStaging } from './bundle/stage.ts';
-import { composeDown, composeError } from './compose.ts';
+import { ALL_PROFILES, composeDown, composeError } from './compose.ts';
 import type { Context } from './context.ts';
 import { removeAsRoot } from './asroot.ts';
 import { atomicWrite, PRIVATE, readIfExists } from './fs.ts';
@@ -93,7 +93,10 @@ export class Created implements Written {
         if (this.project) {
             // Every profile, so whatever was started is found; the .env it
             // interpolates is still in place.
-            const down = await composeDown(this.io, this.dir, { volumes: true, allProfiles: true });
+            const down = await composeDown(this.io, this.dir, {
+                volumes: true,
+                profiles: ALL_PROFILES,
+            });
             if (down.exitCode !== 0) {
                 leftovers.push(
                     `the project's containers (docker compose down failed: ${composeError(down, 2)})`,
