@@ -22,7 +22,7 @@ const nullable = z.string().min(1).nullable();
 export const metadataSchema = z.strictObject({
     schemaVersion: z.literal(SCHEMA_VERSION),
     installedAt: z.iso.datetime(),
-    /** When `update` last completed; null until it has. */
+    /** When `self-update` last completed; null until it has. */
     updatedAt: z.iso.datetime().nullable().default(null),
     mode: z.enum(SITE_MODES),
     channel: z.enum(['stable', 'beta', 'edge']).nullable(),

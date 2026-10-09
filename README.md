@@ -15,14 +15,14 @@ Configuration to run Ghost and its services with Docker Compose.
 # Linux, macOS, and Windows through WSL2; or --domain example.com --email ops@example.com
 curl -fsSL https://docker.ghost.org/install.sh | bash -s -- install --local
 ./ghost-docker check
-./ghost-docker update
+./ghost-docker self-update
 ```
 
 `install` writes the configuration, generates credentials, pins Ghost to an
 exact image digest, writes Caddy's routes, starts the site and
 reaches it through its own ingress; a failed installation removes what it
 created. `config`, `check`, `info`, `list` and `doctor` look after it
-afterwards, and `update` moves it to a newer release of the stack. See [docs/install.md](docs/install.md). The other commands in these
+afterwards, and `self-update` moves it to a newer release of ghost-docker. See [docs/install.md](docs/install.md). The other commands in these
 documents are the planned interface, and each arrives with its plan step.
 
 Everything runs in a container. From a clone of this repository the launcher

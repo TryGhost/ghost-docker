@@ -22,14 +22,14 @@ a beta.
 | Choose | With | Runs |
 | --- | --- | --- |
 | A channel | `--channel stable` or `--channel beta` (the default) | The newest release on it. `beta` includes releases; `stable` has no betas. |
-| A release | `--release vX.Y.Z` (`--to` for `update`) | Exactly that release |
+| A release | `--release vX.Y.Z` (`--to` for `self-update`) | Exactly that release |
 | The development image | `GD_CHANNEL=edge` | `edge`, built from every push to `next-docker`. Not a release. |
 
 These go to the launcher with the command: `curl -fsSL
 https://docker.ghost.org/install.sh | bash -s -- install --local --release
 v0.1.0-beta.1`. A site always runs one image digest, never a channel: `install`
 pins the site's launcher to the digest it ran as, and records the channel the
-site follows, which `update` uses.
+site follows, which `self-update` uses.
 
 Everything happens in the manager image; the host needs Docker Engine 25.0+
 with the Compose v2.24+ plugin, and bash. **One directory is one site.** The
@@ -385,7 +385,7 @@ offered; for a private name, put `tls internal` in a `caddy/custom/` file.
 ./ghost-docker info       # the recorded installation metadata, and where Mailpit's inbox is
 ./ghost-docker list       # every ghost-docker site on this host, stopped ones included, and its directory
 ./ghost-docker config get|set|validate
-./ghost-docker update     # to a newer release of the stack; see below
+./ghost-docker self-update  # to a newer release of ghost-docker; see below
 ./ghost-docker backup     # the databases, content and configuration, into backups/
 ./ghost-docker restore backups/<backup>
 ```
@@ -401,17 +401,17 @@ directory, and `list` says so.
 `check` exits non-zero when anything is wrong. Its host and configuration
 checks still run when Docker is unreachable, which is when they matter most.
 
-## update
+## self-update
 
 ```text
-ghost-docker update [--check] [--channel stable|beta | --to vX.Y.Z]
+ghost-docker self-update [--check] [--channel stable|beta | --to vX.Y.Z]
 ```
 
-Moves the site to a newer release of the stack: its files and the manager
-image. **It never changes Ghost.** `.env`, and the exact Ghost image
-`GHOST_IMAGE_REF` pins, are left as they are; Ghost upgrades are a separate
-command (S7). When a release needs a newer Ghost than the site runs, `update`
-stops before changing anything and says to upgrade Ghost first.
+Moves the site to a newer release of ghost-docker: the stack's files and the
+manager image. **It never changes Ghost.** `.env`, and the exact Ghost image
+`GHOST_IMAGE_REF` pins, are left as they are; updating Ghost is a separate
+command, `update` (S7). When a release needs a newer Ghost than the site runs,
+`self-update` stops before changing anything and says to upgrade Ghost first.
 
 Without options it updates to the newest release on the channel the site
 follows. `--channel` updates to the newest on another channel and follows that
@@ -440,7 +440,7 @@ In order:
 4. **The stack's files.** A file the manager wrote and nobody has edited is
    replaced. An edited one (its checksum is not the one recorded when it was
    written) is kept, the release's version is written beside it as
-   `<file>.new`, and `update` names both; compare them and merge what you
+   `<file>.new`, and `self-update` names both; compare them and merge what you
    need. It never asks. A file the release no longer has is removed when it
    is untouched, and kept when it was edited.
 5. **Validate, pull, start, verify.** Compose must resolve the project and the
@@ -466,12 +466,12 @@ usage error.
 ### Updating a clone
 
 A site that is a clone of this repository is updated with git, then
-`./ghost-docker update`, which applies the checked-out files:
+`./ghost-docker self-update`, which applies the checked-out files:
 
 ```bash
 git fetch --tags
 git checkout v0.1.0-beta.2
-./ghost-docker update
+./ghost-docker self-update
 ```
 
 The update is the same, except that the stack's files are already in place

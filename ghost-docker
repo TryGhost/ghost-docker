@@ -15,17 +15,17 @@
 #   --release, --to TAG   Run this release: vX.Y.Z or vX.Y.Z-beta.N.
 #
 # --channel, --release and --to choose the image, and are passed on to the command
-# too: `install --channel beta`, `install --release v1.2.0`, `update --to v1.2.0`.
+# too: `install --channel beta`, `install --release v1.2.0`, `self-update --to v1.2.0`.
 #
 # Which image runs, first match wins:
 #
-#   GD_IMAGE           an image you name
-#   --release or --to  that release
-#   --channel          the newest release on that channel, pulled every time
-#   update, in a site  the newest release on the channel the site follows
-#   a pinned image     written into a site's own copy of this script at install
-#   a checkout         this script next to manager/Dockerfile builds from it
-#   GD_CHANNEL         a published channel (default: beta), pulled every time
+#   GD_IMAGE                 an image you name
+#   --release or --to        that release
+#   --channel                the newest release on that channel, pulled every time
+#   self-update, in a site   the newest release on the channel the site follows
+#   a pinned image           written into a site's own copy of this script at install
+#   a checkout               this script next to manager/Dockerfile builds from it
+#   GD_CHANNEL               a published channel (default: beta), pulled every time
 #
 # Requires bash and Docker with the Compose plugin. Nothing else. On Windows,
 # run it inside WSL2. The contract this implements is
@@ -36,7 +36,7 @@ readonly GD_REGISTRY_IMAGE="ghcr.io/tryghost/ghost-docker"
 # Replaced with `repository@sha256:...` in the copy installed into a site.
 readonly GD_PINNED_IMAGE=""
 # Replaced with the channel the site follows (stable, beta or edge), which
-# `update` resolves when no other release is named.
+# `self-update` resolves when no other release is named.
 readonly GD_PINNED_CHANNEL=""
 # How long Docker may take to answer before it is treated as not running. A
 # daemon that has wedged stops answering rather than returning an error.
@@ -256,7 +256,7 @@ elif [[ -n $release ]]; then
     image="$GD_REGISTRY_IMAGE:$release"
 elif [[ -n $channel ]]; then
     use_channel "$channel"
-elif [[ -n $GD_PINNED_IMAGE && ${args[0]:-} == update ]]; then
+elif [[ -n $GD_PINNED_IMAGE && ${args[0]:-} == self-update ]]; then
     # The updater is the release being updated to, never the one the site runs.
     use_channel "${GD_PINNED_CHANNEL:-beta}"
 elif [[ -n $GD_PINNED_IMAGE ]]; then
