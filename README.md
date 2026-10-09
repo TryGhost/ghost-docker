@@ -80,10 +80,19 @@ launcher. Nothing else on the host. Windows is supported through WSL2.
 cd manager && pnpm install     # pnpm via corepack: npm i -g corepack && corepack enable
 pnpm run format:check && pnpm run lint && pnpm run typecheck && pnpm test
 
+manager/test/integration/run.sh  # the manager against the real daemon, MySQL and Caddy
+
 tests/e2e/launcher.sh        # the launcher against a stand-in docker, then the real image
 tests/e2e/install.sh         # real installations: pulls images, binds 80 and 443
-tests/e2e/update.sh          # real updates between releases built here, and a clone's commits
+tests/e2e/self-update.sh     # real updates between releases built here, and a clone's commits
+tests/e2e/backup.sh          # real backups and restores, with ActivityPub
+tests/e2e/import.sh          # real Ghost-CLI sites exported and imported
 ```
+
+An e2e script fails when this host cannot run one of its scenarios (no
+Docker, port 80 or 443 already held, no `mysqldump`), so a passing run, and
+CI, ran everything. `GD_E2E_ALLOW_SKIP=1` skips those on purpose instead, and
+the run ends by naming each one it skipped.
 
 Releases are cut by the Release workflow (Actions → Release → Run workflow),
 with [`scripts/release.ts`](scripts/release.ts), as Ghost's and Ghost-CLI's are; see [docs/install.md](docs/install.md#releases).

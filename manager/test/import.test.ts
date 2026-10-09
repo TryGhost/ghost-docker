@@ -32,6 +32,22 @@ import { failed, harness, ok, ps, type Harness, type ProgramResult } from './hel
 import { fixture, imageApi, imageStack, REFERENCE, rootContainer, type Manifest } from './site.ts';
 
 const VERSION = '6.2.0';
+/**
+ * A bundle's database file: a view's DEFINER, which a dump's load drops, and
+ * enough rows that it is read in many pieces.
+ */
+const BUNDLE_SQL =
+    "INSERT INTO `posts` VALUES ('1');\n" +
+    '/*!50013 DEFINER=`root`@`%` SQL SECURITY DEFINER */\n' +
+    Array.from({ length: 4000 }, (_, i) => `INSERT INTO \`posts_meta\` VALUES ('${i}');\n`).join(
+        '',
+    ) +
+    '-- the last line\n';
+/** The same, as a dump's load reads it. */
+const FILTERED_SQL = BUNDLE_SQL.replace(
+    '/*!50013 DEFINER=`root`@`%` SQL SECURITY DEFINER */',
+    '/*!50013 SQL SECURITY DEFINER */',
+);
 
 // --- The pieces ---------------------------------------------------------------
 
@@ -185,6 +201,8 @@ let calls: { args: string[]; profiles: string | undefined; input: string | undef
 /** What the database answers; the load and the final `up` can be made to fail. */
 let database: { rows: Record<string, number>; tables: string; migrations: string };
 let load: () => ProgramResult;
+/** What the site's MySQL client read on its standard input, each load. */
+let loaded: string[];
 let pulls: string[];
 let images: Record<string, string>;
 
@@ -197,6 +215,7 @@ beforeEach(() => {
     pulls = [];
     database = { rows: fixture('mysql-data').database.rows, tables: '0', migrations: '354' };
     load = () => ok('');
+    loaded = [];
     // Asked directly, as the site's user, over the site network.
     h.daemon.sql = (sql) => {
         if (sql.startsWith("SELECT '")) {
@@ -231,7 +250,8 @@ beforeEach(() => {
                     }),
                 );
             case 'exec':
-                return input === undefined ? load() : failed(1, `unexpected input: ${input}`);
+                loaded.push(input ?? '');
+                return load();
             case 'ps':
                 return ok(
                     ps(
@@ -260,7 +280,7 @@ function bundle(manifest: Manifest, name = 'bundle'): string {
     for (const path of [manifest.database?.path, manifest.database?.members]) {
         if (typeof path === 'string') {
             mkdirSync(join(root, path, '..'), { recursive: true });
-            writeFileSync(join(root, path), "INSERT INTO `posts` VALUES ('1');\n");
+            writeFileSync(join(root, path), BUNDLE_SQL);
         }
     }
     writeFileSync(join(root, 'manifest.json'), JSON.stringify(manifest));
@@ -310,6 +330,10 @@ describe('importing a local site', () => {
                 ['ghost', 'local'],
             ],
         );
+        // The whole file reached the client, as it is: a data export is not filtered.
+        assert.equal(loaded.length, 1);
+        assert.equal(loaded[0]!.length, BUNDLE_SQL.length);
+        assert.equal(loaded[0], BUNDLE_SQL);
         // The load is as the site's user, never root.
         const exec = calls.find(({ args }) => args[0] === 'exec')!;
         assert.match(exec.args.join(' '), /-u"\$MYSQL_USER"/);
@@ -388,6 +412,8 @@ describe('importing a local site', () => {
         const result = await install('--import', bundle(local('mysql-dump')), '--no-start');
         assert.equal(result.code, 0, result.stderr);
         assert.match(result.stdout, /the database has a Ghost migration history/);
+        // The whole dump reached the client, its DEFINER dropped and nothing else changed.
+        assert.deepEqual(loaded, [FILTERED_SQL]);
         // Ghost is never started on a dump before it is loaded.
         assert.ok(!calls.some(({ args }) => args[0] === 'up' && args.at(-1) === 'ghost'));
         assert.deepEqual(
@@ -565,6 +591,25 @@ describe('a failed import removes what it created', () => {
         );
         assert.match(result.stderr, /export it with\n? *--sqlite-format portable/);
         assert.match(result.stderr, /is as it was before the import/);
+        asBefore();
+    });
+
+    test('a database file that cannot be read fails the load, never half a dump', async () => {
+        const path = bundle(local('mysql-data'));
+        const original = h.daemon.composeRun!;
+        // Unreadable once the import has staged and checked the bundle, before the load.
+        h.daemon.composeRun = (args, environment, input) => {
+            const staged = join(h.dir, '.import', 'bundle', 'database.sql');
+            if (args[0] === 'up' && args.at(-1) === 'ghost') {
+                assert.ok(existsSync(staged), 'the bundle is not staged where the test expects');
+                rmSync(staged);
+                mkdirSync(staged);
+            }
+            return original(args, environment, input);
+        };
+        const result = await install('--import', path);
+        assert.equal(result.code, 1);
+        assert.match(result.stderr, /database\.sql could not be read: EISDIR/);
         asBefore();
     });
 

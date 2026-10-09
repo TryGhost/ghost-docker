@@ -15,8 +15,8 @@
 #
 # This installs Ghost twice on the host and starts several containers; it
 # takes several minutes. It needs Docker, Node (for Ghost-CLI), jq and curl,
-# and for the MySQL source a `mysqldump` on the PATH; that half is skipped
-# without one.
+# and for the MySQL source a `mysqldump` on the PATH; without one that half
+# fails, or is skipped with GD_E2E_ALLOW_SKIP=1.
 #
 #   GD_TEST_GHOST_CLI   the exporter to use. Default: npx --yes ghost-cli@1.33.0
 #   GD_TEST_KEEP=1      leave the work directory and sites in place afterwards
@@ -28,10 +28,10 @@ ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd -P)
 IMAGE=ghost-docker:e2e
 DEFAULT_GHOST=ghost:6-next-alpine
 
-if ! docker info >/dev/null 2>&1; then
-    printf 'skipped: no Docker daemon answers here\n'
-    exit 0
-fi
+# What this host cannot run fails the run, unless GD_E2E_ALLOW_SKIP=1.
+# shellcheck source=/dev/null
+source "$ROOT/tests/e2e/skip.sh"
+require_docker
 
 read -ra GHOST_CLI <<<"${GD_TEST_GHOST_CLI:-npx --yes ghost-cli@1.33.0}"
 readonly SOURCE_DB_CONTAINER="ghost-docker-test-import-source-db"
@@ -461,8 +461,8 @@ move_source "$WORK/source-sqlite" "$SQLITE_PORT" "$SQLITE_SLUG" "SQLite source"
 
 if ! command -v mysqldump >/dev/null 2>&1; then
     step "A local MySQL site"
-    printf '   SKIPPED: there is no mysqldump on this host for the exporter to run\n'
-    printf '\nAll checks passed (MySQL source skipped).\n'
+    skip "there is no mysqldump on this host for the exporter to run"
+    passed 'All checks passed.'
     exit 0
 fi
 
@@ -511,4 +511,4 @@ compose_in "$site" down >/dev/null 2>&1
 step "Move the MySQL site as docs/install.md describes"
 move_source "$WORK/source-mysql" "$MYSQL_SITE_PORT" "$MYSQL_SLUG" "MySQL source"
 
-printf '\nAll checks passed.\n'
+passed 'All checks passed.'

@@ -356,7 +356,7 @@ export function scriptSite(
         }
         return undefined;
     };
-    h.daemon.composeRun = (args) => {
+    h.daemon.composeRun = (args, _env, input) => {
         site.compose.push(args);
         switch (args[0]) {
             case 'config': {
@@ -422,7 +422,11 @@ export function scriptSite(
                     dumped = { ...site.rows };
                     return ok(SITE_DUMP);
                 }
-                // Loading a dump, into the new, empty database.
+                // Loading a dump, into the new, empty database: only the
+                // dump, whole, holds what was dumped.
+                if (input !== SITE_DUMP) {
+                    return failed(1, `ERROR at line 1: not the dump: ${JSON.stringify(input)}`);
+                }
                 site.rows = { ...dumped };
                 return ok('');
             default:

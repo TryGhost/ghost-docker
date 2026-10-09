@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Readable } from 'node:stream';
 import { run } from '../src/cli.ts';
 import {
     ServiceUnreachable,
@@ -41,8 +42,10 @@ export interface Daemon {
     containers?: unknown[];
     /**
      * `docker-compose ...` after the --project-directory and -f options, with
-     * the environment it was given, its standard input when that is text, and
-     * the project directory. Undefined falls through to "unexpected".
+     * the environment it was given, its standard input, and the project
+     * directory. Standard input is text as given, or a stream as the program
+     * would have read it, to its end or to the error that ended it.
+     * Undefined falls through to "unexpected".
      */
     composeRun?: (
         args: string[],
@@ -232,7 +235,7 @@ export function harness(): Harness {
                 state.daemon.hostPorts === null
                     ? null
                     : (state.daemon.hostPorts ?? []).includes(port),
-            exec: fakeExec((command, args, options) => {
+            exec: fakeExec((command, args, options, input) => {
                 state.calls.push([command, ...args]);
                 if (command === 'git') {
                     return (
@@ -277,7 +280,7 @@ export function harness(): Harness {
                     const answer = state.daemon.composeRun?.(
                         rest,
                         options.env ?? {},
-                        typeof options.input === 'string' ? options.input : undefined,
+                        input,
                         args[1],
                     );
                     if (answer) {
@@ -475,7 +478,12 @@ interface ExecOptions {
 }
 
 function fakeExec(
-    program: (command: string, args: string[], options: ExecOptions) => ProgramResult,
+    program: (
+        command: string,
+        args: string[],
+        options: ExecOptions,
+        input: string | undefined,
+    ) => ProgramResult,
 ): Exec {
     const make = (options: ExecOptions) => {
         const run = (first: unknown, ...values: unknown[]): unknown => {
@@ -483,23 +491,50 @@ function fakeExec(
                 return make({ ...options, ...(first as ExecOptions) });
             }
             const [command = '', ...args] = parseTemplate(first, values);
-            let result = program(command, args, options);
-            // Standard output to a file, as execa writes it: the program's
-            // output goes there and none is returned.
-            const file = (options.stdout as { file?: string } | undefined)?.file;
-            if (file !== undefined) {
-                writeFileSync(file, result.stdout);
-                result = { ...result, stdout: '' };
-            }
-            return Promise.resolve({
-                ...result,
-                failed: result.exitCode !== 0,
-                shortMessage: result.exitCode === undefined ? result.stderr : '',
+            return standardInput(options.input).then((input) => {
+                let result = program(command, args, options, input);
+                // Standard output to a file, as execa writes it: the program's
+                // output goes there and none is returned.
+                const file = (options.stdout as { file?: string } | undefined)?.file;
+                if (file !== undefined) {
+                    writeFileSync(file, result.stdout);
+                    result = { ...result, stdout: '' };
+                }
+                return {
+                    ...result,
+                    failed: result.exitCode !== 0,
+                    shortMessage: result.exitCode === undefined ? result.stderr : '',
+                };
             });
         };
         return run;
     };
     return make({}) as unknown as Exec;
+}
+
+/**
+ * What the program reads on its standard input: text as given, or a stream
+ * read to its end. A stream that errors ends there, as a real program's
+ * input does: it gets what had arrived, and the caller learns of the error
+ * from the stream itself.
+ */
+async function standardInput(input: unknown): Promise<string | undefined> {
+    if (input === undefined || typeof input === 'string') {
+        return input;
+    }
+    if (!(input instanceof Readable)) {
+        throw new Error(`the fake cannot read standard input of type ${typeof input}`);
+    }
+    const chunks: Buffer[] = [];
+    await new Promise<void>((resolve) => {
+        input.on('data', (chunk: Buffer | string) =>
+            chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk),
+        );
+        input.on('end', resolve);
+        input.on('error', () => resolve());
+        input.on('close', resolve);
+    });
+    return Buffer.concat(chunks).toString('utf8');
 }
 
 const isTemplate = (value: unknown): value is TemplateStringsArray =>

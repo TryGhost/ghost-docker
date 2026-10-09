@@ -11,10 +11,11 @@
 # own ports.
 #
 # It pulls images, starts containers, and binds host ports, including 80 and
-# 443 (the checks that need those skip themselves when something else holds
-# them). Production sites use the name ghost-e2e.test, which no CA will issue
-# for, so HTTPS is pending exactly as it is before a real domain's DNS exists;
-# their ACME requests go to Let's Encrypt's staging service.
+# 443 (the checks that need those fail when something else holds them, or
+# are skipped with GD_E2E_ALLOW_SKIP=1). Production sites use the name
+# ghost-e2e.test, which no CA will issue for, so HTTPS is pending exactly as
+# it is before a real domain's DNS exists; their ACME requests go to Let's
+# Encrypt's staging service.
 #
 # Exits non-zero at the first check that fails, naming it.
 set -euo pipefail
@@ -24,10 +25,10 @@ IMAGE=ghost-docker:e2e
 DOMAIN=ghost-e2e.test
 PROXY=ghost-docker-e2e-proxy
 
-if ! docker info >/dev/null 2>&1; then
-    printf 'skipped: no Docker daemon answers here\n'
-    exit 0
-fi
+# What this host cannot run fails the run, unless GD_E2E_ALLOW_SKIP=1.
+# shellcheck source=/dev/null
+source "$ROOT/tests/e2e/skip.sh"
+require_docker
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/ghost-docker-install-e2e.XXXXXXXX")
 WORK=$(CDPATH='' cd -- "$WORK" && pwd -P)
@@ -58,7 +59,6 @@ step() {
     printf '\n== %s\n' "$1"
 }
 ok() { printf '   ok    %s\n' "$1"; }
-skip() { printf '   skip  %s\n' "$1"; }
 fail() {
     printf '\nFAILED in "%s": %s\n' "$CURRENT" "$1" >&2
     [[ -z ${2:-} ]] || printf -- '--- output ---\n%s\n--------------\n' "$2" >&2
@@ -434,9 +434,12 @@ clone_of_this_checkout() {
     local target=$1
     mkdir -p "$target"
     (cd "$ROOT" && git ls-files -z --cached --others --exclude-standard | tar --null -T - -cf -) | tar -x -C "$target"
-    git -C "$target" init -q
-    git -C "$target" add -A
-    git -C "$target" -c user.email=e2e@example.com -c user.name=e2e commit -qm candidate
+    # With none of this machine's git configuration: a person's commit
+    # signing would otherwise fail the commit.
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git -C "$target" init -q
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git -C "$target" add -A
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+        git -C "$target" -c user.email=e2e@example.com -c user.name=e2e commit -qm candidate
 }
 L=$WORK/sites/e2e-clone-local
 SITES+=("$L")
@@ -467,4 +470,4 @@ else
     skip "production from a clone: something on this host already holds 80 or 443"
 fi
 
-printf '\nAll install checks passed.\n'
+passed 'All install checks passed.'

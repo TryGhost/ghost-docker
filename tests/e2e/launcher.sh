@@ -6,13 +6,16 @@
 # Two halves. The first needs no Docker at all: it puts a stand-in `docker` on
 # the PATH and checks what the launcher says when Docker cannot be used, and
 # exactly how it would start the manager. The second builds the real image
-# from this checkout and runs it, and is skipped with a message when there is
-# no daemon.
+# from this checkout and runs it; with no daemon it fails, or is skipped with
+# GD_E2E_ALLOW_SKIP=1 (as on GitHub's macOS runners).
 #
 # Exits non-zero at the first check that fails, naming it.
 set -euo pipefail
 
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd -P)
+# What this host cannot run fails the run, unless GD_E2E_ALLOW_SKIP=1.
+# shellcheck source=/dev/null
+source "$ROOT/tests/e2e/skip.sh"
 LAUNCHER=$ROOT/ghost-docker
 BASH_BIN=${GD_TEST_BASH:-$(command -v bash)}
 
@@ -338,8 +341,9 @@ ok "0, 1, 2 and 3 each reach the caller unchanged"
 # --- With Docker -------------------------------------------------------------------
 
 if ! docker info >/dev/null 2>&1; then
-    printf '\n== The real image\n   SKIPPED: no Docker daemon is reachable\n'
-    printf '\nAll checks passed (real image skipped).\n'
+    step "The real image"
+    skip "no Docker daemon is reachable"
+    passed 'All checks passed.'
     exit 0
 fi
 
@@ -441,4 +445,4 @@ expect_status 0
 expect_output '^[1-9][0-9]* paths$'
 ok "every bind mount and build context of every profile ($OUT)"
 
-printf '\nAll checks passed.\n'
+passed 'All checks passed.'

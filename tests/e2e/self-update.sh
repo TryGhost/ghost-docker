@@ -25,10 +25,10 @@ R1=v0.0.1-beta.1
 R2=v0.0.1-beta.2
 R3=v0.0.1-beta.3
 
-if ! docker info >/dev/null 2>&1; then
-    printf 'skipped: no Docker daemon answers here\n'
-    exit 0
-fi
+# What this host cannot run fails the run, unless GD_E2E_ALLOW_SKIP=1.
+# shellcheck source=/dev/null
+source "$ROOT/tests/e2e/skip.sh"
+require_docker
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/ghost-docker-update-e2e.XXXXXXXX")
 WORK=$(CDPATH='' cd -- "$WORK" && pwd -P)
@@ -210,7 +210,12 @@ step "A checkout, installed at one commit"
 new_site update-clone
 C=$SITE
 copy_tree "$C"
-git_c() { git -C "$C" -c user.name=e2e -c user.email=e2e@example.com "$@"; }
+# With none of this machine's git configuration: a person's commit signing
+# would otherwise fail the fixture's commits.
+git_c() {
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+        git -C "$C" -c user.name=e2e -c user.email=e2e@example.com "$@"
+}
 git_c init --quiet
 git_c add --all
 git_c commit --quiet --message previous
@@ -252,4 +257,4 @@ fi
 [[ ! -e $C/.ghost-docker-update && ! -e $C/.ghost-docker.lock ]] || fail "the update left its snapshot or lock"
 ok "the checkout is at ${previous:0:12} again, its databases loaded from the backup, and the site answers"
 
-printf '\nAll checks passed.\n'
+passed 'All checks passed.'

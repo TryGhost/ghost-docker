@@ -63,6 +63,8 @@ let running: Set<string>;
 let ghostHealth: string;
 let liveTables: (database: string) => number;
 let loaded: Record<string, Record<string, number>>;
+/** Each dump the site's MySQL client was given, by database, as it read it. */
+let loads: { database: string; sql: string }[];
 /** Mounts an override adds, by service. */
 let mounts: Record<string, { type: string; source: string; target: string }[]>;
 
@@ -98,6 +100,7 @@ beforeEach(async () => {
     running = new Set();
     ghostHealth = 'healthy';
     loaded = {};
+    loads = [];
     mounts = {};
     dump = () => ok(DUMP);
     scratch = () => ({ status: 0, stdout: scratchOutput() });
@@ -174,8 +177,9 @@ beforeEach(async () => {
                 if (script.includes('mysqldump')) {
                     return dump(database);
                 }
-                // Loading a dump: its input is a stream.
-                return input === undefined ? ok('') : failed(1, `unexpected input: ${input}`);
+                // Loading a dump, streamed to the client.
+                loads.push({ database, sql: input ?? '' });
+                return ok('');
             }
             default:
                 return ok('');
@@ -494,6 +498,11 @@ describe('restore over the site', () => {
             composed('exec').map((args) => args.find((arg) => arg.startsWith('DB='))),
             ['DB=ghost', 'DB=activitypub'],
         );
+        // Each dump reached the client whole.
+        assert.deepEqual(loads, [
+            { database: 'ghost', sql: DUMP },
+            { database: 'activitypub', sql: DUMP },
+        ]);
         assert.deepEqual(
             h.network.queries.map(({ database }) => database),
             ['ghost', 'activitypub'],

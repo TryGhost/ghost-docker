@@ -53,10 +53,10 @@ SQL
 )
 
 
-if ! docker info >/dev/null 2>&1; then
-    printf 'skipped: no Docker daemon answers here\n'
-    exit 0
-fi
+# What this host cannot run fails the run, unless GD_E2E_ALLOW_SKIP=1.
+# shellcheck source=/dev/null
+source "$ROOT/tests/e2e/skip.sh"
+require_docker
 for tool in jq curl; do
     command -v "$tool" >/dev/null || {
         printf 'backup.sh needs %s\n' "$tool" >&2
@@ -382,4 +382,4 @@ LIVE=$(backups_of "$B" | tail -n 1)
     fail "a live backup restarted Ghost or ActivityPub"
 ok "$LIVE, recorded as live; Ghost and ActivityPub never restarted"
 
-printf '\nAll backup and restore checks passed.\n'
+passed 'All backup and restore checks passed.'
