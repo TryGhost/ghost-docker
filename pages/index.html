@@ -85,9 +85,10 @@
 curl -fsSL https://docker.ghost.org/install.sh | bash -s -- install --local</code></pre>
 
   <h2>Moving a Ghost-CLI site</h2>
-  <p>A local Ghost-CLI site (one made with <code>ghost install local</code>) moves to Docker with its posts, members, staff accounts, settings, themes, images and configuration. You need Ghost-CLI 1.33.0 or later, and Ghost 6 or later in the site; run <code>ghost update</code> there first if it is older.</p>
-  <p>Stop the site, export it, and install from the export in a new directory beside it, on the port it used:</p>
+  <p>A local Ghost-CLI site (one made with <code>ghost install local</code>) moves to Docker with its posts, members, staff accounts, settings, themes, images and configuration. You need Ghost-CLI 1.33.0 or later, and Ghost 6.61.0 or later in the site: the import runs the exact version the site did, and 6.61.0 is the first with a Docker image the import can use. Older sites are refused, so update first.</p>
+  <p>Update the site and check it still works. Then stop it, export it, and install from the export in a new directory beside it, on the port it used:</p>
   <pre><code>cd ~/sites/my-blog
+ghost update
 ghost stop
 ghost migrate-export --output ../my-blog-bundle
 mkdir ../my-blog-docker &amp;&amp; cd ../my-blog-docker

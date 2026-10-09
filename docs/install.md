@@ -52,7 +52,7 @@ directory, and day-to-day operation is plain `docker compose`.
 ```text
 ghost-docker install [--local | --domain example.com [--admin-domain admin.example.com]
                                 [--email ops@example.com]]
-                     [--port 2368] [--version 6.3.1] [--with activitypub,mailpit]
+                     [--port 2368] [--version 6.61.0] [--with activitypub,mailpit]
                      [--channel stable|beta | --release vX.Y.Z] [--no-prompt] [--no-start]
 ghost-docker install --import BUNDLE [--port 2368] [--with mailpit] [--no-prompt] [--no-start]
 ```
@@ -64,7 +64,7 @@ ghost-docker install --import BUNDLE [--port 2368] [--with mailpit] [--no-prompt
 | `--admin-domain DOMAIN` | A separate Ghost Admin domain. Production only. |
 | `--email EMAIL` | The ACME account email. Production only; see below. |
 | `--port PORT` | The loopback port Ghost is published on, in both modes. Omitted: the first at or above 2368 that is free (see [Ports](#ports-and-your-existing-proxy)). |
-| `--version VERSION` | A Ghost version (`6.3.1`, which means `6.3.1-next-alpine`) or a full image tag (`6-alpine`). Resolved to an exact digest. |
+| `--version VERSION` | A Ghost version (`6.61.0`, which means `6.61.0-next-alpine`) or a full image tag (`6-next-alpine`). Resolved to an exact digest. Only the `next` variants' layout runs: an image installed by Ghost-CLI, such as the `-alpine` tags, is refused. |
 | `--with LIST` | `activitypub`, and `mailpit` for a local site. `analytics` is added after installation; see below. |
 | `--channel CHANNEL` | Install the newest release on `stable` or `beta`; see [Releases](#releases). |
 | `--release vX.Y.Z` | Install that release. |
@@ -176,8 +176,15 @@ anything it prints the services' last log lines.
 ## Importing a Ghost-CLI site
 
 A local Ghost-CLI site — the kind `ghost install local` makes — moves to Docker
-in two commands. Export it with Ghost-CLI 1.33.0 or later, from the site's
-directory:
+in two commands, once it runs **Ghost 6.61.0 or later**: the first release
+published as a `next` image, which is what the import runs. Bring the source up
+to date first, in the site's directory, and check the site still works:
+
+```bash
+ghost update
+```
+
+Then export it with Ghost-CLI 1.33.0 or later:
 
 ```bash
 ghost migrate-export --output ~/my-site-bundle --archive tgz
@@ -212,10 +219,10 @@ What to expect:
 
 - **The exact source version.** The site is installed at the Ghost version it
   was exported from, because a rows-only bundle only fits the schema of that
-  version: `VERSION-next-alpine`, or `VERSION-alpine` for a release only
-  published in that layout. Upgrade afterwards. `--version` naming a different
-  version is a usage error. A source older than Ghost 6 is refused: run
-  `ghost update` there first.
+  version: `VERSION-next-alpine`. Upgrade afterwards. `--version` naming a
+  different version is a usage error. A bundle from a source older than Ghost
+  6.61.0 is refused before anything is created, whichever Ghost-CLI wrote it:
+  run `ghost update` in the source, check the site, and export again.
 - **A new address.** The site is served at `http://localhost:PORT`, on the
   first free port at or above 2368 unless `--port` says
   otherwise. An ordinary export leaves the source running, so the two sit side
@@ -318,7 +325,8 @@ curl -fsSL https://docker.ghost.org/install.sh | bash -s -- install --import ../
   overrides](configuration.md#your-own-compose-overrides).
 
 Exporting needs Ghost-CLI 1.33.0 or later (`ghost --version`) and a source
-on Ghost 6; on Ghost 5, run `ghost update` there first. When the exporter
+on Ghost 6.61.0 or later; on anything older, run `ghost update` there and check
+the site works before exporting. When the exporter
 refuses a SQLite site because some values would not load into MySQL, it lists
 them: fix them in the source and export again, or move the site through Ghost
 Admin with `ghost migrate-export --sqlite-format portable` (see the

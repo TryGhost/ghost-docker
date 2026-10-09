@@ -106,7 +106,7 @@ NODE_ENV=development
 URL=http://localhost:2368
 GHOST_PORT=2368
 RESTART_POLICY=no
-GHOST_VERSION=6.3.1-alpine
+GHOST_VERSION=6.61.0-next-alpine
 DATABASE_HOST=db
 DATABASE_NAME=ghost
 DATABASE_USER=ghost
@@ -1378,9 +1378,15 @@ commands. Decisions made while building it, which later steps rely on:
   make. A failed `up` is reported in Compose's own words, which name the port
   (their wording differs between Docker 28 and 29, so it is quoted, not
   parsed), followed by `--port` and that nothing running was stopped.
-- **The Tinybird path** comes from the image's declared environment: the older
-  layout declares `GHOST_CLI_INSTALL` and keeps Ghost under `current/`; the
-  `next` variants do not. No container is started to look.
+- **The Tinybird path** is under the image's declared `GHOST_INSTALL`, as the
+  `next` variants lay Ghost out. An image that declares `GHOST_CLI_INSTALL`
+  (the older `-alpine` layout, with Ghost under `current/`) is refused, by
+  install and import alike. No container is started to look.
+- **The oldest importable source** is Ghost 6.61.0, the first release
+  published as a `next` image (amd64 and arm64). An import runs at exactly
+  the bundle's version, in `VERSION-next-alpine` and nothing else, so an
+  older bundle is refused before anything is provisioned, whichever
+  Ghost-CLI wrote it; `ghost migrate-export` refuses older sources too.
 - **`--channel` and `--release`** arrived with S6a. Choosing a release is the
   launcher's job; the manager records the channel it was given (or the one
   `--release` implies) and otherwise derives it from the version the manager image
