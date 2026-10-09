@@ -93,6 +93,7 @@ tests/e2e/install.sh         # real installations: pulls images, binds 80 and 44
 tests/e2e/self-update.sh     # release updates, failed-update write retention and recovery
 tests/e2e/backup.sh          # real backups and restores, including ActivityPub
 tests/e2e/import.sh          # real Ghost-CLI sites exported and imported
+GD_TEST_HOST_CHANGES=1 tests/e2e/production-import.sh  # a Ghost-CLI production site moved; changes the host
 ```
 
 Shell changes also pass ShellCheck. Unit tests substitute `Io` at the Engine API,

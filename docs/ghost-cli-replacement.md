@@ -37,7 +37,9 @@ install (MySQL, systemd, nginx): same-server and cross-host moves following the
 documented steps; a forced import failure leaving the directory as it was, with the
 documented recovery bringing back the source and nginx; a separate admin domain
 carried from the bundle; exact source version, staff sign-in, records, active theme,
-assets, redirects and configuration preserved. This replaces `main`'s
+assets, redirects and configuration preserved.
+`tests/e2e/production-import.sh` covers the same-server move, the forced failure and
+its recovery, and the admin domain in CI; the cross-host move is run by hand. This replaces `main`'s
 `scripts/migrate.sh`; S12 must not merge `next-docker` into `main` before these
 scenarios pass.
 
