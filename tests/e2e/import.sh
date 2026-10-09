@@ -18,7 +18,7 @@
 # and for the MySQL source a `mysqldump` on the PATH; without one that half
 # fails, or is skipped with GD_E2E_ALLOW_SKIP=1.
 #
-#   GD_TEST_GHOST_CLI   the exporter to use. Default: npx --yes ghost-cli@1.33.0
+#   GD_TEST_GHOST_CLI   the exporter to use. Default: npx --yes ghost-cli@1.33.3
 #   GD_TEST_KEEP=1      leave the work directory and sites in place afterwards
 #
 # Exits non-zero at the first check that fails, naming it.
@@ -33,7 +33,7 @@ DEFAULT_GHOST=ghost:6-next-alpine
 source "$ROOT/tests/e2e/skip.sh"
 require_docker
 
-read -ra GHOST_CLI <<<"${GD_TEST_GHOST_CLI:-npx --yes ghost-cli@1.33.0}"
+read -ra GHOST_CLI <<<"${GD_TEST_GHOST_CLI:-npx --yes ghost-cli@1.33.3}"
 readonly SOURCE_DB_CONTAINER="ghost-docker-test-import-source-db"
 readonly SQLITE_PORT=23711
 readonly MYSQL_SITE_PORT=23712

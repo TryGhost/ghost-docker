@@ -178,13 +178,15 @@ anything it prints the services' last log lines.
 A local Ghost-CLI site — the kind `ghost install local` makes — moves to Docker
 in two commands, once it runs **Ghost 6.61.0 or later**: the first release
 published as a `next` image, which is what the import runs. Bring the source up
-to date first, in the site's directory, and check the site still works:
+to date first, Ghost-CLI and then the site, in the site's directory, and check
+the site still works:
 
 ```bash
+npm install -g ghost-cli@latest
 ghost update
 ```
 
-Then export it with Ghost-CLI 1.33.0 or later:
+Then export it with Ghost-CLI 1.33.3 or later:
 
 ```bash
 ghost migrate-export --output ~/my-site-bundle --archive tgz
@@ -324,7 +326,7 @@ curl -fsSL https://docker.ghost.org/install.sh | bash -s -- install --import ../
   with a `compose.override.yml`; see [Your own Compose
   overrides](configuration.md#your-own-compose-overrides).
 
-Exporting needs Ghost-CLI 1.33.0 or later (`ghost --version`) and a source
+Exporting needs Ghost-CLI 1.33.3 or later (`ghost --version`) and a source
 on Ghost 6.61.0 or later; on anything older, run `ghost update` there and check
 the site works before exporting. When the exporter
 refuses a SQLite site because some values would not load into MySQL, it lists
