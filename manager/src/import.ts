@@ -9,6 +9,7 @@
 // filter and the row counts.
 import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
 import { basename, join } from 'node:path';
+import { lt } from 'semver';
 import { CONTENT_ROOT, type BundleManifest } from './bundle/manifest.ts';
 import { BundleRefused, removeStaging, stageBundle, type StagedBundle } from './bundle/stage.ts';
 import { ServiceUnreachable } from './clients.ts';
@@ -24,7 +25,7 @@ import type { Context } from './context.ts';
 import * as env from './env.ts';
 import { CliError, UsageError } from './errors.ts';
 import { atomicWrite, readIfExists } from './fs.ts';
-import { resolveExactGhost, type ResolvedGhost } from './ghost.ts';
+import { MINIMUM_IMPORT_VERSION, resolveExactGhost, type ResolvedGhost } from './ghost.ts';
 import { replaceMailTransport, sourceConfig, type CarriedConfig } from './import/config.ts';
 import { checkRows, countOf, loadFile, tableCount, withSiteDatabase } from './import/database.ts';
 import type { Io } from './io.ts';
@@ -331,6 +332,15 @@ export async function readBundle(
     }
     const { manifest } = staged;
     try {
+        // Checked here as well as by the exporter: an earlier Ghost-CLI wrote
+        // bundles of any 6.x site.
+        if (lt(manifest.ghost.version, MINIMUM_IMPORT_VERSION)) {
+            throw new CliError(
+                `this bundle was exported from Ghost ${manifest.ghost.version}; importing needs Ghost ${MINIMUM_IMPORT_VERSION} or a later 6.x release.\n` +
+                    '  Run `ghost update` in the source installation, check the site works, then run\n' +
+                    '  `ghost migrate-export` again. Nothing has been changed.',
+            );
+        }
         if (manifest.sourceInstallType !== 'local') {
             throw new CliError(
                 `this bundle is of a ${manifest.sourceInstallType} site (${manifest.url}); this release imports local sites.\n` +

@@ -164,6 +164,8 @@ export function imageStack(h: Harness): string {
 export interface ImageApi {
     /** Ghost's tags the registry has, and the version each is; `6-next-alpine` is 6.67.0. */
     readonly ghost?: Readonly<Record<string, string>>;
+    /** Those of Ghost's tags installed by Ghost-CLI, as the older `-alpine` variants are. */
+    readonly legacy?: readonly string[];
     /** The manager image's ID; it has no repository digest. */
     readonly manager?: () => string;
     /** Each tag pulled, in order. */
@@ -172,7 +174,7 @@ export interface ImageApi {
 
 /** The daemon's answers about the images an image-mode command reads. */
 export const imageApi =
-    ({ ghost = { '6-next-alpine': '6.67.0' }, manager, pulls }: ImageApi = {}) =>
+    ({ ghost = { '6-next-alpine': '6.67.0' }, legacy = [], manager, pulls }: ImageApi = {}) =>
     ({ method, path, query }: DockerRequest): DockerResponse | undefined => {
         if (method === 'POST' && path === '/images/create') {
             const tag = query?.tag ?? '';
@@ -191,6 +193,7 @@ export const imageApi =
                         `GHOST_VERSION=${ghost[tag]}`,
                         'GHOST_CONTENT=/home/ghost/content',
                         'GHOST_INSTALL=/home/ghost',
+                        ...(legacy.includes(tag) ? ['GHOST_CLI_INSTALL=/var/lib/ghost'] : []),
                     ],
                 },
             });

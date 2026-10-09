@@ -152,7 +152,7 @@ const options = z
             .string()
             .optional()
             .describe(
-                'A Ghost version (6.3.1) or image tag (6-alpine). Resolved to an exact digest.',
+                'A Ghost version (6.61.0) or image tag (6-next-alpine). Resolved to an exact digest.',
             ),
         with: services
             .default([])

@@ -1,7 +1,9 @@
 // Resolving the Ghost image a site runs to one exact artifact.
 //
 // The requested tag is pulled, and the pulled image is asked for its
-// repository digest, its own version and its layout. The pin written is `ghost@sha256:...`: a tag can move between two
+// repository digest, its own version and its layout. Only the layout of the
+// `next` variants is supported: an image installed by Ghost-CLI, as the older
+// `-alpine` variants are, is refused. The pin written is `ghost@sha256:...`: a tag can move between two
 // requests and on the next `docker compose pull`; a digest cannot. Changing
 // GHOST_VERSION alone never changes what a site runs.
 import { DaemonError, inspectImage, pullImage } from './docker/client.ts';
@@ -12,6 +14,13 @@ import type { Io } from './io.ts';
 export const DEFAULT_IMAGE = 'ghost';
 /** The `next` variants install Ghost directly under /home/ghost. */
 export const DEFAULT_TAG = '6-next-alpine';
+const DEFAULT_VARIANT = DEFAULT_TAG.slice(DEFAULT_TAG.indexOf('-') + 1);
+/**
+ * The oldest Ghost an import accepts: 6.61.0 is the first release published
+ * as a `next` image (amd64 and arm64), and an import runs at exactly the
+ * source's version. `ghost migrate-export` refuses older sources too.
+ */
+export const MINIMUM_IMPORT_VERSION = '6.61.0';
 
 /**
  * What the operator asked for, as a tag. A bare version selects the default
@@ -23,7 +32,7 @@ export function ghostTag(requested: string | undefined): string {
     }
     const bare = requested.replace(/^v/, '');
     if (/^\d+(\.\d+)*$/.test(bare)) {
-        return `${bare}-${DEFAULT_TAG.slice(DEFAULT_TAG.indexOf('-') + 1)}`;
+        return `${bare}-${DEFAULT_VARIANT}`;
     }
     return requested;
 }
@@ -77,6 +86,12 @@ export async function resolveGhost(
             `${wanted} does not declare GHOST_VERSION; it does not look like a Ghost image`,
         );
     }
+    if (pulled.env.GHOST_CLI_INSTALL) {
+        throw new CliError(
+            `${wanted} is installed by Ghost-CLI, a layout this release does not run.\n` +
+                `  Use a \`next\` variant instead, such as ${image}:${DEFAULT_TAG}.`,
+        );
+    }
     const contentPath = pulled.env.GHOST_CONTENT || '/home/ghost/content';
     const install = pulled.env.GHOST_INSTALL || '/home/ghost';
     return {
@@ -86,52 +101,36 @@ export async function resolveGhost(
         digest,
         reference,
         contentPath,
-        tinybirdPath: tinybirdPath(install, pulled.env),
+        tinybirdPath: `${install}/core/server/data/tinybird`,
     };
 }
 
 /**
  * The image of exactly `version`, for an import, which happens at the source
- * site's version. The default variant is tried first; older releases were
- * only published in the previous layout (`-alpine`), so that is tried when
- * the default has none. An image reporting any other version is refused.
+ * site's version: the default variant of that release, a prerelease too. An
+ * image reporting any other version is refused.
  */
 export async function resolveExactGhost(
     io: Io,
     version: string,
     image = DEFAULT_IMAGE,
 ): Promise<ResolvedGhost> {
-    const tags = [...new Set([ghostTag(version), `${version}-alpine`])];
-    const problems: string[] = [];
-    for (const tag of tags) {
-        let resolved: ResolvedGhost;
-        try {
-            resolved = await resolveGhost(io, tag, image);
-        } catch (error) {
-            problems.push(`  ${(error as Error).message.split('\n')[0]}`);
-            continue;
-        }
-        if (resolved.version !== version) {
-            throw new CliError(
-                `${image}:${tag} is Ghost ${resolved.version}, but the bundle was exported from Ghost ${version}`,
-            );
-        }
-        return resolved;
+    const tag = `${version}-${DEFAULT_VARIANT}`;
+    let resolved: ResolvedGhost;
+    try {
+        resolved = await resolveGhost(io, tag, image);
+    } catch (error) {
+        throw new CliError(
+            `no ${image} image for Ghost ${version} could be used:\n` +
+                `  ${(error as Error).message.split('\n')[0]}\n` +
+                '  An import runs at the exact version of the source site. Check that this host can\n' +
+                '  reach the registry.',
+        );
     }
-    throw new CliError(
-        `no ${image} image for Ghost ${version} could be used:\n${problems.join('\n')}\n` +
-            '  An import runs at the exact version of the source site. Check that this host can\n' +
-            '  reach the registry; if that version has no image, run `ghost update` in the source\n' +
-            '  installation and export it again.',
-    );
+    if (resolved.version !== version) {
+        throw new CliError(
+            `${image}:${tag} is Ghost ${resolved.version}, but the bundle was exported from Ghost ${version}`,
+        );
+    }
+    return resolved;
 }
-
-/**
- * Where the image keeps the Tinybird datafiles. The older layout, installed
- * by Ghost-CLI (which the image declares in GHOST_CLI_INSTALL), keeps Ghost
- * under `current/`; the `next` variants install it directly.
- */
-const tinybirdPath = (install: string, env: Readonly<Record<string, string>>): string =>
-    env.GHOST_CLI_INSTALL
-        ? `${install}/current/core/server/data/tinybird`
-        : `${install}/core/server/data/tinybird`;

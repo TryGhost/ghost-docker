@@ -284,6 +284,17 @@ describe('refusals that change nothing', () => {
         );
         assert.deepEqual(siteFiles(), []);
     });
+
+    test('an image installed by Ghost-CLI is refused and changes nothing', async () => {
+        h.daemon.api = imageApi({ ghost: { '6-alpine': '6.67.0' }, legacy: ['6-alpine'] });
+        const result = await install('--local', '--version', '6-alpine');
+        assert.equal(result.code, 1);
+        assert.match(
+            result.stderr,
+            /ghost:6-alpine is installed by Ghost-CLI, a layout this release does not run\.\n.*ghost:6-next-alpine/,
+        );
+        assert.deepEqual(siteFiles(), []);
+    });
 });
 
 describe('a local site, not started', () => {

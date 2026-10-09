@@ -69,9 +69,9 @@ const common = {
     ghost: z.object(
         {
             version: z
-                .string({ error: 'must be the exact Ghost version, such as 6.2.0' })
+                .string({ error: 'must be the exact Ghost version, such as 6.61.0' })
                 .regex(/^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/, {
-                    error: 'must be the exact Ghost version, such as 6.2.0',
+                    error: 'must be the exact Ghost version, such as 6.61.0',
                     abort: true,
                 })
                 .refine((version) => version.startsWith('6.'), {

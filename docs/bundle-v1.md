@@ -64,7 +64,7 @@ another: it imports the kind the manifest declares.
   "sourceInstallType": "production",
   "kind": "mysql-dump",
   "ghost": {
-    "version": "6.2.0"
+    "version": "6.61.0"
   },
   "url": "https://example.com",
   "adminUrl": "https://admin.example.com",
@@ -85,7 +85,7 @@ another: it imports the kind the manifest declares.
 | `bundleCreatedAt` | **Required.** RFC 3339 timestamp in UTC. |
 | `sourceInstallType` | **Required.** Exactly `local` or `production`. Derived from the source instance’s actual local/production process classification; the importer selects its mode from this field. |
 | `kind` | Required. Exactly `mysql-dump`, `mysql-data` or `portable`; see "Bundle kinds". Any other value is rejected. |
-| `ghost.version` | Exact source Ghost 6.x version, including any prerelease suffix. Validated as supported; the import happens *at* this version, and upgrading is a separate operation. |
+| `ghost.version` | Exact source Ghost version, 6.61.0 or a later 6.x release, including any prerelease suffix (`6.61.0-rc.1` is older than 6.61.0). The import happens *at* this version, and upgrading is a separate operation; see "Minimum source version". |
 | `url` | Required public URL, unchanged from source config. |
 | `adminUrl` | Optional separate admin URL, unchanged. |
 | `database.path` | Required relative path: `database.sql` for `mysql-dump` and `mysql-data`, content JSON for portable. |
@@ -107,8 +107,8 @@ Portable `database` example (filenames can vary; always read the manifest):
 
 ```json
 {
-  "path": "content/data/content-from-v6.2.0-on-2026-09-14-12-00-00.json",
-  "members": "content/data/members-from-v6.2.0-on-2026-09-14-12-00-00.csv"
+  "path": "content/data/content-from-v6.61.0-on-2026-09-14-12-00-00.json",
+  "members": "content/data/members-from-v6.61.0-on-2026-09-14-12-00-00.csv"
 }
 ```
 
@@ -203,6 +203,21 @@ never synthesizes schema. It must:
 
 The importing Ghost image must therefore be the source version exactly: a
 newer image creates a schema the source rows were not written for.
+
+## Minimum source version
+
+A bundle's `ghost.version` must be **6.61.0** or a later 6.x release. Every
+import runs at exactly that version, in the version's `next` `ghost` image
+(`VERSION-next-alpine`), and 6.61.0 is the first release published in that
+variant, for amd64 and arm64 alike. Older releases exist only in the
+Ghost-CLI-installed `-alpine` layout, which ghost-docker does not run.
+
+Both sides check it, independently. `ghost migrate-export` refuses an older
+source before Ghost is stopped or anything is written; ordinary `ghost export`
+is unaffected. The importer refuses an older bundle, such as one written by a
+Ghost-CLI release that only checked for 6.x, before anything is provisioned.
+Either way, the fix is in the source installation: `ghost update`, check that
+the site works, then `ghost migrate-export` again.
 
 Dates are written as UTC `YYYY-MM-DD HH:MM:SS`. `migrations_lock` is written
 unlocked. The exporter refuses, before producing a bundle, strings longer than

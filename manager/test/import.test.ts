@@ -31,7 +31,7 @@ import {
 import { failed, harness, ok, ps, type Harness, type ProgramResult } from './helpers.ts';
 import { fixture, imageApi, imageStack, REFERENCE, rootContainer, type Manifest } from './site.ts';
 
-const VERSION = '6.2.0';
+const VERSION = '6.61.0';
 /**
  * A bundle's database file: a view's DEFINER, which a dump's load drops, and
  * enough rows that it is read in many pieces.
@@ -305,7 +305,7 @@ describe('importing a local site', () => {
         assert.equal(result.code, 0, result.stderr);
         assert.match(
             result.stdout,
-            /ok +mysql-data +a local site, Ghost 6\.2\.0, https:\/\/example\.com/,
+            /ok +mysql-data +a local site, Ghost 6\.61\.0, https:\/\/example\.com/,
         );
         assert.match(result.stdout, /every count matches the bundle \(3 tables\)/);
         assert.match(result.stdout, /Imported +mysql-data bundle of https:\/\/example\.com/);
@@ -483,12 +483,13 @@ describe('importing a local site', () => {
         assert.doesNotMatch(result.stdout, /Members, Import/);
     });
 
-    test('an older release is found in the previous image layout', async () => {
-        images = { [`${VERSION}-alpine`]: VERSION };
-        const result = await install('--import', bundle(local('mysql-data')), '--no-start');
+    test('a prerelease of a later version than the minimum is imported', async () => {
+        const manifest = local('mysql-data');
+        manifest.ghost = { version: '6.62.0-rc.1' };
+        images = { '6.62.0-rc.1-next-alpine': '6.62.0-rc.1' };
+        const result = await install('--import', bundle(manifest), '--no-start');
         assert.equal(result.code, 0, result.stderr);
-        assert.deepEqual(pulls, [`${VERSION}-next-alpine`, `${VERSION}-alpine`]);
-        assert.equal(setting('GHOST_VERSION'), `${VERSION}-alpine`);
+        assert.equal(setting('GHOST_VERSION'), '6.62.0-rc.1-next-alpine');
     });
 });
 
@@ -517,7 +518,7 @@ describe('refusals that change nothing', () => {
         await refusedWith(
             ['--import', path, '--version', '6.3.0'],
             2,
-            /--version is 6\.3\.0 but the bundle was exported from Ghost 6\.2\.0/,
+            /--version is 6\.3\.0 but the bundle was exported from Ghost 6\.61\.0/,
         );
     });
 
@@ -548,17 +549,40 @@ describe('refusals that change nothing', () => {
         await refusedWith(
             ['--import', bundle(local('mysql-data'))],
             1,
-            /no ghost image for Ghost 6\.2\.0 could be used[\s\S]*ghost update/,
+            /no ghost image for Ghost 6\.61\.0 could be used:\n +ghost:6\.61\.0-next-alpine could not be pulled/,
         );
-        assert.deepEqual(pulls, [`${VERSION}-next-alpine`, `${VERSION}-alpine`]);
+        assert.deepEqual(pulls, [`${VERSION}-next-alpine`]);
     });
 
+    test('a release only published in the Ghost-CLI layout is not looked for', async () => {
+        images = { [`${VERSION}-alpine`]: VERSION };
+        await refusedWith(['--import', bundle(local('mysql-data'))], 1, /no ghost image/);
+        assert.deepEqual(pulls, [`${VERSION}-next-alpine`]);
+    });
+
+    for (const version of ['6.60.9', '6.61.0-rc.1', '6.3.0']) {
+        test(`a bundle from Ghost ${version}, older than the minimum, is refused before anything is pulled`, async () => {
+            const manifest = local('mysql-data');
+            manifest.ghost = { version };
+            images = { [`${version}-next-alpine`]: version };
+            await refusedWith(
+                ['--import', bundle(manifest)],
+                1,
+                new RegExp(
+                    `exported from Ghost ${version.replaceAll('.', '\\.')}; importing needs Ghost 6\\.61\\.0 or a later 6\\.x release\\.\\n.*ghost update`,
+                ),
+            );
+            assert.deepEqual(pulls, []);
+            assert.ok(!existsSync(join(h.dir, '.import')), 'staging is left');
+        });
+    }
+
     test('an image that is another version', async () => {
-        images = { [`${VERSION}-next-alpine`]: '6.2.1' };
+        images = { [`${VERSION}-next-alpine`]: '6.61.1' };
         await refusedWith(
             ['--import', bundle(local('mysql-data'))],
             1,
-            /is Ghost 6\.2\.1, but the bundle was exported from Ghost 6\.2\.0/,
+            /is Ghost 6\.61\.1, but the bundle was exported from Ghost 6\.61\.0/,
         );
     });
 
