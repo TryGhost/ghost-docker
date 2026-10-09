@@ -238,8 +238,12 @@ Backup, restore, Ghost upgrade and stack update take a lock file (`.ghost-docker
 directory for the length of the operation, so two of them cannot run on one site
 at once. A lock left behind by a crashed run names its operation and start time;
 `check` reports it and how to remove it, and nothing removes it automatically.
-Install and import write into an empty directory, and `config set` replaces one
-file atomically, so they do not lock.
+`config set` takes it too, for its read, change and write: atomic replacement
+keeps a file whole, but two writers that overlap would each write the file
+without the other's change, and an update that fails puts its snapshot back
+over a change made meanwhile. A lock that is held refuses the second writer,
+naming the first; nothing waits. Install and import write into an empty
+directory, so they do not lock.
 
 ### 2.3 Caddy and optional services
 

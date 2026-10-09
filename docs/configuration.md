@@ -66,8 +66,11 @@ The file may be left out: a key `.env` is meant to hold (as derived above)
 goes there, and any other in `ghost.env`, so `config set GHOST_PORT 2369`
 writes `.env`. A value that starts with a dash follows `--`. `set` replaces the
 key's assignment in place, keeping the comments around it, writes the file
-atomically, and keeps its mode; a new file is `0600`. Only the key name is
-printed, never a value.
+atomically, and keeps its mode; a new file is `0600`. It holds
+`.ghost-docker.lock` while it reads and writes, so a second `set`, or a
+`backup`, `restore` or `self-update`, running at the same time is refused
+rather than one of the two changes being lost. Only the key name is printed,
+never a value.
 
 `./ghost-docker config validate` reports values Compose would interpolate by
 accident. It cannot catch every case: a hand-written `$$` is indistinguishable
@@ -87,14 +90,16 @@ interpolation layer entirely. It was evaluated and rejected; §2.1 of
 
 ### The rules
 
-These are what Docker Compose (compose-go/dotenv) actually implements, verified
-by round-tripping real containers in `tests/env-compose.test.mjs`:
+These are what Docker Compose (compose-go/dotenv) actually implements. The
+manager reads them the same way, and `manager/test/integration/compose.test.ts`
+checks every hand-written case in `manager/test/dotenv.ts` against the Compose
+in the image:
 
 | form | interpolated | escapes |
 | --- | --- | --- |
-| `KEY="value"` | yes — write `$$` for a literal `$` | `\\` → `\`, `\"` → `"`, `\$` → `$`, `\n` → LF, `\r` → CR, `\t` → TAB |
-| `KEY='value'` | no | `\'` → `'` only, and a backslash immediately before a quote is not representable |
-| `KEY=value` | yes | trailing whitespace trimmed, ` #` starts a comment |
+| `KEY="value"` | yes — write `$$` (or `\$`) for a literal `$` | `\\` → `\`, `\"` → `"`, `\$` → `$`, `\n` → LF, `\r` → CR, `\t` → TAB, `\a` `\b` `\f` `\v`, `\0` and three octal digits; any other backslash is kept as it is, `\'` included |
+| `KEY='value'` | no | `\'` → `'`; any other backslash is kept as it is |
+| `KEY=value` | yes — `$$` for a literal `$` | none: `some\tvalue` is a backslash and a `t`; trailing whitespace trimmed, a space then `#` starts a comment (a tab then `#` does not) |
 
 Double quotes are therefore the only form that can represent every value, and
 are what the tooling writes.
@@ -227,7 +232,7 @@ manager wrote, and completed migrations. Its schema
 is specified in §2.2 of [the plan](ghost-cli-replacement.md). It is gitignored,
 mode `0600`, and machine generated — do not hand-edit it. Operations that
 change a running site hold `.ghost-docker.lock` while they run (`self-update`,
-`backup` and `restore` now; Ghost upgrades when they land). An update keeps
+`backup`, `restore` and `config set` now; Ghost upgrades when they land). An update keeps
 what it would put back in `.ghost-docker-update/` until it finishes, and a
 restore over a site keeps the site as it was in `.ghost-docker-restore/`
 until it is verified; see [self-update](install.md#self-update) and

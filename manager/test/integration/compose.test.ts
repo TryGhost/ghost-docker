@@ -1,9 +1,14 @@
 // What the manager leaves to the image's own Compose, against that Compose.
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
-import { ALL_PROFILES, compose, composeVersion } from '../../src/compose.ts';
+import { ALL_PROFILES, compose, composeConfig, composeVersion } from '../../src/compose.ts';
 import { operatorKeyTest } from '../../src/config.ts';
+import * as env from '../../src/env.ts';
 import { atLeast, MINIMUM } from '../../src/versions.ts';
+import { DOTENV, keyOf } from '../dotenv.ts';
 import { makeSite, NO_HOST_PORTS, realIo } from './site.ts';
 
 const io = realIo();
@@ -12,6 +17,36 @@ test("the image's Compose is at least the minimum the stack needs", async () => 
     const version = await composeVersion(io);
     assert.ok(version !== null, 'docker-compose did not run');
     assert.ok(atLeast(version, MINIMUM.compose), `${version} < ${MINIMUM.compose}`);
+});
+
+test("hand-written .env values read as Compose's own parser reads them", async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gd-dotenv-'));
+    try {
+        const text = `${DOTENV.map(([line]) => line).join('\n')}\n`;
+        writeFileSync(join(dir, '.env'), text);
+        // Each key handed to a service, so `config` prints the value Compose read.
+        const environment = Object.fromEntries(
+            DOTENV.map(([line]) => [keyOf(line), `\${${keyOf(line)}}`]),
+        );
+        writeFileSync(
+            join(dir, 'compose.yml'),
+            JSON.stringify({ services: { reader: { image: 'alpine', environment } } }),
+        );
+        const resolved = await composeConfig(io, dir);
+        assert.ok(resolved.ok, resolved.ok ? '' : resolved.reason);
+        const read = resolved.project.services.reader!.environment!;
+        for (const [line, value] of DOTENV) {
+            const key = keyOf(line);
+            assert.equal(read[key], value, `Compose reads ${line} differently from test/dotenv.ts`);
+            assert.equal(
+                env.get(text, key),
+                value,
+                `env.ts reads ${line} differently from Compose`,
+            );
+        }
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
+    }
 });
 
 test('the keys that belong in .env are what Compose interpolates, overrides included', async () => {

@@ -25,4 +25,5 @@ tests
 manager/test
 # Only the integration stage copies these; the image that ships never does.
 !manager/test/integration
+!manager/test/dotenv.ts
 *.md

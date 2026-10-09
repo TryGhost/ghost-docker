@@ -257,13 +257,14 @@ export async function validateGhostEnv(io: Io, dir: string): Promise<Finding[]> 
     for (const [key, value] of Object.entries(values)) {
         // env_file is merged into the service environment, so every ghost.env
         // key appears there. A different value means an explicit
-        // `environment` entry took precedence.
+        // `environment` entry took precedence. Neither value is shown: the
+        // container's own are database passwords and the like.
         const effective = container?.[key];
         if (effective !== undefined && effective !== value) {
             findings.push(
                 error(
                     file,
-                    `${key} is set by the container (${effective || '<empty>'}) and is ignored in ${file}`,
+                    `${key} is set by the container, which takes precedence, so it is ignored in ${file}; remove it`,
                 ),
             );
             continue;

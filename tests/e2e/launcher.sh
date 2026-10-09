@@ -225,6 +225,21 @@ expect_run_arg "$WORK/missing.tgz"
 run_args | grep -q ':ro$' && fail "a bundle that does not exist was mounted" "$(run_args)"
 ok "resolved, mounted read-only and passed by that path; a missing one is left to the manager"
 
+step "After --, the command's arguments are passed on as they are"
+with_fake ok env ${fake_socket_env[@]+"${fake_socket_env[@]}"} GD_IMAGE=example/manager:1 \
+    "$BASH_BIN" "$LAUNCHER" --dir "$SITE" config set ghost.env example -- --channel --dir --import=x --release
+expect_status 0
+[[ $(run_args | tail -10) == $'example/manager:1\nconfig\nset\nghost.env\nexample\n--\n--channel\n--dir\n--import=x\n--release' ]] ||
+    fail "the arguments after -- did not reach the manager unchanged" "$(run_args)"
+expect_run_arg "$SITE:$SITE"
+run_args | grep -q ':ro$' && fail "an argument after -- was mounted as a bundle" "$(run_args)"
+mkdir -p "$WORK/elsewhere/backups/--odd"
+(cd "$WORK" && with_fake ok env ${fake_socket_env[@]+"${fake_socket_env[@]}"} GD_IMAGE=example/manager:1 \
+    "$BASH_BIN" "$LAUNCHER" --dir "$SITE" restore --yes -- elsewhere/backups/--odd &&
+    expect_run_arg "$WORK/elsewhere/backups/--odd:$WORK/elsewhere/backups/--odd:ro")
+rm -rf "$WORK/elsewhere"
+ok "literal --channel, --dir, --import and --release after --, and restore's backup after it"
+
 step "A backup to restore is mounted read-only, unless it is in the site"
 mkdir -p "$WORK/elsewhere/backups/2026-10-09T10-00-00Z" "$SITE/backups/2026-10-09T11-00-00Z"
 (cd "$WORK" && with_fake ok env ${fake_socket_env[@]+"${fake_socket_env[@]}"} GD_IMAGE=example/manager:1 \

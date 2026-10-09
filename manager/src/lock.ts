@@ -1,6 +1,6 @@
 // The site lock (plan §2.2): one operation that changes a running site at a
-// time. Update takes it now; backup, restore and Ghost upgrades take it when
-// they land.
+// time. self-update, backup, restore and `config set` take it; Ghost upgrades
+// will when they land.
 //
 // A file in the site directory, created exclusively, naming the operation and
 // when it started. A run that crashes leaves it behind, and nothing removes it

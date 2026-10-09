@@ -1,9 +1,10 @@
 // config validate, and config get|set.
 import assert from 'node:assert/strict';
-import { chmodSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, test } from 'node:test';
 import { composeEnvironment } from '../src/compose.ts';
+import { acquireLock } from '../src/lock.ts';
 import { harness, type Harness } from './helpers.ts';
 import { LOCAL, makeSite, PRODUCTION } from './site.ts';
 
@@ -132,14 +133,19 @@ describe('ghost.env', () => {
         'paths__contentPath',
         'NODE_ENV',
     ]) {
-        test(`the container-owned key ${key} is rejected, with the value the container uses`, async () => {
+        test(`the container-owned key ${key} is rejected, without either value`, async () => {
             makeSite(h, LOCAL, { [key]: 'mine' });
             const result = await validate();
             assert.equal(result.code, 1);
             assert.match(
                 result.errors,
-                new RegExp(`${key} is set by the container \\(.*\\) and is ignored in ghost.env`),
+                new RegExp(
+                    `${key} is set by the container, which takes precedence, so it is ignored in ghost.env`,
+                ),
             );
+            // The container's value is a secret for some keys; the operator's may be too.
+            assert.doesNotMatch(result.errors, new RegExp(LOCAL.DATABASE_PASSWORD!));
+            assert.doesNotMatch(result.errors, /mine/);
         });
     }
 
@@ -240,6 +246,46 @@ describe('get, set and unset', () => {
             (await h.run('config', 'get', 'ghost.env', 'key')).stdout,
             '-----BEGIN KEY-----\nabc\n',
         );
+    });
+
+    test('a set while another operation holds the lock is refused, and changes nothing', async () => {
+        const before = readFileSync(join(h.dir, 'ghost.env'), 'utf8');
+        const lock = acquireLock(h.dir, 'backup', new Date('2026-10-09T10:00:00Z'));
+        try {
+            const result = await h.run('config', 'set', 'ghost.env', 'mail__transport', 'SMTP');
+            assert.equal(result.code, 1);
+            assert.match(result.stderr, /held by backup, started 2026-10-09T10:00:00Z/);
+            assert.match(result.stderr, /Nothing has been changed/);
+        } finally {
+            lock.release();
+        }
+        assert.equal(readFileSync(join(h.dir, 'ghost.env'), 'utf8'), before);
+    });
+
+    test('the lock is released after a set, and after one that fails', async () => {
+        assert.equal((await h.run('config', 'set', 'ghost.env', 'a', 'one')).code, 0);
+        writeFileSync(join(h.dir, 'ghost.env'), 'PEM="-----BEGIN\n-----END"\n');
+        const failed = await h.run('config', 'set', 'ghost.env', 'PEM', 'x');
+        assert.equal(failed.code, 1);
+        assert.match(failed.stderr, /spans several lines/);
+        assert.equal((await h.run('config', 'set', 'ghost.env', 'b', 'two')).code, 0);
+        assert.ok(!existsSync(join(h.dir, '.ghost-docker.lock')));
+    });
+
+    test('sets at the same time each keep their change, or are refused', async () => {
+        const keys = ['mail__a', 'mail__b', 'mail__c', 'mail__d'];
+        // Without a file, each first asks Compose where its key belongs, so
+        // their reads and writes interleave.
+        const results = await Promise.all(keys.map((key) => h.run('config', 'set', key, key)));
+        const text = readFileSync(join(h.dir, 'ghost.env'), 'utf8');
+        keys.forEach((key, index) => {
+            const { code, stderr } = results[index]!;
+            if (code === 0) {
+                assert.match(text, new RegExp(`^${key}="${key}"$`, 'm'), `${key} was lost`);
+            } else {
+                assert.match(stderr, /another operation may be changing this site/);
+            }
+        });
     });
 
     test('only .env and ghost.env, and only valid keys', async () => {

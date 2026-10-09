@@ -9,6 +9,12 @@
 // every value. The rules are in docs/configuration.md ("Value encoding") and
 // are verified by a round trip through real containers in tests/e2e/install.sh.
 //
+// Reading follows Compose's own parser (compose-go's dotenv package), not a
+// generic dotenv library: an unquoted value is literal but for `$$`, a single
+// quoted one is literal but for `\'`, and only a double-quoted one has
+// backslash escapes. test/integration/compose.test.ts checks every case in
+// test/dotenv.ts against the Compose in the image.
+//
 // A value whose quotes span several lines is valid dotenv but is not editable
 // here: it is skipped when listing keys, and reading or writing it fails with a
 // message saying to edit it by hand. Nothing written here ever produces one.
@@ -26,8 +32,10 @@ export interface Assignment {
 }
 
 const VALID_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
+// A backslash escapes the next character, whichever the quote: Compose's
+// parser reads both kinds the same way to find where the value ends.
 const DOUBLE = /^"((?:\\.|[^"\\])*)"/;
-const SINGLE = /^'((?:\\'|[^'])*)'/;
+const SINGLE = /^'((?:\\.|[^'\\])*)'/;
 const CLOSES_DOUBLE = /^(?:[^"\\]|\\.)*"/;
 
 export const isValidKey = (key: string): boolean => VALID_KEY.test(key);
@@ -94,39 +102,68 @@ export function scan(text: string): Assignment[] {
                 found.push({ line: index, key, quoting: 'multiline', body: '' });
             }
         } else {
-            // Unquoted: ` #` starts a comment, trailing whitespace is trimmed.
-            const comment = /\s#/.exec(raw);
-            const body = (comment ? raw.slice(0, comment.index) : raw).trimEnd();
+            // Unquoted: a space then `#` starts a comment (a tab does not), and
+            // trailing whitespace is trimmed.
+            const comment = raw.indexOf(' #');
+            const body = (comment === -1 ? raw : raw.slice(0, comment)).trimEnd();
             found.push({ line: index, key, quoting: 'unquoted', body });
         }
     });
     return found;
 }
 
+/** The escapes of a double-quoted value, as Go's rune literals spell them. */
 const ESCAPES: Record<string, string> = {
+    a: '\x07',
+    b: '\b',
+    f: '\f',
     n: '\n',
-    t: '\t',
     r: '\r',
+    t: '\t',
+    v: '\v',
     '\\': '\\',
     '"': '"',
-    "'": "'",
     $: '$',
 };
 
 /**
- * The value Compose hands on. One pass, so `\\n` is a backslash followed by
- * `n` rather than a newline.
+ * `\0` and up to three digits, as Compose reads it: `\0123` is the octal 123,
+ * and anything else drops the 0 and is kept, so `\0` alone is a backslash.
+ */
+function octal(digits: string): string {
+    const value = Number.parseInt(digits, 8);
+    return /^[0-7]{3}$/.test(digits) && value <= 0xff ? String.fromCharCode(value) : `\\${digits}`;
+}
+
+/**
+ * The value Compose hands on, from left to right in one pass, so `\\n` is a
+ * backslash followed by `n` rather than a newline.
  */
 export function decode(assignment: Assignment): string {
+    const { body } = assignment;
     switch (assignment.quoting) {
         case 'multiline':
             throw new MultilineValueError(assignment.key);
         case 'single':
-            // Literal; a backslash before a quote is the only escape.
-            return assignment.body.replaceAll("\\'", "'");
-        default:
-            return assignment.body.replace(/\\([\s\S])|\$\$/g, (whole, escaped?: string) =>
-                escaped === undefined ? '$' : (ESCAPES[escaped] ?? whole),
+            // Literal: a backslash before the quote drops, any other is kept.
+            return body.replace(/\\([\s\S])/g, (whole, char: string) =>
+                char === "'" ? "'" : whole,
+            );
+        case 'unquoted':
+            // Literal backslashes; `$$` is one `$`.
+            return body.replaceAll('$$', () => '$');
+        case 'double':
+            return body.replace(
+                /\\(?:0(\d{0,3})|([\s\S]))|\$\$/g,
+                (whole, digits?: string, char?: string) => {
+                    if (digits !== undefined) {
+                        return octal(digits);
+                    }
+                    if (char !== undefined) {
+                        return ESCAPES[char] ?? whole;
+                    }
+                    return '$';
+                },
             );
     }
 }
@@ -215,9 +252,11 @@ export function set(text: string, key: string, value: string): string {
  */
 export function lint(text: string): string[] {
     return scan(text)
-        .filter(({ quoting }) => quoting === 'double' || quoting === 'unquoted')
-        .filter(({ body }) =>
-            body.replaceAll('\\\\', '').replaceAll('\\$', '').replaceAll('$$', '').includes('$'),
+        .filter(({ quoting, body }) =>
+            quoting === 'double'
+                ? body.replace(/\\[\s\S]|\$\$/g, '').includes('$')
+                : // Unquoted, a backslash escapes nothing: only `$$` is literal.
+                  quoting === 'unquoted' && body.replaceAll('$$', '').includes('$'),
         )
         .map(({ key }) => key);
 }
