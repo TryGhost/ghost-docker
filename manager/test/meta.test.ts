@@ -31,7 +31,6 @@ const sample = (dir: string): Metadata => ({
     source: 'image',
     stack: {
         version: 'v1.0.0-beta.1',
-        commit: 'f'.repeat(40),
         ref: 'v1.0.0-beta.1',
         image: `ghcr.io/tryghost/ghost-docker@${DIGEST}`,
         previous: null,

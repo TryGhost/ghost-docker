@@ -41,7 +41,7 @@ export const backupManifestSchema = z.strictObject({
      * Backups from before this was recorded were live.
      */
     consistency: z.enum(['quiesced', 'live']).default('live'),
-    /** The manager that took it. */
+    /** The manager that took it: its release, the commit it was built from, and its image. */
     manager: z.strictObject({ version: nullable, commit: nullable, image: nullable }),
     site: z.strictObject({
         project: z.string().min(1),
@@ -49,7 +49,7 @@ export const backupManifestSchema = z.strictObject({
         url: z.string().min(1),
         mode: z.enum(['local', 'production']),
         source: z.enum(['image', 'checkout']),
-        /** In a checkout, the commit the site ran; a restore needs the same one. */
+        /** In a checkout, the commit checked out when the backup was taken; a restore needs the same one. */
         commit: nullable,
         profiles: z.array(z.string().min(1)),
         /** The overrides GD_COMPOSE_OVERRIDES added, relative to the site; the backup holds them. */

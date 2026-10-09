@@ -377,13 +377,6 @@ refute_output 'ERROR|warning'
 [[ -z $(ls -A "$SITE") ]] || fail "doctor left something in the site directory" "$(ls -A "$SITE")"
 ok "doctor passes, a sibling container sees the site directory, and nothing is left in it"
 
-commit=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || printf '')
-if [[ -n $commit ]]; then
-    docker image inspect "ghost-docker:checkout-${commit:0:12}" >/dev/null 2>&1 ||
-        fail "the image built from this checkout was not also tagged with its commit"
-    ok "the image is also tagged ghost-docker:checkout-${commit:0:12}"
-fi
-
 step "Files the manager writes belong to the caller"
 run "$LAUNCHER" --dir "$SITE" doctor --keep-probe
 expect_status 0

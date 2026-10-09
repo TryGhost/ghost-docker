@@ -3,16 +3,17 @@
 #
 #   tests/e2e/self-update.sh
 #
-# Image mode: three releases of the manager image are built from this
-# checkout, tagged as the launcher names releases but never pushed: the first,
-# a second that changes two stack files, and a third whose compose.yml does
-# not resolve. A local site installed from the first is updated to the
-# second with one of those files edited, then refused a downgrade, then
-# updated to the third, which fails and is put back.
+# Four releases of the manager image are built from this checkout, tagged as
+# the launcher names releases but never pushed: the first, a second that
+# changes two stack files, a third whose compose.yml does not resolve, and a
+# fourth whose Ghost never becomes healthy. A local site installed from the
+# first is updated to the second with one of those files edited, then refused
+# a downgrade, then updated to the third and the fourth, each of which fails
+# and is put back.
 #
-# Clone mode: a copy of this checkout, as a git repository, is installed at
-# one commit, refused an update with local changes, and updated to a commit
-# whose Ghost never becomes healthy, which is put back.
+# A checkout: a copy of this checkout, as a git repository, is refused
+# self-update, which is git's and Compose's there. Its backup records the
+# commit checked out when it was taken, and restores only at that commit.
 #
 # It pulls images, starts containers and binds a loopback port. Exits non-zero
 # at the first check that fails, naming it.
@@ -24,6 +25,7 @@ REGISTRY=ghcr.io/tryghost/ghost-docker
 R1=v0.0.1-beta.1
 R2=v0.0.1-beta.2
 R3=v0.0.1-beta.3
+R4=v0.0.1-beta.4
 
 # What this host cannot run fails the run, unless GD_E2E_ALLOW_SKIP=1.
 # shellcheck source=/dev/null
@@ -45,7 +47,7 @@ cleanup() {
             down --volumes --remove-orphans --timeout 5 >/dev/null 2>&1
     done
     docker run --rm --user 0 --entrypoint rm -v "$WORK:/work" "$REGISTRY:$R1" -rf /work/sites >/dev/null 2>&1
-    docker rmi "$REGISTRY:$R1" "$REGISTRY:$R2" "$REGISTRY:$R3" >/dev/null 2>&1
+    docker rmi "$REGISTRY:$R1" "$REGISTRY:$R2" "$REGISTRY:$R3" "$REGISTRY:$R4" >/dev/null 2>&1
     case $WORK in */ghost-docker-update-e2e.*) rm -rf -- "$WORK" ;; esac
     exit "$rc"
 }
@@ -123,7 +125,7 @@ build_release() {
 
 # --- Three releases ----------------------------------------------------------
 
-step "Build three releases of the manager image"
+step "Build four releases of the manager image"
 build_release "$R1" "$ROOT"
 copy_tree "$WORK/r2"
 printf '# changed in %s\n' "$R2" >>"$WORK/r2/compose.ipv6.yml"
@@ -135,7 +137,14 @@ cp "$WORK/r2/compose.ipv6.yml" "$WORK/r3/compose.ipv6.yml"
 # shellcheck disable=SC2016 # for Compose to interpolate
 printf 'x-requires: ${GD_E2E_NO_SITE_HAS_THIS:?this release needs a setting no site has}\n' >>"$WORK/r3/compose.yml"
 build_release "$R3" "$WORK/r3"
-ok "$R1, $R2 (two stack files changed), $R3 (compose.yml does not resolve)"
+copy_tree "$WORK/r4"
+cp "$WORK/r2/caddy/snippets/Logging" "$WORK/r4/caddy/snippets/Logging"
+cp "$WORK/r2/compose.ipv6.yml" "$WORK/r4/compose.ipv6.yml"
+# Ghost's health check fails at once, and gives up after one try.
+perl -0pi -e 's/process\.exit\(r\.statusCode < 400 \? 0 : 1\)/process.exit(1)/; s/interval: 30s\n      timeout: 10s\n      start_period: 180s\n      start_interval: 5s\n      retries: 5/interval: 2s\n      timeout: 10s\n      start_period: 0s\n      start_interval: 2s\n      retries: 1/' "$WORK/r4/compose.yml"
+cmp -s "$ROOT/compose.yml" "$WORK/r4/compose.yml" && fail "compose.yml was not changed for $R4"
+build_release "$R4" "$WORK/r4"
+ok "$R1, $R2 (two stack files changed), $R3 (compose.yml does not resolve), $R4 (Ghost never healthy)"
 
 # --- Image mode ------------------------------------------------------------------
 
@@ -204,9 +213,23 @@ expect_output "Restored: the site is back on $R2, with its files as they were\\.
 [[ $(http_status "$port") == 200 ]] || fail "the site does not answer on 127.0.0.1:$port"
 ok "the previous files are back, and the same Ghost container still answers"
 
-# --- Clone mode ------------------------------------------------------------------
+step "A release whose Ghost never becomes healthy is put back from the backup"
+before=$(fingerprint "$S")
+run "$S/ghost-docker" --dir "$S" self-update --to "$R4"
+expect_status 1
+expect_output 'did not start and become healthy'
+expect_output "Restored: the site is back on $R2, with its files as they were, its databases and content from the backup, and its services running and healthy\\."
+expect_output 'The backup taken before the update is kept in backups/'
+[[ $(fingerprint "$S") == "$before" ]] || fail "the files were not put back" "$(diff <(printf '%s\n' "$before") <(fingerprint "$S"))"
+[[ $(pinned "$S") == "$(image_id "$REGISTRY:$R2")" ]] || fail "the launcher was re-pinned by a failed update"
+records "$S" version "$R2" || fail "the metadata does not record $R2" "$(cat "$S/.ghost-docker.json")"
+[[ $(http_status "$port") == 200 ]] || fail "the site does not answer on 127.0.0.1:$port"
+[[ ! -e $S/.ghost-docker-update && ! -e $S/.ghost-docker.lock ]] || fail "the update left its snapshot or lock"
+ok "$R2 again, its databases loaded from the backup, and the site answers"
 
-step "A checkout, installed at one commit"
+# --- A checkout ------------------------------------------------------------------
+
+step "A checkout is refused self-update"
 new_site update-clone
 C=$SITE
 copy_tree "$C"
@@ -218,43 +241,40 @@ git_c() {
 }
 git_c init --quiet
 git_c add --all
-git_c commit --quiet --message previous
-previous=$(git_c rev-parse HEAD)
+git_c commit --quiet --message installed
+installed=$(git_c rev-parse HEAD)
 run env -u GD_IMAGE "$C/ghost-docker" --dir "$C" install --local --no-prompt
 expect_status 0
 clone_port=$(setting "$C" GHOST_PORT)
-[[ $(http_status "$clone_port") == 200 ]] || fail "the clone does not answer on 127.0.0.1:$clone_port"
-ok "at ${previous:0:12}, on 127.0.0.1:$clone_port"
-
-step "Local changes to tracked files are refused"
-printf '\n' >>"$C/README.md"
+grep -q '"commit"' "$C/.ghost-docker.json" && fail "the metadata records a commit" "$(cat "$C/.ghost-docker.json")"
 before=$(fingerprint "$C")
 run env -u GD_IMAGE "$C/ghost-docker" --dir "$C" self-update
 expect_status 1
-expect_output 'local changes to tracked files'
+expect_output 'self-update updates only a site installed'
+expect_output 'docker compose up -d --wait'
 [[ $(fingerprint "$C") == "$before" ]] || fail "a refused update changed files"
-git_c checkout --quiet README.md
-ok "before anything changed"
+[[ $(git_c rev-parse HEAD) == "$installed" ]] || fail "a refused update moved the checkout"
+ok "with the git and Compose steps, before anything changed"
 
-step "A commit whose Ghost never becomes healthy is put back"
-# Ghost's health check fails at once, and gives up after one try.
-perl -0pi -e 's/process\.exit\(r\.statusCode < 400 \? 0 : 1\)/process.exit(1)/; s/interval: 30s\n      timeout: 10s\n      start_period: 180s\n      start_interval: 5s\n      retries: 5/interval: 2s\n      timeout: 10s\n      start_period: 0s\n      start_interval: 2s\n      retries: 1/' "$C/compose.yml"
-git_c diff --quiet compose.yml && fail "compose.yml was not changed for the broken commit"
-git_c commit --quiet --all --message broken
-broken=$(git_c rev-parse HEAD)
-compose_before=$(git_c show "$previous:compose.yml")
-run env -u GD_IMAGE "$C/ghost-docker" --dir "$C" self-update
+step "A checkout's backup records the commit it was taken at"
+printf '\n' >>"$C/README.md"
+git_c commit --quiet --all --message later
+later=$(git_c rev-parse HEAD)
+run env -u GD_IMAGE "$C/ghost-docker" --dir "$C" backup
+expect_status 0
+backup=$(find "$C/backups" -mindepth 1 -maxdepth 1 -type d -not -name '.*' | sort | tail -1)
+grep -q "\"commit\": \"$later\"" "$backup/manifest.json" || fail "the manifest does not record $later" "$(cat "$backup/manifest.json")"
+ok "at ${later:0:12}, not the ${installed:0:12} it was installed at"
+
+step "It restores over its site only at that commit"
+git_c checkout --quiet --detach "$installed"
+run env -u GD_IMAGE "$C/ghost-docker" --dir "$C" restore --yes "$backup"
 expect_status 1
-expect_output 'did not start and become healthy'
-expect_output "Restored: the site is back on commit ${previous:0:12}, with its files as they were, its databases and content from the backup, and its services running and healthy\\."
-expect_output 'The backup taken before the update is kept in backups/'
-[[ $(git_c rev-parse HEAD) == "$previous" ]] || fail "the checkout is at $(git_c rev-parse HEAD), not $previous"
-[[ $(cat "$C/compose.yml") == "$compose_before" ]] || fail "compose.yml is not the previous commit's"
-if ! records "$C" commit "$previous" || records "$C" commit "$broken"; then
-    fail "the metadata does not record $previous alone" "$(cat "$C/.ghost-docker.json")"
-fi
-[[ $(http_status "$clone_port") == 200 ]] || fail "the site does not answer on 127.0.0.1:$clone_port"
-[[ ! -e $C/.ghost-docker-update && ! -e $C/.ghost-docker.lock ]] || fail "the update left its snapshot or lock"
-ok "the checkout is at ${previous:0:12} again, its databases loaded from the backup, and the site answers"
+expect_output "Check that commit out first: git checkout $later"
+git_c checkout --quiet --detach "$later"
+run env -u GD_IMAGE "$C/ghost-docker" --dir "$C" restore --yes "$backup"
+expect_status 0
+[[ $(http_status "$clone_port") == 200 ]] || fail "the restored site does not answer on 127.0.0.1:$clone_port"
+ok "refused at ${installed:0:12}, restored at ${later:0:12}"
 
 passed 'All checks passed.'

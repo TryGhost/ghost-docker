@@ -225,7 +225,7 @@ contract.
 
 `.ghost-docker.json` records the schema version, installation and last update
 time, mode, release channel, how the stack was installed (from the image or a
-clone), installed stack version/commit/ref and manager image and the ones
+clone), installed stack version/ref and manager image and the ones
 before the last update, project identity,
 resolved Ghost image and digest, selected profiles, checksums of the files the
 manager wrote, and completed migrations. Its schema
@@ -250,9 +250,9 @@ rewrites `site.dir` (and `PROJECT_DIR` in `.env`) to that directory.
   "channel": "stable",
   "source": "image",
   "stack": {
-    "version": "v1.2.3", "commit": "…", "ref": "v1.2.3",
+    "version": "v1.2.3", "ref": "v1.2.3",
     "image": "ghcr.io/tryghost/ghost-docker@sha256:…",
-    "previous": { "version": "v1.2.2", "commit": "…", "image": "ghcr.io/tryghost/ghost-docker@sha256:…" }
+    "previous": { "version": "v1.2.2", "image": "ghcr.io/tryghost/ghost-docker@sha256:…" }
   },
   "site": {
     "project": "ghost-example-com", "dir": "/opt/ghost/example.com",
@@ -270,17 +270,18 @@ rewrites `site.dir` (and `PROJECT_DIR` in `.env`) to that directory.
 
 `source` is `image` when `install` wrote the stack's files from the manager
 image, and `checkout` for a clone of the repository whose files are used in
-place. `stack.image` is the manager image the site's launcher is pinned to:
+place; it records no git commit, which is git's to know (a backup records the
+one checked out when it is taken). `stack.image` is the manager image the site's launcher is pinned to:
 a repository digest, or, for an image only this host holds, its ID. `payload`
 is the SHA-256 of every file `install` wrote from the image, so that an update
 can tell a file nobody edited from one somebody did (plan §2.7); it is empty
 in clone mode, where Git already knows. `self-update` records the checksums of the
 release it moved to, `stack.previous` (what the site ran before, which a failed
 update recovers to) and `updatedAt`; both are `null` until the first update.
-`channel` is the channel `self-update` follows by default.
+`channel` is the channel `self-update` follows by default. `self-update` does not
+update a clone: that is git's and Compose's ([install.md](install.md#updating-a-clone)).
 
-A field that was not supplied is `null` rather than an empty string, so "not
-known" and "deliberately empty" stay distinguishable. The digest is the
+A field that was not supplied is `null` rather than an empty string, so "not known" and "deliberately empty" stay distinguishable. The digest is the
 immutable image identity, recorded so the exact image can be found again during
 recovery even after a tag moves.
 

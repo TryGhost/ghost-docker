@@ -38,7 +38,7 @@ dependencies and the contracts in §2 before implementing it.
 | Where tooling runs | In a **manager image** published from this repository: a TypeScript CLI with its own dependencies and Compose. The host runs only a **launcher** that checks Docker and starts the image. See §2.10. |
 | Supported platforms | Production: Linux with Docker Engine (rootful), the counterpart of Ghost-CLI's Ubuntu with systemd. Local sites: also Docker Desktop, OrbStack and WSL2. Rootless Docker is best effort: the identity rules handle it (§2.10), but it is not in the qualification matrix. |
 | Host requirements | Docker Engine 25.0+ with the Compose v2.24+ plugin, and bash for the launcher. No `jq`, `curl`, `git` or Node on the host. `git` only when working from a clone. |
-| Distribution | The manager image carries `compose.yml`, the Caddy configuration and the CLI, and writes them into the site directory. A tagged release is an image tag. A git clone of this repository also works: the launcher builds the image from the checkout and uses the files in place. See §2.7. |
+| Distribution | The manager image carries `compose.yml`, the Caddy configuration and the CLI, and writes them into the site directory. A tagged release is an image tag. A git clone of this repository also works: the launcher builds the image from the checkout and uses the files in place, and the operator updates it with git and Compose. See §2.7. |
 | Docker socket | The manager is given the Docker socket for every command, including install. That is host-privileged, and it is accepted: whoever runs the launcher already has that access. |
 | File ownership | Everything the manager writes into the site directory is owned by the user who ran the launcher. The entrypoint starts as root to read the socket's group, then drops to the caller's uid and gid. See §2.10. |
 | Windows | Through WSL2 only, which is Linux: Docker Desktop's WSL2 backend puts `docker` and its socket inside the distro, and the launcher runs there unchanged. No native launcher; §2.10 records the design to use if one is ever wanted. |
@@ -227,12 +227,14 @@ environment. Write credential-bearing files privately, with restrictive umask an
 atomic replacement preserving intended ownership/mode. Logs list sensitive key names,
 never their values. Add file-based credentials later only for supported Ghost images.
 
-`.ghost-docker.json` is gitignored and contains a schema version, installation time,
-mode, release channel, how the stack was installed (`image` or `checkout`), installed
-stack version/commit and the manager image the site's launcher is pinned to, project
-identity, the resolved Ghost image, a checksum of every file written from the image
-(§2.7), and completed migrations. An installation that predates metadata must be
-supported explicitly.
+`.ghost-docker.json` is gitignored and contains a schema version, installation and
+last update time, mode, release channel, how the stack was installed (`image` or
+`checkout`), the installed stack version and the manager image the site's launcher
+is pinned to, and the ones before the last update, project identity, the resolved
+Ghost image, a checksum of every file written from the image (§2.7), and completed
+migrations. It records no git commit: a checkout's commit is git's to know, and a
+backup records the one checked out when it is taken (§2.5). An installation that
+predates metadata must be supported explicitly.
 
 Backup, restore, Ghost upgrade and stack update take a lock file (`.ghost-docker.lock`) in the site
 directory for the length of the operation, so two of them cannot run on one site
@@ -618,17 +620,18 @@ Rules:
   written beside it as `<file>.new`, and `self-update` names both; it never asks.
 - **Clone mode.** A launcher that finds itself in a checkout of this repository
   builds the image locally from that checkout and uses the files in place,
-  writing nothing over them. Metadata records `source: checkout` and the commit
-  the site was last installed or updated at. This is how the stack is
-  developed, and how someone who wants to read everything first installs it.
+  writing nothing over them. Metadata records `source: checkout`, and no
+  commit. This is how the stack is developed, and how someone who wants to
+  read everything first installs it.
 
-  Updating such a site is `git checkout` of a newer ref followed by
-  `./ghost-docker self-update`. That is the same update as in image mode — validate,
-  pull the service images the new `compose.yml` names, apply, verify — except
-  that the payload is already in place and is not written. A tracked tree with
-  local modifications is refused. On a failure the updater puts the operator's
-  files back and checks out the previous commit (recorded in metadata), and the
-  launcher has kept the previous manager image, tagged with its commit.
+  Such a site is updated by its operator with git and Compose: back up, check
+  a newer ref out, `config validate`, `docker compose pull` and `up -d
+  --wait`, `check`. `self-update` updates only image-mode sites, and refuses a
+  checkout before it changes anything, with those steps. The manager keeps no
+  record of the commits a checkout has been at, takes no part in moving it
+  between them, and the launcher keeps no image per commit to go back to.
+  Backup and restore work in a checkout as in image mode, with the commit
+  checked out when the backup was taken in its manifest (§2.5).
 - **The launcher is served** by GitHub Pages, deployed from GitHub Actions,
   with the custom domain `docker.ghost.org`: `https://docker.ghost.org/install.sh`.
   It is the repository's own `ghost-docker`, published by a workflow on release
@@ -649,7 +652,7 @@ there is no script rewriting itself mid-run.
 
 Flow:
 
-1. Take the lock; in clone mode refuse a dirty tracked tree.
+1. Refuse a checkout (clone mode, above). Take the lock.
 2. Resolve the release, refuse a downgrade, and record the previous version and
    digest.
 3. Back up (§2.5). A snapshot in `.ghost-docker-update/` keeps the operator's
@@ -659,10 +662,9 @@ Flow:
 4. Write the managed files, run the release's migration scripts in order (each
    recorded in metadata when it completes), validate Compose, pull images, `up
    --wait`, and verify as `check` does.
-5. On a failure, put the previous payload and configuration back (in clone mode,
-   by checking the previous commit out). Once services had changed, stop them
-   first and load the backup's databases and content (recovery.ts) before `up
-   --wait` and verify. Report restored or needs the operator. Never report
+5. On a failure, put the previous payload and configuration back. Once
+   services had changed, stop them first and load the backup's databases and
+   content (recovery.ts) before `up --wait` and verify. Report restored or needs the operator. Never report
    success because `up -d` returned zero.
 6. On success, rewrite the site's launcher to pin the new digest. The launcher
    holds the pin, so it is replaced even when edited; an edited copy is kept as
@@ -681,7 +683,9 @@ legacy Compose overrides, skipped releases, repeat invocation, and failed hooks.
 Existing installations have no launcher. Their way in is the served launcher run
 from inside the checkout (`curl -fsSL https://docker.ghost.org/install.sh | bash
 -s -- self-update`); do not tell them to use raw `git pull` to cross the breaking
-change.
+change. That is S6b's migration of the released layout on `main`, which has no
+metadata; it is not clone mode, whose sites record `source: checkout` and are
+refused.
 
 ### 2.8 The launcher and its commands
 
@@ -930,7 +934,8 @@ Keep it to a few hundred lines and to exactly these jobs:
   say what to do when they are not.
 - Decide which image to run: the digest pinned in the site's own launcher; or a
   release resolved from `--channel`/`--release`; or, in a checkout of this
-  repository, an image built from it.
+  repository, an image built from it, tagged `ghost-docker:checkout` and
+  nothing else.
 - Start it: `docker run` with the Docker socket, the site directory, the caller's
   identity and a terminal, following the contract below.
 - Pass the manager's exit status through unchanged.
@@ -1471,13 +1476,16 @@ between two releases with the Ghost pin unchanged and the launcher re-pinned,
 refuses a downgrade, keeps a hand-edited managed file and writes the release's
 beside it, and restores the previous files when validation fails before
 services change.
-In clone mode, a failed update between two refs whose `compose.yml` differs
-leaves the checkout at the previous commit with the previous configuration and
-the site running, and a dirty tree is refused before anything changes.
+Clone mode's `self-update` was built to this step's first acceptance (a failed
+update between refs put the previous commit back; a dirty tree was refused) and
+then removed (PLA-525): a checkout's update is git's and Compose's, and
+`self-update` refuses it before it changes anything.
 
-Status: implemented. `tests/e2e/self-update.sh` covers `self-update` in both modes
-against releases built locally; `launcher.yml` installs the newest beta and an
-explicit `--release` with the served launcher after each release. Decisions made
+Status: implemented. `tests/e2e/self-update.sh` covers `self-update` against
+releases built locally, including a release whose Ghost never becomes healthy
+and is put back from its backup, and a checkout's refusal; `launcher.yml`
+installs the newest beta and an explicit `--release` with the served launcher
+after each release. Decisions made
 while building it:
 
 - **No release-please** (§2.7). The Release workflow and
@@ -1506,9 +1514,8 @@ while building it:
   It resolves `--channel` and `--release`/`--to` itself and passes them on. A
   pinned site's `self-update` runs the newest release on the channel recorded in
   the launcher (`GD_PINNED_CHANNEL`), because the updater is the target.
-- **Downgrades** are told by release number in image mode, and by ancestry in
-  a clone. A site on `edge` may update to anything; a build that is not a
-  release cannot update a site that runs one.
+- **Downgrades** are told by release number. A site on `edge` may update to
+  anything; a build that is not a release cannot update a site that runs one.
 - **Ghost compatibility** is `MINIMUM.ghost` in `versions.ts`. A release that
   raises it stops the update of an older site before anything changes, with
   the upgrade sequence.
@@ -1518,7 +1525,8 @@ while building it:
 - **Validation** requires Compose to resolve the project, which plain
   `config validate` only warns about.
 - **Metadata** gained `updatedAt` and `stack.previous`, defaulting to `null`
-  so files written before them still read; `schemaVersion` stays 1.
+  so files written before them still read; `stack.commit` was removed
+  (PLA-525). `schemaVersion` stays 1.
 - **Backup-backed recovery** (PLA-512, ahead of S6b): `self-update` takes a
   backup after its snapshot. A failure once the services changed stops them,
   sets the data aside in `.ghost-docker-update/data/`, loads the backup's
@@ -1578,8 +1586,9 @@ while building it:
   migration history.
 - **The stack's files travel with an image-mode backup**, with the launcher,
   so a restore anywhere runs exactly the images the site ran, whichever
-  manager restores it. A clone's backup records its commit and restores into
-  a clone checked out at it.
+  manager restores it. A clone's backup records the commit checked out when
+  it is taken, asked of git then rather than read from metadata, and restores
+  into a clone checked out at it.
 - **The manifest holds a SHA-256 of every file**, and restore checks them all,
   and lists the archive, before it changes anything.
 - **Restore always starts MySQL on an empty data directory** and loads the

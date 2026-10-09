@@ -666,7 +666,7 @@ function writeSiteRoutes({ io, dir, production, project, intent }: Site, created
 
 function writeSiteMetadata(site: Site, created: Created) {
     const { io, dir, clone, intent, ghost } = site;
-    const { commit, version, channel } = site.release;
+    const { version, channel } = site.release;
     created.file(join(dir, META_FILE));
     writeMetadata(dir, {
         schemaVersion: SCHEMA_VERSION,
@@ -676,7 +676,6 @@ function writeSiteMetadata(site: Site, created: Created) {
         source: clone ? 'checkout' : 'image',
         stack: {
             version,
-            commit,
             ref: clone ? null : version,
             image: site.pin,
             previous: null,

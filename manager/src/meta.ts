@@ -31,18 +31,14 @@ export const metadataSchema = z.strictObject({
     source: z.enum(['image', 'checkout']),
     stack: z.strictObject({
         version: nullable,
-        commit: nullable,
         ref: nullable,
         /** The manager image that installed the site, as the site's launcher runs it. */
         image: nullable,
         /**
-         * What the site ran before its last update: the release, commit and
-         * manager image an update recovers to. Null until the first update.
+         * What the site ran before its last update: the release and manager
+         * image an update recovers to. Null until the first update.
          */
-        previous: z
-            .strictObject({ version: nullable, commit: nullable, image: nullable })
-            .nullable()
-            .default(null),
+        previous: z.strictObject({ version: nullable, image: nullable }).nullable().default(null),
     }),
     site: z.strictObject({
         project: z.string().min(1),
@@ -183,13 +179,9 @@ export function describeMetadata(read: MetadataRead): string[] {
         `mode           ${m.mode}`,
         `source         ${m.source === 'checkout' ? 'a checkout of the repository' : 'the manager image'}`,
         `channel        ${unknown(m.channel)}`,
-        `stack          ${unknown(m.stack.version)}${m.stack.commit ? ` (${m.stack.commit.slice(0, 12)})` : ''}`,
+        `stack          ${unknown(m.stack.version)}`,
         ...(m.stack.image ? [`manager image  ${m.stack.image}`] : []),
-        ...(m.stack.previous
-            ? [
-                  `previous       ${unknown(m.stack.previous.version)}${m.stack.previous.commit ? ` (${m.stack.previous.commit.slice(0, 12)})` : ''}`,
-              ]
-            : []),
+        ...(m.stack.previous ? [`previous       ${unknown(m.stack.previous.version)}`] : []),
         `project        ${m.site.project}`,
         `directory      ${m.site.dir}`,
         `url            ${m.site.url}`,

@@ -122,10 +122,9 @@ describe('an update between releases', () => {
         const after = metadata();
         assert.deepEqual(after.stack, {
             version: 'v0.1.0-beta.2',
-            commit: 'c'.repeat(40),
             ref: 'v0.1.0-beta.2',
             image: SECOND,
-            previous: { version: 'v0.1.0-beta.1', commit: 'c'.repeat(40), image: FIRST },
+            previous: { version: 'v0.1.0-beta.1', image: FIRST },
         });
         assert.equal(after.installedAt, before.installedAt);
         assert.match(after.updatedAt, /^\d{4}-\d\d-\d\dT/);
@@ -481,11 +480,7 @@ describe('a failed update', () => {
 });
 
 describe('a checkout', () => {
-    const PREVIOUS = 'a'.repeat(40);
-    const HEAD = 'b'.repeat(40);
     let gitCalls: string[][];
-    let dirty: string;
-    let behind: boolean;
 
     beforeEach(() => {
         // A different directory: a checkout, not an installed image-mode site.
@@ -502,10 +497,11 @@ describe('a checkout', () => {
         writeMetadata(h.dir, {
             schemaVersion: SCHEMA_VERSION,
             installedAt: '2026-10-06T09:12:44Z',
+            updatedAt: null,
             mode: 'local',
             channel: null,
             source: 'checkout',
-            stack: { version: null, commit: PREVIOUS, ref: null, image: null },
+            stack: { version: null, ref: null, image: null, previous: null },
             site: {
                 project: 'ghost-local-site',
                 dir: h.dir,
@@ -519,78 +515,29 @@ describe('a checkout', () => {
             migrations: [],
         });
         gitCalls = [];
-        dirty = '';
-        behind = false;
         h.daemon.gitRun = (args) => {
-            const command = args.slice(4);
-            gitCalls.push(command);
-            switch (command[0]) {
-                case 'rev-parse':
-                    return ok(`${HEAD}\n`);
-                case 'status':
-                    return ok(dirty);
-                case 'cat-file':
-                    return ok('');
-                case 'merge-base':
-                    return behind ? ok('') : failed(1, '');
-                case 'checkout':
-                    return ok('');
-                default:
-                    return undefined;
-            }
+            gitCalls.push(args.slice(4));
+            return ok(`${'b'.repeat(40)}\n`);
         };
     });
 
-    test('records the new commit, and writes no stack files', async () => {
-        const result = await update();
-        assert.equal(result.code, 0, result.stderr);
-        assert.equal(metadata().stack.commit, HEAD);
-        assert.equal(metadata().stack.previous.commit, PREVIOUS);
-        assert.equal(metadata().channel, null);
-        assert.ok(!existsSync(join(h.dir, 'ghost-docker')));
-        assert.ok(gitCalls.every((args) => args[0] !== 'checkout'));
-    });
-
-    test('local changes to tracked files are refused before anything changes', async () => {
-        dirty = ' M compose.yml\n';
-        const before = snapshot();
-        const result = await update();
-        assert.equal(result.code, 1);
-        assert.match(result.stderr, /local changes to tracked files/);
-        assert.match(result.stderr, /compose\.yml/);
-        assert.deepEqual(snapshot(), before);
-        assert.deepEqual(compose, []);
-    });
-
-    test('an older commit is a downgrade', async () => {
-        behind = true;
-        const result = await update();
-        assert.equal(result.code, 1);
-        assert.match(result.stderr, /newer than commit bbbbbbbbbbbb/);
-    });
-
-    test('--to and --channel do not apply', async () => {
-        const result = await update('--to', 'v1.0.0');
-        assert.equal(result.code, 2);
-        assert.match(result.stderr, /check the release out with git/);
-    });
-
-    test('a failure checks the previous commit out and starts it again', async () => {
-        site.ups = [failed(1, 'container ghost is unhealthy')];
-        const before = snapshot();
-        const result = await update();
-        assert.equal(result.code, 1);
-        assert.deepEqual(gitCalls.at(-1), ['checkout', '--quiet', '--detach', PREVIOUS]);
-        assert.match(result.stderr, /The checkout is at aaaaaaaaaaaa again, with a detached HEAD/);
-        assert.deepEqual(snapshot(), before);
-        assert.equal(started(), 3);
-        assert.deepEqual([...site.running].sort(), ['db', 'ghost']);
-    });
-
-    test('git that cannot read the checkout is refused', async () => {
-        h.daemon.gitRun = () => failed(128, 'fatal: not a git repository');
-        const result = await update();
-        assert.equal(result.code, 1);
-        assert.match(result.stderr, /git cannot read the checkout/);
-    });
+    for (const args of [[], ['--check'], ['--to', 'v1.0.0'], ['--channel', 'stable']]) {
+        test(`self-update ${args.join(' ')} is refused before anything, with git and Compose's steps`, async () => {
+            const before = snapshot();
+            const metadataBefore = readSite('.ghost-docker.json');
+            const result = await update(...args);
+            assert.equal(result.code, 1);
+            assert.match(
+                result.stderr,
+                /self-update updates only a site installed\s+from the manager image/,
+            );
+            assert.match(result.stderr, /git fetch --tags && git checkout <release>/);
+            assert.match(result.stderr, /docker compose up -d --wait/);
+            assert.match(result.stderr, /Nothing has been changed/);
+            assert.deepEqual(snapshot(), before);
+            assert.equal(readSite('.ghost-docker.json'), metadataBefore);
+            assert.deepEqual(compose, []);
+            assert.deepEqual(gitCalls, []);
+        });
+    }
 });

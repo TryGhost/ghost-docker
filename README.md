@@ -84,7 +84,7 @@ manager/test/integration/run.sh  # the manager against the real daemon, MySQL an
 
 tests/e2e/launcher.sh        # the launcher against a stand-in docker, then the real image
 tests/e2e/install.sh         # real installations: pulls images, binds 80 and 443
-tests/e2e/self-update.sh     # real updates between releases built here, and a clone's commits
+tests/e2e/self-update.sh     # real updates between releases built here; a clone refused, backed up and restored
 tests/e2e/backup.sh          # real backups and restores, with ActivityPub
 tests/e2e/import.sh          # real Ghost-CLI sites exported and imported
 ```
