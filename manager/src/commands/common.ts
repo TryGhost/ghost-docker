@@ -87,7 +87,6 @@ export const requestedRelease = (
 export interface ManagerRelease {
     /** `vX.Y.Z[-beta.N]`, `edge-<commit>`, or null for a build from a checkout. */
     readonly version: string | null;
-    readonly commit: string | null;
     readonly channel: Metadata['channel'];
 }
 
@@ -97,7 +96,7 @@ export interface ManagerRelease {
  * another.
  */
 export function releaseOf(requested: Requested, env: NodeJS.ProcessEnv): ManagerRelease {
-    const { version, commit } = managerVersion();
+    const { version } = managerVersion();
     if (requested.ref !== null && isRelease(version) && version !== requested.ref) {
         throw new CliError(
             `${requested.flag} ${requested.ref} was asked for, but this manager is ${version}.\n` +
@@ -112,7 +111,6 @@ export function releaseOf(requested: Requested, env: NodeJS.ProcessEnv): Manager
         channelOf(version);
     return {
         version: version === 'dev' || version === 'checkout' ? null : version,
-        commit: commit || null,
         channel,
     };
 }

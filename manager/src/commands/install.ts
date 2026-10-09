@@ -666,17 +666,17 @@ function writeSiteRoutes({ io, dir, production, project, intent }: Site, created
 
 function writeSiteMetadata(site: Site, created: Created) {
     const { io, dir, clone, intent, ghost } = site;
-    const { commit, version, channel } = site.release;
+    const { version, channel } = site.release;
     created.file(join(dir, META_FILE));
     writeMetadata(dir, {
         schemaVersion: SCHEMA_VERSION,
         installedAt: isoSeconds(),
+        updatedAt: null,
         mode: intent.mode,
         channel: clone ? null : channel,
         source: clone ? 'checkout' : 'image',
         stack: {
             version,
-            commit,
             ref: clone ? null : version,
             image: site.pin,
             previous: null,
@@ -696,7 +696,6 @@ function writeSiteMetadata(site: Site, created: Created) {
         },
         profiles: site.profiles.split(','),
         payload: created.checksums,
-        migrations: [],
     });
     ok(io, META_FILE, 'installation metadata');
 }

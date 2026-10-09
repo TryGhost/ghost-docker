@@ -3,25 +3,24 @@
 // The updater is the target release. The site's launcher starts the image
 // that --to or --channel names, or by default the newest release on the
 // channel the site follows, and this is that image: it runs outside the files
-// it replaces. In a checkout the operator has already checked the new ref
-// out, and the launcher built this image from it.
+// it replaces. It updates only a site installed from the image: a checkout of
+// the repository is the operator's to update with git and Compose, and is
+// refused with the steps.
 //
 // It updates the stack, never Ghost: `.env`, and the exact Ghost image it
 // pins, are not touched. `run` takes these parts in order:
 //
-//   1. Refusals that change nothing: a site without metadata, a checkout with
-//      local changes, a downgrade, a Ghost older than this release runs.
-//      Then the lock.
-//   2. A snapshot of the operator's files, the metadata and, in image mode,
-//      every managed file this update writes, in UPDATE_DIR. Then a checked
+//   1. Refusals that change nothing: a site without metadata, a checkout, a
+//      downgrade, a Ghost older than this release runs. Then the lock.
+//   2. A snapshot of the operator's files, the metadata and every managed
+//      file this update writes, in UPDATE_DIR. Then a checked
 //      backup (backup.ts), because a release's services may migrate their
 //      databases, ActivityPub's among them, whether or not Ghost changes.
-//   3. In image mode, the managed files: an untouched one is replaced, an
+//   3. The managed files: an untouched one is replaced, an
 //      edited one is kept and the release's is written beside it as
 //      `<file>.new`. It never asks.
 //   4. Validate, pull, `up --wait`, verify as `check` does.
-//   5. On a failure, the snapshot is put back (in a checkout, the previous
-//      commit is checked out). Once the services had been changed, they are
+//   5. On a failure, the snapshot is put back. Once the services had been changed, they are
 //      stopped first, the data they ran on is set aside, and the backup's
 //      databases and content are loaded (recovery.ts) before the previous
 //      release is started again. The outcome is reported as restored or as
@@ -32,12 +31,11 @@ import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'n
 import { dirname, join, relative } from 'node:path';
 import { readBackup, takeBackup } from '../backup.ts';
 import { compose, composeConfig, composeError, upAndWait } from '../compose.ts';
-import { git } from '../process.ts';
 import { z } from 'zod';
 import { defineCommand, flag } from '../command.ts';
 import { findingErrors, validate } from '../config.ts';
 import type { Context } from '../context.ts';
-import { CliError, describeError, EXIT, UsageError } from '../errors.ts';
+import { CliError, describeError, EXIT } from '../errors.ts';
 import { atomicWrite, copyPresent } from '../fs.ts';
 import type { Io } from '../io.ts';
 import { acquireLock } from '../lock.ts';
@@ -93,13 +91,12 @@ export const EDITED_LAUNCHER = `${LAUNCHER}.edited`;
 /** A release of the stack, as a site runs it. */
 interface Stack {
     readonly version: string | null;
-    readonly commit: string | null;
-    /** The manager image; none in a checkout. */
+    /** The manager image. */
     readonly image: string | null;
 }
 
 const describeStack = (stack: Stack): string =>
-    stack.version ?? (stack.commit ? `commit ${stack.commit.slice(0, 12)}` : 'an unknown release');
+    stack.version ?? (stack.image ? `the manager image ${stack.image}` : 'an unknown release');
 
 // --- What an update writes ------------------------------------------------------
 
@@ -175,17 +172,15 @@ function planPayload(dir: string, stack: string, recorded: Record<string, string
 const newPath = (file: string) => `${file}.new`;
 
 /** Every path an update may write or remove, relative to the site: what the snapshot holds. */
-function touched(payload: Payload | null): string[] {
+function touched(payload: Payload): string[] {
     const paths: string[] = [...OPERATOR_FILES];
-    if (payload !== null) {
-        for (const { file, action } of payload.changes) {
-            paths.push(file);
-            if (action === 'keep') {
-                paths.push(newPath(file));
-            }
+    for (const { file, action } of payload.changes) {
+        paths.push(file);
+        if (action === 'keep') {
+            paths.push(newPath(file));
         }
-        paths.push(LAUNCHER, EDITED_LAUNCHER);
     }
+    paths.push(LAUNCHER, EDITED_LAUNCHER);
     return [...new Set(paths)];
 }
 
@@ -280,49 +275,12 @@ class Snapshot {
     }
 }
 
-// --- Git, in a checkout -----------------------------------------------------------
-
-/**
- * git in the site directory. The checkout belongs to the caller, whose uid the
- * manager runs as, but git's ownership check does not know that from inside
- * a container.
- */
-
-/** The commit checked out, refusing a tree with local changes to tracked files. */
-async function cleanHead(io: Io, dir: string): Promise<string> {
-    const head = await git(io, dir, ['rev-parse', '--verify', 'HEAD']);
-    if (!head.ok) {
-        throw new CliError(
-            `git cannot read the checkout in ${dir} from the manager: ${head.stderr || 'no answer'}.\n` +
-                '  A git worktree keeps its repository outside the site directory, where the manager cannot see it.\n' +
-                '  Nothing has been changed.',
-        );
-    }
-    const status = await git(io, dir, ['status', '--porcelain', '--untracked-files=no']);
-    if (!status.ok) {
-        throw new CliError(
-            `git status failed in ${dir}: ${status.stderr}. Nothing has been changed.`,
-        );
-    }
-    if (status.stdout.trim() !== '') {
-        const files = status.stdout
-            .split('\n')
-            .filter((line) => line.trim() !== '')
-            .map((line) => `    ${line.slice(3)}`);
-        throw new CliError(
-            `the checkout has local changes to tracked files, which an update would not be able to put back:\n${files.slice(0, 10).join('\n')}${files.length > 10 ? '\n    …' : ''}\n` +
-                '  Commit or stash them, then run ./ghost-docker self-update again. Nothing has been changed.',
-        );
-    }
-    return head.stdout.trim();
-}
-
 // --- Deciding -------------------------------------------------------------------
 
 type Direction = 'newer' | 'current' | 'downgrade';
 
-/** Image mode: by release number; a site on edge or a dev build may go anywhere. */
-function imageDirection(from: Stack, to: Stack): Direction | { unordered: string } {
+/** By release number; a site on edge or a dev build may go anywhere. */
+function compare(from: Stack, to: Stack): Direction | { unordered: string } {
     if (from.image !== null && from.image === to.image) {
         return 'current';
     }
@@ -336,34 +294,6 @@ function imageDirection(from: Stack, to: Stack): Direction | { unordered: string
     }
     const order = compareReleases(to.version, from.version);
     return order > 0 ? 'newer' : order === 0 ? 'current' : 'downgrade';
-}
-
-/** A checkout: by ancestry. A commit that is neither ahead nor behind is a newer ref too. */
-async function checkoutDirection(
-    io: Io,
-    dir: string,
-    from: Stack,
-    head: string,
-): Promise<Direction> {
-    if (from.commit === null) {
-        throw new CliError(
-            `${META_FILE} does not record the commit this site was installed at, so a failed update could not\n` +
-                '  check it out again. Nothing has been changed.',
-        );
-    }
-    if (from.commit === head) {
-        return 'current';
-    }
-    const known = await git(io, dir, ['cat-file', '-e', `${from.commit}^{commit}`]);
-    if (!known.ok) {
-        throw new CliError(
-            `the commit this site was installed at, ${from.commit.slice(0, 12)}, is not in this checkout, so a\n` +
-                '  failed update could not go back to it. Fetch it, then run ./ghost-docker self-update again.\n' +
-                '  Nothing has been changed.',
-        );
-    }
-    const behind = await git(io, dir, ['merge-base', '--is-ancestor', head, from.commit]);
-    return behind.ok ? 'downgrade' : 'newer';
 }
 
 function refuseOldGhost(metadata: Metadata, from: Stack): void {
@@ -384,13 +314,12 @@ interface Update {
     readonly context: Context;
     readonly site: SiteFacts;
     readonly metadata: Metadata;
-    readonly clone: boolean;
     readonly from: Stack;
     readonly to: Stack;
     readonly release: ManagerRelease;
-    /** Image mode: the stack directory and what happens to each managed file. */
+    /** The stack directory, and what happens to each managed file. */
     readonly stack: string;
-    readonly payload: Payload | null;
+    readonly payload: Payload;
 }
 
 export const selfUpdateCommand = defineCommand({
@@ -401,70 +330,48 @@ export const selfUpdateCommand = defineCommand({
         const { context, site } = installedSite(io);
         const dir = site.dir;
         const metadata = requireMetadata(dir, 'update cannot tell which files are its own');
-        const clone = metadata.source === 'checkout';
-        if (clone && (requested.channel !== null || requested.ref !== null)) {
-            throw new UsageError(
-                'this site is a checkout of the repository: check the release out with git, then run\n' +
-                    '  ./ghost-docker self-update from the checkout. --to and --channel do not apply.',
+        if (metadata.source === 'checkout') {
+            throw new CliError(
+                'this site is a checkout of the repository, and self-update updates only a site installed\n' +
+                    '  from the manager image. Update a checkout with git and Compose, in the site directory:\n' +
+                    '    ./ghost-docker backup\n' +
+                    '    git fetch --tags && git checkout <release>\n' +
+                    '    ./ghost-docker config validate\n' +
+                    '    docker compose pull --ignore-buildable\n' +
+                    '    docker compose up -d --wait\n' +
+                    '    ./ghost-docker check\n' +
+                    '  If the site does not come back, check out the commit it ran and restore the backup.\n' +
+                    '  Nothing has been changed.',
             );
         }
-        if (clone !== (context.source === 'checkout')) {
+        if (context.source === 'checkout') {
             throw new CliError(
-                clone
-                    ? 'this site is a checkout of the repository, and this manager was not built from it.\n' +
-                          '  Run the checkout’s own ./ghost-docker self-update. Nothing has been changed.'
-                    : 'this site was installed from the manager image, and this manager was built from a checkout.\n' +
-                          '  Run the site’s own ./ghost-docker self-update. Nothing has been changed.',
+                'this site was installed from the manager image, and this manager was built from a checkout.\n' +
+                    '  Run the site’s own ./ghost-docker self-update. Nothing has been changed.',
             );
         }
 
         const release = releaseOf(requested, io.env);
-        const from: Stack = {
-            version: metadata.stack.version,
-            commit: metadata.stack.commit,
-            image: metadata.stack.image,
-        };
-        let direction: Direction;
-        let to: Stack;
-        if (clone) {
-            const head = await cleanHead(io, dir);
-            to = { version: release.version, commit: head, image: null };
-            direction = await checkoutDirection(io, dir, from, head);
-        } else {
-            const image = await io.busy('Resolving the manager image', () =>
-                managerPin(io, context),
-            );
-            to = { version: release.version, commit: release.commit, image };
-            const decided = imageDirection(from, to);
-            if (typeof decided === 'object') {
-                throw new CliError(`${decided.unordered}. Nothing has been changed.`);
-            }
-            direction = decided;
+        const from: Stack = { version: metadata.stack.version, image: metadata.stack.image };
+        const image = await io.busy('Resolving the manager image', () => managerPin(io, context));
+        const to: Stack = { version: release.version, image };
+        const decided = compare(from, to);
+        if (typeof decided === 'object') {
+            throw new CliError(`${decided.unordered}. Nothing has been changed.`);
         }
 
         const stack = stackDir(io.env);
-        const payload = clone ? null : planPayload(dir, stack, metadata.payload);
-        const update: Update = {
-            io,
-            context,
-            site,
-            metadata,
-            clone,
-            from,
-            to,
-            release,
-            stack,
-            payload,
-        };
+        const payload = planPayload(dir, stack, metadata.payload);
+        const update: Update = { io, context, site, metadata, from, to, release, stack, payload };
 
         if (flags.check) {
-            return report(update, direction);
+            return report(update, decided);
         }
-        if (direction === 'current') {
+        if (decided === 'current') {
             io.stdout(`This site already runs ${describeStack(to)}. Nothing to update.\n`);
             return EXIT.ok;
         }
-        if (direction === 'downgrade') {
+        if (decided === 'downgrade') {
             throw new CliError(
                 `this site runs ${describeStack(from)}, which is newer than ${describeStack(to)}. An update never\n` +
                     '  moves a site to an older release. Nothing has been changed.',
@@ -491,7 +398,7 @@ export const selfUpdateCommand = defineCommand({
 });
 
 /** --check: what an update would do, changing nothing. */
-function report({ io, clone, from, to, payload, metadata }: Update, direction: Direction): number {
+function report({ io, from, to, payload, metadata }: Update, direction: Direction): number {
     io.stdout(`This site runs ${describeStack(from)}. This release is ${describeStack(to)}.\n`);
     if (direction === 'current') {
         io.stdout('It is up to date.\n');
@@ -508,10 +415,6 @@ function report({ io, clone, from, to, payload, metadata }: Update, direction: D
         return EXIT.ok;
     }
     io.stdout(`An update is available. Ghost stays at ${metadata.ghost.version}.\n`);
-    if (clone || payload === null) {
-        io.stdout('Run ./ghost-docker self-update to apply the checked-out files.\n');
-        return EXIT.ok;
-    }
     const lines: Record<Action, string> = {
         add: 'added',
         replace: 'replaced',
@@ -554,11 +457,7 @@ async function apply(update: Update): Promise<number> {
 
         stage = 'write';
         heading(io, 'Writing the stack');
-        if (payload === null) {
-            ok(io, 'stack files', `the checkout's, at ${to.commit!.slice(0, 12)}`);
-        } else {
-            writePayloadChanges(io, dir, stack, payload);
-        }
+        writePayloadChanges(io, dir, stack, payload);
 
         stage = 'validate';
         // validate() only warns when Compose cannot resolve the project; here
@@ -606,36 +505,33 @@ async function apply(update: Update): Promise<number> {
 }
 
 /** The launcher pinned to this image, then the metadata. */
-function record({ io, site, metadata, clone, from, to, release, payload }: Update): void {
+function record({ io, site, metadata, from, to, release, payload }: Update): void {
     const dir = site.dir;
-    const checksums = { ...payload?.checksums };
-    if (!clone) {
-        const launcher = join(dir, LAUNCHER);
-        const present = checksumOf(launcher);
-        if (present !== null && present !== metadata.payload[LAUNCHER]) {
-            // It holds the pin, so it is always replaced; an edited one is kept beside it.
-            cpSync(launcher, join(dir, EDITED_LAUNCHER));
-            printChecks(io, [
-                {
-                    status: 'note',
-                    label: 'kept',
-                    detail: `${LAUNCHER} had been edited; it is replaced, because it holds the pin. Your copy is ${EDITED_LAUNCHER}`,
-                },
-            ]);
-        }
-        const content = launcherContent(io.env, { image: to.image!, channel: release.channel });
-        atomicWrite(launcher, content, 0o755);
-        checksums[LAUNCHER] = sha256(content);
-        ok(io, LAUNCHER, `the launcher, pinned to ${to.image}`);
+    const checksums = { ...payload.checksums };
+    const launcher = join(dir, LAUNCHER);
+    const present = checksumOf(launcher);
+    if (present !== null && present !== metadata.payload[LAUNCHER]) {
+        // It holds the pin, so it is always replaced; an edited one is kept beside it.
+        cpSync(launcher, join(dir, EDITED_LAUNCHER));
+        printChecks(io, [
+            {
+                status: 'note',
+                label: 'kept',
+                detail: `${LAUNCHER} had been edited; it is replaced, because it holds the pin. Your copy is ${EDITED_LAUNCHER}`,
+            },
+        ]);
     }
+    const content = launcherContent(io.env, { image: to.image!, channel: release.channel });
+    atomicWrite(launcher, content, 0o755);
+    checksums[LAUNCHER] = sha256(content);
+    ok(io, LAUNCHER, `the launcher, pinned to ${to.image}`);
     writeMetadata(dir, {
         ...metadata,
         updatedAt: isoSeconds(),
-        channel: clone ? null : release.channel,
+        channel: release.channel,
         stack: {
             version: to.version,
-            commit: to.commit,
-            ref: clone ? null : to.version,
+            ref: to.version,
             image: to.image,
             previous: from,
         },
@@ -649,7 +545,7 @@ function record({ io, site, metadata, clone, from, to, release, payload }: Updat
  * says which: restored, or needing the operator.
  */
 async function recover(
-    { io, context, site, clone, from, to }: Update,
+    { io, context, site, from, to }: Update,
     snapshot: Snapshot,
     backup: string | null,
     stage: Stage,
@@ -669,14 +565,6 @@ async function recover(
         const stopped = await stopServices(io, dir, `Stopping ${describeStack(to)}`);
         if (stopped.error !== null) {
             problems.push(`the services could not be stopped: ${stopped.error}`);
-        }
-    }
-    if (problems.length === 0 && clone) {
-        const checkout = await git(io, dir, ['checkout', '--quiet', '--detach', from.commit!]);
-        if (!checkout.ok) {
-            problems.push(
-                `git could not check out ${from.commit!.slice(0, 12)}: ${checkout.stderr}`,
-            );
         }
     }
     if (problems.length === 0) {
@@ -715,7 +603,6 @@ async function recover(
                     ? [
                           `Before the update, the site was backed up to ${backup}: its databases,`,
                           'content and files. To put the site back from it, in the site directory:',
-                          ...(clone ? [`  git checkout ${from.commit}`] : []),
                           `  ./ghost-docker restore --yes ${relative(dir, backup)}`,
                           '',
                       ]
@@ -726,9 +613,7 @@ async function recover(
                           `The data the update's services ran on is in ${snapshot.root}/data, set aside.`,
                       ]
                     : []),
-                clone
-                    ? `The checkout was at ${from.commit}; its manager image is ghost-docker:checkout-${from.commit!.slice(0, 12)}.`
-                    : `The site ran the manager image ${from.image}; its launcher still runs it.`,
+                `The site ran the manager image ${from.image}; its launcher still runs it.`,
                 `Once the site is as it should be (./ghost-docker check), remove ${snapshot.root}` +
                     (aside.data.length > 0 ? ' (it needs sudo: MySQL owns part of it).' : '.'),
                 '',
@@ -744,11 +629,6 @@ async function recover(
                 (servicesChanged
                     ? ', its databases and content from the backup, and its services running and healthy.'
                     : '. Its services were not changed.'),
-            ...(clone
-                ? [
-                      `The checkout is at ${from.commit!.slice(0, 12)} again, with a detached HEAD; the ref you checked out is unchanged.`,
-                  ]
-                : []),
             ...kept,
             ...(left === null ? [] : [left]),
             '',
@@ -758,14 +638,14 @@ async function recover(
 }
 
 function summarize({ io, site, from, to, metadata, payload }: Update, backup: string): void {
-    const kept = (payload?.changes ?? []).filter((change) => change.action === 'keep');
+    const kept = payload.changes.filter((change) => change.action === 'keep');
     io.stdout(
         [
             '',
             `Updated from ${describeStack(from)} to ${describeStack(to)}.`,
             '',
             `  Ghost        ${metadata.ghost.version}, ${metadata.ghost.image}@${metadata.ghost.digest}, unchanged`,
-            ...(to.image ? [`  Manager      ${to.image}`] : []),
+            `  Manager      ${to.image}`,
             `  Backup       ${relative(site.dir, backup)}, of the site before the update; kept until you remove it`,
             ...(kept.length > 0
                 ? [

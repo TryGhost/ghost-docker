@@ -22,6 +22,7 @@ import * as tar from 'tar';
 import { backupId, parseCounts } from '../src/backup.ts';
 import { readBackupManifest } from '../src/backup/manifest.ts';
 import { acquireLock } from '../src/lock.ts';
+import { readMetadata, writeMetadata } from '../src/meta.ts';
 import {
     failed,
     harness,
@@ -233,6 +234,10 @@ describe('backup', () => {
             ],
         );
         assert.deepEqual(manifest.images, IMAGES);
+        // The manager that took it, as it was built; the site is no checkout.
+        assert.equal(manifest.manager.version, 'v0.1.0-beta.1');
+        assert.equal(manifest.manager.commit, 'c'.repeat(40));
+        assert.equal(manifest.site.commit, null);
         assert.equal(manifest.site.dir, h.dir);
         assert.deepEqual(manifest.site.profiles, ['local', 'activitypub']);
         assert.equal(manifest.content.entries > 3, true);
@@ -834,6 +839,40 @@ describe('restore into a new directory', () => {
     });
 });
 
+describe('a checkout', () => {
+    const HEAD = 'e'.repeat(40);
+
+    beforeEach(() => {
+        const read = readMetadata(h.dir);
+        assert.equal(read.state, 'present');
+        if (read.state === 'present') {
+            writeMetadata(h.dir, { ...read.metadata, source: 'checkout' });
+        }
+    });
+
+    test('a backup records the commit checked out when it is taken, not one from install', async () => {
+        h.daemon.gitRun = (args) =>
+            args.includes('rev-parse') ? ok(`${HEAD}\n`) : failed(1, 'unexpected');
+        const root = await backUp();
+        const read = readBackupManifest(root);
+        assert.equal(read.state === 'present' && read.manifest.site.commit, HEAD);
+        assert.equal(read.state === 'present' && read.manifest.site.source, 'checkout');
+    });
+
+    test('a checkout git cannot read is backed up, saying its commit is not recorded', async () => {
+        h.daemon.gitRun = () => failed(128, 'fatal: not a git repository');
+        const result = await h.run('backup');
+        assert.equal(result.code, 0, result.stderr);
+        assert.match(
+            result.stdout + result.stderr,
+            /git cannot read the checkout .* so the backup does not record its commit/,
+        );
+        const [id] = backups();
+        const read = readBackupManifest(join(h.dir, 'backups', id!));
+        assert.equal(read.state === 'present' && read.manifest.site.commit, null);
+    });
+});
+
 describe('consistency', () => {
     const PHOTO = join('data', 'ghost', 'images', '2026', 'photo.jpg');
     /** What the backup's content archive holds. */
@@ -999,6 +1038,21 @@ describe('the pieces', () => {
                 ['activitypub', {}],
                 ['other', { x: 0 }],
             ],
+        );
+    });
+
+    test('a manifest in a development release’s earlier shape is refused, saying so', async () => {
+        const root = await backUp();
+        const manifest = JSON.parse(readFileSync(join(root, 'manifest.json'), 'utf8'));
+        delete manifest.consistency;
+        delete manifest.site.overrides;
+        delete manifest.running;
+        writeFileSync(join(root, 'manifest.json'), JSON.stringify(manifest));
+        const read = readBackupManifest(root);
+        assert.equal(read.state, 'refused');
+        assert.match(
+            read.state === 'refused' ? read.reason : '',
+            /does not match its schema \(consistency, site\.overrides, running\)\. It is damaged, or was made by a development release/,
         );
     });
 

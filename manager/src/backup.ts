@@ -62,6 +62,7 @@ import { atomicWrite, copyPresent, PRIVATE } from './fs.ts';
 import { DATABASE_MS, tableCount, withSiteDatabase } from './import/database.ts';
 import type { Io } from './io.ts';
 import { isoSeconds, siteFiles, type Metadata } from './meta.ts';
+import { git } from './process.ts';
 import { ok, printChecks } from './report.ts';
 import {
     imageDrift,
@@ -72,6 +73,7 @@ import {
     type ResolvedSite,
 } from './resolved.ts';
 import { BACKUPS_DIR, DATA_DIRS, hasProfile, splitProfiles, type SiteFacts } from './site.ts';
+import { managerVersion } from './versions.ts';
 
 /** mysqldump's last line, which a dump cut short never has. */
 const COMPLETED = '-- Dump completed';
@@ -351,6 +353,37 @@ class Quiesced {
     }
 }
 
+/** The manager taking the backup, as it was built. */
+function thisManager(io: Io): BackupManifest['manager'] {
+    const { version, commit } = managerVersion();
+    return {
+        version: version === 'dev' || version === 'checkout' ? null : version,
+        commit: commit || null,
+        image: io.env.GD_IMAGE || null,
+    };
+}
+
+/**
+ * The commit a checkout has checked out now, which is what its files are: a
+ * restore needs a checkout at the same one. Null, said, when git cannot read it.
+ */
+async function checkedOut(io: Io, dir: string): Promise<string | null> {
+    const head = await git(io, dir, ['rev-parse', '--verify', 'HEAD']);
+    if (!head.ok) {
+        printChecks(io, [
+            {
+                status: 'warn',
+                label: 'commit',
+                detail: `git cannot read the checkout (${head.stderr || 'no answer'}), so the backup does not record its commit`,
+            },
+        ]);
+        return null;
+    }
+    const commit = head.stdout.trim();
+    ok(io, 'commit', `the checkout is at ${commit.slice(0, 12)}`);
+    return commit;
+}
+
 /**
  * Takes a checked backup, and returns its directory. The caller holds the
  * lock. On a failure, nothing of it is left behind.
@@ -429,6 +462,8 @@ export async function takeBackup({
                 },
             ]);
         }
+
+        const commit = metadata.source === 'checkout' ? await checkedOut(io, dir) : null;
 
         io.stdout('\nThe capture\n');
         if (!consistent) {
@@ -582,18 +617,14 @@ export async function takeBackup({
             version: BACKUP_VERSION,
             createdAt: isoSeconds(now),
             consistency: consistent ? 'quiesced' : 'live',
-            manager: {
-                version: metadata.stack.version,
-                commit: metadata.stack.commit,
-                image: metadata.stack.image,
-            },
+            manager: thisManager(io),
             site: {
                 project: metadata.site.project,
                 dir,
                 url: metadata.site.url,
                 mode: metadata.mode,
                 source: metadata.source,
-                commit: metadata.source === 'checkout' ? metadata.stack.commit : null,
+                commit,
                 profiles: splitProfiles(profiles),
                 overrides,
             },

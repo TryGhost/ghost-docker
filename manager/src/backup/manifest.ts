@@ -1,7 +1,9 @@
 // A backup's manifest: what it holds, which images the site ran, and a
 // checksum of every file, so that a restore can tell the backup is whole
 // before it changes anything. Plan §2.5; the layout is docs/install.md
-// ("Backing up and restoring a site").
+// ("Backing up and restoring a site"). Every field is required: backups made
+// by development releases before the first stable one, in an earlier shape,
+// are refused rather than read with guesses (plan §2.7, "Compatibility").
 import { join } from 'node:path';
 import { z } from 'zod';
 import { readIfExists } from '../fs.ts';
@@ -38,10 +40,9 @@ export const backupManifestSchema = z.strictObject({
      * `quiesced`: the databases and the content were captured with nothing
      * writing to them, as one moment. `live`: each database is one snapshot,
      * captured at a different moment from the others and from the content.
-     * Backups from before this was recorded were live.
      */
-    consistency: z.enum(['quiesced', 'live']).default('live'),
-    /** The manager that took it. */
+    consistency: z.enum(['quiesced', 'live']),
+    /** The manager that took it: its release, the commit it was built from, and its image. */
     manager: z.strictObject({ version: nullable, commit: nullable, image: nullable }),
     site: z.strictObject({
         project: z.string().min(1),
@@ -49,11 +50,11 @@ export const backupManifestSchema = z.strictObject({
         url: z.string().min(1),
         mode: z.enum(['local', 'production']),
         source: z.enum(['image', 'checkout']),
-        /** In a checkout, the commit the site ran; a restore needs the same one. */
+        /** In a checkout, the commit checked out when the backup was taken; a restore needs the same one. */
         commit: nullable,
         profiles: z.array(z.string().min(1)),
         /** The overrides GD_COMPOSE_OVERRIDES added, relative to the site; the backup holds them. */
-        overrides: z.array(inside).default([]),
+        overrides: z.array(inside),
     }),
     /** Each service the site's configuration selects, by the image Compose resolved for it. */
     images: z.record(z.string().min(1), z.string().min(1)),
@@ -62,16 +63,14 @@ export const backupManifestSchema = z.strictObject({
      * created from, the image's ID and its registry digests. It differs from
      * `images` when the configuration was changed and not yet applied.
      */
-    running: z
-        .record(
-            z.string().min(1),
-            z.strictObject({
-                image: z.string().min(1),
-                id: z.string().regex(/^sha256:[0-9a-f]{64}$/),
-                digests: z.array(z.string().min(1)),
-            }),
-        )
-        .default({}),
+    running: z.record(
+        z.string().min(1),
+        z.strictObject({
+            image: z.string().min(1),
+            id: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+            digests: z.array(z.string().min(1)),
+        }),
+    ),
     databases: z
         .array(
             z.strictObject({
@@ -134,7 +133,9 @@ export function readBackupManifest(root: string): ManifestRead {
         const where = parsed.error.issues.map((issue) => issue.path.join('.') || '(root)');
         return {
             state: 'refused',
-            reason: `${MANIFEST_FILE} does not match its schema (${[...new Set(where)].join(', ')})`,
+            reason:
+                `${MANIFEST_FILE} does not match its schema (${[...new Set(where)].join(', ')}). ` +
+                'It is damaged, or was made by a development release whose format is no longer read',
         };
     }
     return { state: 'present', manifest: parsed.data };

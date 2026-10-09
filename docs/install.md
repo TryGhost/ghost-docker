@@ -42,6 +42,7 @@ There are two ways to have a site, and `install` handles both:
 | How | A copy of the launcher, in an empty directory | `./ghost-docker` inside a clone of this repository |
 | The stack's files | Written by `install` from the image: `compose.yml`, `caddy/`, `mysql-init/`, `tinybird/`, the examples, with a checksum of each recorded in `.ghost-docker.json` | Used in place; nothing is written over them |
 | The launcher | Rewritten into the site, pinned to the image that installed it | The checkout's own, which builds the image from the checkout |
+| Updates | `./ghost-docker self-update` | git and Compose ([Updating a clone](#updating-a-clone)) |
 
 After installation every command is `./ghost-docker ...` from the site
 directory, and day-to-day operation is plain `docker compose`.
@@ -421,8 +422,9 @@ checks still run when Docker is unreachable, which is when they matter most.
 ghost-docker self-update [--check] [--channel stable|beta | --to vX.Y.Z]
 ```
 
-Moves the site to a newer release of ghost-docker: the stack's files and the
-manager image. **It never changes Ghost.** `.env`, and the exact Ghost image
+Moves a site installed from the image to a newer release of ghost-docker: the
+stack's files and the manager image. A clone of the repository is updated with
+git and Compose instead ([Updating a clone](#updating-a-clone)). **It never changes Ghost.** `.env`, and the exact Ghost image
 `GHOST_IMAGE_REF` pins, are left as they are; updating Ghost is a separate
 command, `update` (S7). When a release needs a newer Ghost than the site runs,
 `self-update` stops before changing anything and says to upgrade Ghost first.
@@ -442,7 +444,7 @@ site's launcher starts that image, not the one it is pinned to.
 In order:
 
 1. **Refusals.** An older release than the site runs is refused, as is a site
-   with no `.ghost-docker.json`, another operation holding the site's lock,
+   with no `.ghost-docker.json`, a clone, another operation holding the site's lock,
    and a snapshot left by an update that did not finish. Nothing has changed.
 2. **The lock.** `.ghost-docker.lock` names the operation and when it started.
    An update that is killed leaves it behind; `check` reports it, and it is
@@ -487,22 +489,25 @@ usage error.
 
 ### Updating a clone
 
-A site that is a clone of this repository is updated with git, then
-`./ghost-docker self-update`, which applies the checked-out files:
+`self-update` does not update a site that is a clone of this repository: it
+refuses before changing anything, and prints these steps. A clone is yours to
+move with git, and its services are Compose's:
 
 ```bash
+./ghost-docker backup
 git fetch --tags
 git checkout v0.1.0-beta.2
-./ghost-docker self-update
+./ghost-docker config validate
+docker compose pull --ignore-buildable
+docker compose up -d --wait
+./ghost-docker check
 ```
 
-The update is the same, except that the stack's files are already in place
-and nothing is written over them. A checkout with local changes to tracked
-files is refused before anything changes. When the update fails, the
-operator's files are put back and the previous commit, recorded in the
-metadata, is checked out again with a detached HEAD; the launcher keeps the
-manager image built from it as `ghost-docker:checkout-<commit>`. `--to` and
-`--channel` do not apply.
+The launcher builds the manager image from whatever is checked out the next
+time it runs. If the site does not come back, check out the commit it ran
+before, and restore the backup (`./ghost-docker restore --yes backups/<backup>`):
+the backup records the commit checked out when it was taken, and restore
+refuses a clone at any other.
 
 ## backup and restore
 
@@ -520,7 +525,7 @@ backups off the host to keep them safe.
 
 | Path in the backup | What it is |
 | --- | --- |
-| `manifest.json` | What the backup holds: the site, the image Compose resolves for each service and, for each running one, the exact image it ran (its ID and registry digests), every table's row count, a SHA-256 of every file, and what is not included. |
+| `manifest.json` | What the backup holds: the site (for a clone, the commit checked out when the backup was taken), the image Compose resolves for each service and, for each running one, the exact image it ran (its ID and registry digests), every table's row count, a SHA-256 of every file, and what is not included. |
 | `database/ghost.sql` | A `mysqldump` of Ghost's database, taken as the site's own database user in one consistent snapshot. |
 | `database/activitypub.sql` | ActivityPub's database, when the `activitypub` profile is on. |
 | `content.tar.gz` | The content directory, `data/ghost`: images, media, files, themes, settings. |
@@ -596,12 +601,16 @@ runs with, and what the daemon runs, not what `.env` alone says:
   The site keeps its project name and ports, so nothing on the host may already
   use them: when the site the backup was taken from is still here, take it
   down first (`docker compose down` in its directory). A backup of a clone
-  restores into a clone checked out at the commit the backup records.
+  restores into a clone checked out at the commit the backup records, over
+  its site as into a new directory.
 
 In order:
 
 1. **Refusals.** The backup is read whole: its manifest, every file against
-   its checksum, the archive listed. Another site's directory, a directory
+   its checksum, the archive listed. A manifest that does not match its schema
+   is refused, naming its fields: it is damaged, or was made by a development
+   release before the first stable one, whose formats are not read. A clone
+   at another commit than the backup records, another site's directory, a directory
    with data in it, another operation holding the lock, and a restore that
    did not finish are refused. In a new directory, containers of the same
    project and busy ports are refused, named, and never stopped. Nothing has

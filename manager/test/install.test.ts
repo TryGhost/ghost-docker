@@ -411,7 +411,6 @@ describe('which release', () => {
         assert.equal(metadata().channel, 'beta');
         assert.deepEqual(metadata().stack, {
             version: 'v0.2.0-beta.3',
-            commit: 'c'.repeat(40),
             ref: 'v0.2.0-beta.3',
             image: `sha256:${'2'.repeat(64)}`,
             previous: null,

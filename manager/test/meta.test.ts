@@ -31,7 +31,6 @@ const sample = (dir: string): Metadata => ({
     source: 'image',
     stack: {
         version: 'v1.0.0-beta.1',
-        commit: 'f'.repeat(40),
         ref: 'v1.0.0-beta.1',
         image: `ghcr.io/tryghost/ghost-docker@${DIGEST}`,
         previous: null,
@@ -46,19 +45,18 @@ const sample = (dir: string): Metadata => ({
     ghost: { image: 'ghost', tag: '6-next-alpine', version: '6.67.0', digest: DIGEST },
     profiles: ['production'],
     payload: { 'compose.yml': 'b'.repeat(64) },
-    migrations: [],
 });
 
 describe('installation metadata', () => {
-    test('a site with no metadata is unknown, not broken', async () => {
+    test('a site with no metadata is diagnosed as one install did not make', async () => {
         assert.deepEqual(readMetadata(h.dir), { state: 'absent' });
         assert.match(
             describeMetadata(readMetadata(h.dir))[0]!,
-            /none \(installed before metadata was recorded\)/,
+            /none \(no \.ghost-docker\.json: \.\/ghost-docker install did not make this site\)/,
         );
         const info = await h.run('info');
         assert.equal(info.code, 0);
-        assert.match(info.stdout, /installed before metadata was recorded/);
+        assert.match(info.stdout, /install did not make this site/);
     });
 
     test('records the schema, identity, provenance and resolved image, privately', async () => {
@@ -81,13 +79,40 @@ describe('installation metadata', () => {
         assert.match((await h.run('info')).stdout, /^mailpit +http:\/\/127\.0\.0\.1:8026$/m);
     });
 
-    test('a document from before updates were recorded still reads', () => {
-        const { updatedAt: _updatedAt, ...older } = sample(h.dir);
-        const { previous: _previous, ...stack } = older.stack;
-        writeFileSync(metaPath(h.dir), JSON.stringify({ ...older, stack }));
+    test('every field is required: one nobody knows is written as null', () => {
+        const { updatedAt: _updatedAt, ...missing } = sample(h.dir);
+        writeFileSync(metaPath(h.dir), JSON.stringify(missing));
+        assert.match(
+            (readMetadata(h.dir) as { reason: string }).reason,
+            /does not match its schema \(updatedAt\)/,
+        );
+        const { previous: _previous, ...stack } = sample(h.dir).stack;
+        writeFileSync(metaPath(h.dir), JSON.stringify({ ...sample(h.dir), stack }));
+        assert.match(
+            (readMetadata(h.dir) as { reason: string }).reason,
+            /does not match its schema \(stack\.previous\)/,
+        );
+    });
+
+    test('a development release’s format is refused, saying so, not read with guesses', async () => {
+        const current = sample(h.dir);
+        writeFileSync(
+            metaPath(h.dir),
+            JSON.stringify({
+                ...current,
+                stack: { ...current.stack, commit: 'f'.repeat(40) },
+                migrations: [],
+            }),
+        );
         const read = readMetadata(h.dir);
-        assert.equal(read.state, 'present');
-        assert.deepEqual(read.state === 'present' && read.metadata, sample(h.dir));
+        assert.equal(read.state, 'invalid');
+        assert.match(
+            (read as { reason: string }).reason,
+            /does not match its schema \(stack, \(root\)\)\. It is damaged, or was written by a development release whose format is no longer read/,
+        );
+        const info = await h.run('info');
+        assert.equal(info.code, 1);
+        assert.match(info.stdout + info.stderr, /development release/);
     });
 
     test('the same document is written as the same bytes', () => {

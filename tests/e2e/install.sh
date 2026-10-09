@@ -489,9 +489,9 @@ expect_status 0
 expect_output 'ok +ghost +healthy'
 [[ -z $(git -C "$L" status --porcelain) ]] || fail "installing changed the checkout" "$(git -C "$L" status --porcelain)"
 grep -q '"source": "checkout"' "$L/.ghost-docker.json" || fail "the metadata does not say checkout"
-grep -q "\"commit\": \"$(git -C "$L" rev-parse HEAD)\"" "$L/.ghost-docker.json" || fail "the metadata does not record the commit"
+grep -q '"commit"' "$L/.ghost-docker.json" && fail "the metadata records a commit, which is git's to know"
 [[ $(http_status "$(setting "$L" GHOST_PORT)") == 200 ]] || fail "the clone's site does not answer"
-ok "local: the files are used in place, nothing tracked changed, and the commit is recorded"
+ok "local: the files are used in place, and nothing tracked changed"
 compose_in "$L" down --volumes >/dev/null 2>&1
 
 if port_free 80 && port_free 443; then

@@ -303,7 +303,7 @@ async function confirm(io: Io, dir: string, manifest: BackupManifest, yes: boole
     }
 }
 
-/** A checkout runs its own files, so it must be at the commit the backup's site ran. */
+/** A checkout runs its own files, so it must be at the commit checked out when the backup was taken. */
 async function refuseOtherCommit(io: Io, dir: string, manifest: BackupManifest): Promise<void> {
     const head = await git(io, dir, ['rev-parse', '--verify', 'HEAD']);
     if (!head.ok) {
@@ -313,7 +313,7 @@ async function refuseOtherCommit(io: Io, dir: string, manifest: BackupManifest):
     }
     if (manifest.site.commit !== null && head.stdout.trim() !== manifest.site.commit) {
         throw new CliError(
-            `the backup's site ran commit ${manifest.site.commit.slice(0, 12)}, and this checkout is at ${head.stdout.trim().slice(0, 12)}.\n` +
+            `the backup was taken with the checkout at ${manifest.site.commit.slice(0, 12)}, and this checkout is at ${head.stdout.trim().slice(0, 12)}.\n` +
                 `  Check that commit out first: git checkout ${manifest.site.commit}\n` +
                 '  then run the restore again. Nothing has been changed.',
         );

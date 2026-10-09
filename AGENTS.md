@@ -27,8 +27,8 @@ Branches:
 Steps N1–N3, S4, S5b, S5c and S6a: the stack's files and contracts, the
 launcher and manager image, releases, and the commands: `install` (local and
 production, from the image or a clone, from a channel or a release, and
-`--import` of a local Ghost-CLI site's bundle), `self-update` (between releases, or
-commits of a clone), `backup` and `restore` (over the site, or into a new
+`--import` of a local Ghost-CLI site's bundle), `self-update` (between releases,
+for image-mode sites; a clone is refused, and updated with git and Compose), `backup` and `restore` (over the site, or into a new
 directory), `config get|set|validate`, `check`, `info`, `list`, plus
 `version`, `doctor` and `help`. Every other `./ghost-docker ...` command or
 option in the documents is the planned interface: it does not exist until its
@@ -100,8 +100,13 @@ delivers it. `docs/install.md` describes what exists.
 - `src/commands/self-update.ts` moves a site to the release it runs as: snapshot
   in `.ghost-docker-update/`, managed files by checksum (an edited one is kept
   beside `<file>.new`), validate, pull, `up --wait`, verify, and on failure
-  put back and report restored or needs-the-operator. In a clone it checks
-  the previous commit out instead. `src/lock.ts` is the site lock (§2.2).
+  put back and report restored or needs-the-operator. It refuses a clone,
+  whose update is git's and Compose's. `src/lock.ts` is the site lock (§2.2).
+- Until the first stable release, `.ghost-docker.json`, the backup manifest and
+  the launcher's `GD_*` contract are development formats (plan §2.7,
+  "Compatibility"): change them directly, keep the schemas strict, and add no
+  defaults, adapters or migrations for earlier shapes. The layout on `main` is
+  released, and S6b's migration of it is not covered by this.
 - `src/backup.ts` takes a backup (§2.5): a mysqldump of each of the site's
   databases as its own user, the content as a tarball, the site's files, and
   `backup/manifest.ts` (images, row counts, checksums), written as
@@ -184,7 +189,7 @@ pnpm run test:integration     # real daemon and services, from a container; pull
 tests/e2e/launcher.sh         # stand-in docker, then the real image
 tests/e2e/install.sh          # real installs; binds 80/443, pulls images
 tests/e2e/import.sh           # Ghost-CLI sites exported and imported; needs Node
-tests/e2e/self-update.sh      # self-updates between locally built releases, and a clone's commits
+tests/e2e/self-update.sh      # self-updates between locally built releases; a clone refused, backed up and restored at its commit
 tests/e2e/backup.sh           # a site with ActivityPub backed up, restored over itself and elsewhere; needs jq
 cd scripts && pnpm install && pnpm run typecheck && pnpm test   # the release tooling
 ```
