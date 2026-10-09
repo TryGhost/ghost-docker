@@ -3,7 +3,7 @@
 // It answers the questions every other command depends on: can the daemon be
 // reached, is it new enough, is the site directory the one the launcher said
 // it was, and will the files written there belong to whoever ran the launcher.
-import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { rmSync, statSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { z } from 'zod';
@@ -13,6 +13,7 @@ import { composeVersion } from '../compose.ts';
 import { daemonInfo, runOnce, type DaemonResult } from '../docker/client.ts';
 import { EXIT } from '../errors.ts';
 import { failed, printChecks, type Check } from '../report.ts';
+import { readSettings } from '../site.ts';
 import type { Io } from '../io.ts';
 import { atLeast, managerVersion, MINIMUM } from '../versions.ts';
 
@@ -181,19 +182,12 @@ function rootless({ daemon, context }: Facts): Check | null {
     };
 }
 
+/** Compose is the image's own, so its version is the image's to hold (tests/integration). */
 function dockerCompose({ compose }: Facts): Check {
     const label = 'docker compose';
-    if (compose === null) {
-        return { status: 'error', label, detail: 'the Compose client in this image did not run' };
-    }
-    const recent = atLeast(compose, MINIMUM.compose);
-    return {
-        status: recent ? 'ok' : 'error',
-        label,
-        detail: recent
-            ? `${compose} (the manager's own client)`
-            : `${compose} is older than the required ${MINIMUM.compose}`,
-    };
+    return compose === null
+        ? { status: 'error', label, detail: 'the Compose client in this image did not run' }
+        : { status: 'ok', label, detail: `${compose} (the manager's own client)` };
 }
 
 /** The daemon's memory: what the containers will share. */
@@ -272,8 +266,8 @@ function disk({ cwd, io }: Facts): Check {
 }
 
 function projectDir({ cwd }: Facts): Check | null {
-    const declared = declaredProjectDir(cwd);
-    if (declared === null) {
+    const declared = readSettings(cwd)?.get('PROJECT_DIR');
+    if (!declared) {
         return null;
     }
     const label = 'PROJECT_DIR';
@@ -400,21 +394,4 @@ async function bindMountCheck(context: Context, io: Io, token: string): Promise<
             '. The daemon resolves this path to a different directory than the launcher mounted, ' +
             'so every Compose bind mount would point at the wrong place.',
     };
-}
-
-/**
- * `PROJECT_DIR` from `.env`, when there is one. Only the simple quoted and
- * unquoted forms are read here; the real dotenv reader arrives with the
- * configuration commands, and an unusual encoding is reported as absent
- * rather than guessed at.
- */
-function declaredProjectDir(dir: string): string | null {
-    const path = join(dir, '.env');
-    if (!existsSync(path)) {
-        return null;
-    }
-    const match = readFileSync(path, 'utf8').match(
-        /^PROJECT_DIR=(?:"([^"$\\]*)"|([^\s"'#$\\]+))\s*$/m,
-    );
-    return match ? (match[1] ?? match[2] ?? null) : null;
 }

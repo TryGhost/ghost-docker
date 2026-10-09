@@ -30,7 +30,6 @@ import { z } from 'zod';
 import { defineCommand, flag, refused } from '../command.ts';
 import { validate } from '../config.ts';
 import { loadContext, type Context } from '../context.ts';
-import { listContainers, stoppedSiteContainers } from '../docker/client.ts';
 import * as env from '../env.ts';
 import { CliError, EXIT, UsageError } from '../errors.ts';
 import { atomicWrite, PRIVATE } from '../fs.ts';
@@ -59,6 +58,7 @@ import {
     siteFacts,
     type SiteMode,
 } from '../site.ts';
+import { takenPorts } from '../ports.ts';
 import { ALL_PROFILES, Created } from '../undo.ts';
 import { verifyIngress } from '../verify.ts';
 import {
@@ -480,11 +480,8 @@ async function sitePorts(
     requested: number | undefined,
     mailpit: boolean,
 ): Promise<{ port: number; mailpitPort: number | null }> {
-    // A stopped site's ports count as taken: it would fail to start again.
-    const running = await listContainers(io.docker);
-    const stopped = await stoppedSiteContainers(io.docker);
-    const containers = [...running, ...stopped];
-    const published = new Set(containers.flatMap((container) => container.publishedPorts));
+    const taken = await takenPorts(io);
+    const { published } = taken;
     const port = requested ?? (await freeOnHost(io, published));
     const mailpitPort = mailpit
         ? await freeOnHost(io, new Set([...published, port]), DEFAULT_MAILPIT_PORT)
@@ -493,21 +490,10 @@ async function sitePorts(
         port,
         ...(mode === 'production' ? [PRODUCTION_PORTS.http, PRODUCTION_PORTS.https] : []),
     ];
-    const holders = new Map<number, string>();
-    for (const container of containers) {
-        for (const busy of container.publishedPorts.filter((each) => wanted.includes(each))) {
-            holders.set(
-                busy,
-                running.includes(container)
-                    ? `in use by the Docker container ${container.name}`
-                    : `taken by the Docker container ${container.name}, which is stopped and publishes it when it starts`,
-            );
-        }
-    }
+    const holders = taken.holders(wanted);
     if (holders.size > 0) {
-        const lines = [...holders].map(([busy, holder]) => `  port ${busy} is already ${holder}`);
         throw new CliError(
-            `${lines.join('\n').trimStart()}\n` +
+            `${[...holders.values()].join('\n  ')}\n` +
                 (holders.has(port)
                     ? `  Choose another port for Ghost with --port.`
                     : '  A production site needs ports 80 and 443 for Caddy. Free them first.') +

@@ -20,14 +20,15 @@ const isConfigFile = (value: string | undefined): value is ConfigFile =>
 
 /**
  * `[FILE] KEY ...`. Without a file, the key says where it belongs: `.env`
- * when compose.yml interpolates it, it is a COMPOSE_* setting, or `.env`
+ * when Compose interpolates it (overrides included), it is a COMPOSE_* setting, or `.env`
  * already has it; otherwise `ghost.env`.
  */
-function target(
+async function target(
+    io: Io,
     dir: string,
     args: readonly string[],
     arity: number,
-): { file: ConfigFile; rest: string[] } {
+): Promise<{ file: ConfigFile; rest: string[] }> {
     if (args.length === arity + 1) {
         const [file, ...rest] = args;
         if (!isConfigFile(file)) {
@@ -44,7 +45,8 @@ function target(
     if (isConfigFile(key)) {
         throw new UsageError(`expected a key after ${key}`);
     }
-    return { file: operatorKeyTest(dir)(key) ? ENV_FILE : GHOST_ENV_FILE, rest: [...args] };
+    const isOperatorKey = await operatorKeyTest(io, dir);
+    return { file: isOperatorKey(key) ? ENV_FILE : GHOST_ENV_FILE, rest: [...args] };
 }
 
 function checkKey(key: string): void {
@@ -58,7 +60,7 @@ export const getCommand = defineCommand({
     positionals: ['file', 'key'],
     run: async (_values, args, io) => {
         const { site } = installedSite(io);
-        const { file, rest } = target(site.dir, args, 1);
+        const { file, rest } = await target(io, site.dir, args, 1);
         const key = rest[0]!;
         checkKey(key);
         const value = env.get(readIfExists(join(site.dir, file)) ?? '', key);
@@ -74,12 +76,12 @@ export const getCommand = defineCommand({
 export const setCommand = defineCommand({
     brief:
         'Write one value, encoded for Compose, atomically. Without a file, the key decides: ' +
-        'a setting compose.yml interpolates goes in .env, anything else in ghost.env. ' +
+        'a setting Compose interpolates goes in .env, anything else in ghost.env. ' +
         'A value that starts with a dash goes after --.',
     positionals: ['file', 'key', 'value'],
     run: async (_values, args, io) => {
         const { site } = installedSite(io);
-        const { file, rest } = target(site.dir, args, 2);
+        const { file, rest } = await target(io, site.dir, args, 2);
         const [key, value] = rest as [string, string];
         checkKey(key);
         const path = join(site.dir, file);

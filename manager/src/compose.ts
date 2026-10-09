@@ -11,7 +11,7 @@
 // `docker compose` uses it, and other overrides are opted into with
 // GD_COMPOSE_OVERRIDES (docs/configuration.md).
 import { existsSync } from 'node:fs';
-import { isAbsolute, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 import type { Readable } from 'node:stream';
 import { z } from 'zod';
 import type { Io } from './io.ts';
@@ -168,6 +168,69 @@ export async function composeConfig(io: Io, dir: string): Promise<ConfigResult> 
             ok: false,
             reason: 'docker compose config printed something that is not its JSON',
         };
+    }
+}
+
+// --- `docker compose ls` -------------------------------------------------------
+
+const lsEntry = z.looseObject({
+    Name: z.string(),
+    Status: z.string().default(''),
+    ConfigFiles: z.string().default(''),
+});
+
+export interface ComposeProject {
+    readonly name: string;
+    /** As Compose summarises it: `running(3)`, `exited(2)`. */
+    readonly status: string;
+    /** Where its first Compose file is: a site's directory. */
+    readonly dir: string;
+}
+
+/** Every Compose project on the daemon, stopped ones included; null when Compose failed. */
+export async function composeProjects(io: Io): Promise<ComposeProject[] | null> {
+    const result = await io.exec({
+        timeout: 60_000,
+        env: composeEnvironment(io),
+        extendEnv: false,
+    })`docker-compose ls --all --format json`;
+    if (result.exitCode !== 0) {
+        return null;
+    }
+    try {
+        return z
+            .array(lsEntry)
+            .parse(JSON.parse(String(result.stdout)))
+            .map((project) => ({
+                name: project.Name,
+                status: project.Status,
+                dir: dirname(project.ConfigFiles.split(',')[0] ?? ''),
+            }));
+    } catch {
+        return null;
+    }
+}
+
+// --- `docker compose config --variables` ------------------------------------
+
+const variables = z.record(z.string(), z.unknown());
+
+/**
+ * The variables the project interpolates, as Compose reads them: compose.yml
+ * and every override in use, merged, so one an override removes the only use
+ * of is not among them. `$$` is a literal and is not among them either.
+ */
+export async function composeVariables(io: Io, dir: string): Promise<Set<string> | null> {
+    const result = await compose(io, dir, ['config', '--variables', '--format', 'json'], {
+        timeoutMs: 60_000,
+    });
+    if (result.exitCode !== 0) {
+        return null;
+    }
+    try {
+        return new Set(Object.keys(variables.parse(JSON.parse(result.stdout))));
+    } catch {
+        return null;
     }
 }
 

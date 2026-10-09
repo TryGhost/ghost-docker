@@ -177,7 +177,7 @@ expect_status 0
 expect_output 'This site looks healthy'
 expect_output 'ok +database +accepts a client connection'
 run "$A/ghost-docker" --dir "$A" list
-expect_output 'ghost-local-e2e-local-a +local +ghost'
+expect_output "ghost-local-e2e-local-a +local +running\\([0-9]+\\) +$A"
 ok "check passes through the site's own pinned launcher, and list finds the site"
 
 # --- A second local site beside it ------------------------------------------

@@ -70,7 +70,7 @@ export async function sourceConfig(
         );
     }
     const container = new Set(Object.keys(resolved.project.services.ghost?.environment ?? {}));
-    return carriedConfig(manifest, container, operatorKeyTest(dir));
+    return carriedConfig(manifest, container, await operatorKeyTest(io, dir));
 }
 
 /** Ghost's mail transport: what Mailpit replaces. `mail__from` is the site's own. */

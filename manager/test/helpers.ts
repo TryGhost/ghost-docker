@@ -241,6 +241,12 @@ export function harness(): Harness {
                 if (command !== 'docker-compose') {
                     return failed(undefined, `spawn ${command} ENOENT`);
                 }
+                if (args[0] === 'ls') {
+                    return (
+                        state.daemon.composeRun?.(args, options.env ?? {}) ??
+                        failed(1, 'unexpected: docker-compose ls')
+                    );
+                }
                 if (args[0] === 'version') {
                     return state.daemon.compose
                         ? ok(`${state.daemon.compose}\n`)
@@ -249,8 +255,23 @@ export function harness(): Harness {
                 if (args[0] === '--project-directory') {
                     // Past --project-directory DIR and each -f FILE.
                     let rest = args.slice(2);
+                    const files: string[] = [];
                     while (rest[0] === '-f') {
+                        files.push(rest[1]!);
                         rest = rest.slice(2);
+                    }
+                    // What Compose answers: the variables its files interpolate.
+                    if (rest[0] === 'config' && rest.includes('--variables')) {
+                        const names = files.flatMap((file) =>
+                            [
+                                ...readFileSync(file, 'utf8').matchAll(
+                                    /(?<!\$)\$\{([A-Za-z_]\w*)/g,
+                                ),
+                            ].map((match) => match[1]!),
+                        );
+                        return ok(
+                            JSON.stringify(Object.fromEntries(names.map((name) => [name, {}]))),
+                        );
                     }
                     const answer = state.daemon.composeRun?.(
                         rest,

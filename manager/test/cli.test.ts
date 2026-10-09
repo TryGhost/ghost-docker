@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, test } from 'node:test';
 import { z } from 'zod';
 import { flagsOf } from '../src/command.ts';
-import { harness, type Harness } from './helpers.ts';
+import { failed, harness, ok, type Harness } from './helpers.ts';
 
 let h: Harness;
 beforeEach(() => {
@@ -179,5 +179,62 @@ describe('options from a schema', () => {
 
     test('an option without a brief is a bug in its definition', () => {
         assert.throws(() => flagsOf(z.object({ quiet: z.boolean() })), /--quiet has no brief/);
+    });
+});
+
+describe('list', () => {
+    const labelled = (project: string, mode: string) => ({
+        Id: project,
+        Names: [`/${project}-ghost-1`],
+        State: 'exited',
+        Labels: {
+            'org.ghost.docker.managed': 'true',
+            'org.ghost.docker.mode': mode,
+            'com.docker.compose.project': project,
+        },
+    });
+
+    test('Compose names each project and its directory; the labels say which are sites', async () => {
+        h.daemon.containers = [labelled('ghost-b', 'production'), labelled('ghost-a', 'local')];
+        h.daemon.composeRun = (args) =>
+            args[0] === 'ls'
+                ? ok(
+                      JSON.stringify([
+                          {
+                              Name: 'ghost-b',
+                              Status: 'running(3)',
+                              ConfigFiles: '/srv/b/compose.yml',
+                          },
+                          {
+                              Name: 'unrelated',
+                              Status: 'running(1)',
+                              ConfigFiles: '/srv/x/compose.yml',
+                          },
+                          {
+                              Name: 'ghost-a',
+                              Status: 'exited(2)',
+                              ConfigFiles: '/srv/a/compose.yml,/srv/a/compose.override.yml',
+                          },
+                      ]),
+                  )
+                : undefined;
+        const result = await h.run('list');
+        assert.equal(result.code, 0, result.stderr);
+        const rows = result.stdout.split('\n').filter((line) => line.startsWith('ghost-'));
+        assert.deepEqual(
+            rows.map((line) => line.split(/\s+/).filter(Boolean)),
+            [
+                ['ghost-a', 'local', 'exited(2)', '/srv/a'],
+                ['ghost-b', 'production', 'running(3)', '/srv/b'],
+            ],
+        );
+        assert.doesNotMatch(result.stdout, /unrelated/);
+    });
+
+    test('Compose failing is an error, not an empty list', async () => {
+        h.daemon.composeRun = (args) => (args[0] === 'ls' ? failed(1, 'boom') : undefined);
+        const result = await h.run('list');
+        assert.equal(result.code, 1);
+        assert.match(result.stderr, /docker compose ls failed/);
     });
 });

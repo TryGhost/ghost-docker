@@ -2,7 +2,7 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { defineCommand } from '../command.ts';
-import { composePs, type ServiceState } from '../compose.ts';
+import { composeProjects, composePs, type ServiceState } from '../compose.ts';
 import { validate } from '../config.ts';
 import { loadContext } from '../context.ts';
 import { listContainers } from '../docker/client.ts';
@@ -212,33 +212,37 @@ export const infoCommand = defineCommand({
 // --- list ---------------------------------------------------------------------
 
 export const listCommand = defineCommand({
-    brief: 'Every ghost-docker container on this host, stopped ones included.',
+    brief: 'Every ghost-docker site on this host whose containers exist, and its directory.',
     run: async (_values, _positionals, io) => {
-        const containers = await io.busy('Listing containers', () =>
-            listContainers(io.docker, { all: true, labels: [MANAGED_LABEL] }),
+        // Compose knows each project and where its files are; Docker's labels
+        // say which projects are ghost-docker sites, and in which mode.
+        const [containers, projects] = await io.busy('Listing sites', () =>
+            Promise.all([
+                listContainers(io.docker, { all: true, labels: [MANAGED_LABEL] }),
+                composeProjects(io),
+            ]),
         );
-        if (containers.length === 0) {
-            io.stdout('No ghost-docker containers exist on this host.\n');
+        if (projects === null) {
+            io.stderr('error: docker compose ls failed\n');
+            return EXIT.failure;
+        }
+        const modes = new Map(
+            containers.map((container) => [
+                container.labels['com.docker.compose.project'] ?? '',
+                container.labels['org.ghost.docker.mode'] ?? '',
+            ]),
+        );
+        const sites = projects
+            .filter((project) => modes.has(project.name))
+            .sort((a, b) => a.name.localeCompare(b.name));
+        if (sites.length === 0) {
+            io.stdout('No ghost-docker site has containers on this host.\n');
         } else {
             const row = (...cells: string[]) =>
-                `${cells[0]!.padEnd(28)} ${cells[1]!.padEnd(11)} ${cells[2]!.padEnd(20)} ${cells[3]!.padEnd(12)} ${cells[4]}\n`;
-            io.stdout(row('SITE', 'MODE', 'SERVICE', 'LIFECYCLE', 'STATUS'));
-            const label = (labels: Readonly<Record<string, string>>, name: string) =>
-                labels[`org.ghost.docker.${name}`] ?? '';
-            for (const container of containers.sort((a, b) =>
-                `${label(a.labels, 'site')} ${label(a.labels, 'role')}`.localeCompare(
-                    `${label(b.labels, 'site')} ${label(b.labels, 'role')}`,
-                ),
-            )) {
-                io.stdout(
-                    row(
-                        label(container.labels, 'site'),
-                        label(container.labels, 'mode'),
-                        label(container.labels, 'role'),
-                        label(container.labels, 'lifecycle'),
-                        container.status,
-                    ),
-                );
+                `${cells[0]!.padEnd(28)} ${cells[1]!.padEnd(11)} ${cells[2]!.padEnd(20)} ${cells[3]}\n`;
+            io.stdout(row('SITE', 'MODE', 'STATUS', 'DIRECTORY'));
+            for (const site of sites) {
+                io.stdout(row(site.name, modes.get(site.name)!, site.status, site.dir));
             }
         }
         io.stdout(
