@@ -1,21 +1,6 @@
-// The services that write a site's data, and pausing them (plan §2.5).
-//
-// A consistent backup pauses them for its capture alone, and resumes them
-// at once. An operation that may load that backup back over the site
-// (self-update now; Ghost updates and the supervisor when they land) owns
-// the pause instead, from before the checkpoint until it starts the
-// services itself, so nothing a writer accepts after the checkpoint can be
-// lost by loading it:
-//
-//   - the writers are paused before the checkpoint is taken;
-//   - a failure before any service changed puts the files back, then
-//     resumes the writers as they were;
-//   - once the operation starts the services, they are the new site's, and
-//     the pause is over: Ghost may accept writes, so a recovery stops
-//     everything and never loads the checkpoint by itself; the operator
-//     chooses.
-//
-// Writers that were not running are never started by resuming.
+// Pause only writers that were running. A standalone backup resumes after capture;
+// an update owns the pause until it attempts startup or restores the old files.
+// Once startup is attempted, recovery must leave newer writes intact.
 import { compose, composeError, READY_SECONDS } from './compose.ts';
 import { CliError } from './errors.ts';
 import type { Io } from './io.ts';

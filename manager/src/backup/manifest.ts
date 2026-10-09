@@ -1,9 +1,5 @@
-// A backup's manifest: what it holds, which images the site ran, and a
-// checksum of every file, so that a restore can tell the backup is whole
-// before it changes anything. Plan §2.5; the layout is docs/install.md
-// ("Backing up and restoring a site"). Every field is required: backups made
-// by development releases before the first stable one, in an earlier shape,
-// are refused rather than read with guesses (plan §2.7, "Compatibility").
+// Strict backup format: checksums, captured state and exact images.
+// See docs/architecture.md#file-inventory-and-backups and #compatibility.
 import { join } from 'node:path';
 import { z } from 'zod';
 import { readIfExists } from '../fs.ts';

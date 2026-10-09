@@ -160,7 +160,7 @@ with it before that login. Add it to an installed site: set the tokens with
    the site's domains, its network aliases and every snippet argument. It is
    yours from then on; see [caddy.md](caddy.md).
 8. **Metadata**: `.ghost-docker.json`, described in
-   [configuration.md](configuration.md#installation-metadata).
+   [architecture.md](architecture.md#installation-metadata).
 9. **Start and verify**, unless `--no-start`: `docker compose up --wait`, so
    MySQL and Ghost must pass their own health checks, then the site is reached
    through its own ingress (next section). A running container is not
@@ -227,7 +227,7 @@ What to expect:
   run `ghost update` in the source, check the site, and export again.
 - **A new address.** The site is served at `http://localhost:PORT`, on the
   first free port at or above 2368 unless `--port` says
-  otherwise. An ordinary export leaves the source running, so the two sit side
+  otherwise. An ordinary export preserves the source's original running state, so the two sit side
   by side until you run `ghost stop` in the source directory. They are separate
   copies from the moment of export.
 - **Nothing is merged.** The directory must not already hold a site, and
@@ -286,7 +286,7 @@ Refused, each with a message that says so:
 - `--import` with `--with`: import the site first, then enable optional
   services.
 
-See the [plan](ghost-cli-replacement.md) for where each lands, and
+See the [roadmap](ghost-cli-replacement.md) for remaining work, and
 [bundle-v1.md](bundle-v1.md) for the bundle contract.
 
 ### Moving a site to Docker
@@ -436,7 +436,8 @@ Moves a site installed from the image to a newer release of ghost-docker: the
 stack's files and the manager image. A clone of the repository is updated with
 git and Compose instead ([Updating a clone](#updating-a-clone)). **It never changes Ghost.** `.env`, and the exact Ghost image
 `GHOST_IMAGE_REF` pins, are left as they are; updating Ghost is a separate
-command, `update` (S7). When a release needs a newer Ghost than the site runs,
+command planned in [S7](ghost-cli-replacement.md#s7--host-driven-ghost-upgrades).
+When a release needs a newer Ghost than the site runs,
 `self-update` stops before changing anything and says to upgrade Ghost first.
 
 Without options it updates to the newest release on the channel the site
@@ -451,51 +452,31 @@ site's launcher starts that image, not the one it is pinned to.
 | `--channel CHANNEL` | The newest release on `stable` or `beta`, which the site then follows. |
 | `--to vX.Y.Z` | Exactly that release. |
 
-In order:
+The update refuses downgrades, incompatible Ghost versions, absent metadata,
+checkouts, another operation's lock and an unfinished update snapshot. It pulls
+images before the outage where possible, keeps a file snapshot in
+`.ghost-docker-update/`, then pauses Ghost and ActivityPub and takes a consistent
+backup. The site is unavailable until the release starts and verifies.
 
-1. **Refusals.** An older release than the site runs is refused, as is a site
-   with no `.ghost-docker.json`, a clone, another operation holding the site's lock,
-   and a snapshot left by an update that did not finish. Nothing has changed.
-2. **The lock.** `.ghost-docker.lock` names the operation and when it started.
-   An update that is killed leaves it behind; `check` reports it, and it is
-   removed by hand once the site is known to be right. Nothing removes it
-   automatically.
-3. **The release's images** are pulled while the site keeps running, so the
-   slowest step is not part of the outage. An image that cannot be pulled
-   yet is pulled again in step 6.
-4. **A snapshot** of `.env`, `ghost.env`, the metadata, `compose.override.yml`,
-   `caddy/sites/`, `caddy/custom/`, `caddy/global/` and every file the update
-   writes, in `.ghost-docker-update/`.
-5. **Ghost and ActivityPub are stopped, and a backup taken**, a consistent one
-   as `backup --consistent` takes, in `backups/`: a release's services can
-   migrate their databases (ActivityPub's, for one) even though Ghost does
-   not change. It is kept until you remove it, and `self-update` names it.
-   Unlike `backup`, the update does not start them again after the capture:
-   they stay stopped until the release starts, or the site is put back, so
-   nothing they would accept can be lost by loading the backup back. The
-   site is unavailable from here until the release is healthy.
-6. **The stack's files.** A file the manager wrote and nobody has edited is
-   replaced. An edited one (its checksum is not the one recorded when it was
-   written) is kept, the release's version is written beside it as
-   `<file>.new`, and `self-update` names both; compare them and merge what you
-   need. It never asks. A file the release no longer has is removed when it
-   is untouched, and kept when it was edited.
-7. **Validate, pull, start, verify.** Compose must resolve the project and the
-   configuration must validate; the release's images are pulled; `up --wait`
-   brings the services up healthy; the site is verified through its ingress as
-   `check` does.
-8. **The launcher** is replaced, pinned to the new release's digest. It is
-   replaced even when it was edited, because it holds the pin: an edited copy
-   is kept as `ghost-docker.edited`. The metadata records the release, the
-   one before it, and the files' new checksums. The snapshot is removed.
+Untouched managed files are replaced. Edited files stay beside the release's
+`<file>.new`; compare and merge them. Removed managed files are deleted only if
+untouched. On success, the launcher is pinned to the new release, metadata is
+updated and the snapshot is removed. An edited launcher is kept as
+`ghost-docker.edited` because its pin must be replaced.
 
-When a step after the snapshot fails before the release's services have
-started, the snapshot is put back and Ghost and ActivityPub are started
-again, the same containers, on the files as they were: **restored**. Nothing
-was written meanwhile, since they were stopped from before the backup.
+The backup stays in `backups/` until you remove it. The lock names the operation
+and start time; a killed update leaves it for you to inspect and remove only
+after checking the site. The [architecture](architecture.md#recovery) describes
+the recovery invariants.
 
-Once the release's services have started, Ghost may accept writes, and the
-release may change the databases and content, before a later step fails.
+When an update fails after the snapshot but before attempting service startup,
+the snapshot is put back and any paused writers resume in the same containers,
+on the files as they were: **restored**. A failure to restore files or resume
+writers is reported as needing the operator.
+
+Once startup has been attempted, even if `up --wait` fails, Ghost may accept
+writes and the release may change the databases and content before a later
+step fails.
 Loading the backup would discard those, so the update never does it by
 itself. It stops the services, puts the files back (the launcher still runs
 the previous image), leaves the data as it is, and says **the site needs

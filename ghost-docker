@@ -29,7 +29,7 @@
 #
 # Requires bash and Docker with the Compose plugin. Nothing else. On Windows,
 # run it inside WSL2. The contract this implements is
-# docs/ghost-cli-replacement.md §2.10.
+# docs/architecture.md#launcher-and-manager.
 set -euo pipefail
 
 readonly GD_REGISTRY_IMAGE="ghcr.io/tryghost/ghost-docker"

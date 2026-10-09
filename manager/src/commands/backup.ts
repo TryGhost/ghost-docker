@@ -1,4 +1,4 @@
-// `backup` and `restore` (plan §2.5): the site's databases, content and
+// `backup` and `restore` (docs/architecture.md#recovery): the site's databases, content and
 // configuration, and putting them back, into the same directory or a new one.
 // What they do is backup.ts and restore.ts; this is the command line and the
 // lock.

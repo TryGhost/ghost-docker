@@ -1,7 +1,7 @@
 {
   "name": "ghost-docker-manager",
   "private": true,
-  "description": "The ghost-docker CLI. Runs inside the manager image; see docs/ghost-cli-replacement.md §2.10.",
+  "description": "The ghost-docker CLI. Runs inside the manager image; see docs/architecture.md#launcher-and-manager.",
   "type": "module",
   "scripts": {
     "format": "oxfmt --write src test package.json tsconfig.json",

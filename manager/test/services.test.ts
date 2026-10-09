@@ -11,7 +11,6 @@ const configured = (services: Record<string, Lifecycle>): ResolvedSite => ({
     dir: '/srv/site',
     project: 'site',
     files: ['/srv/site/compose.yml'],
-    overrides: [],
     services: Object.fromEntries(
         Object.entries(services).map(([name, lifecycle]) => [
             name,

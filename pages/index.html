@@ -105,7 +105,7 @@ curl -fsSL https://docker.ghost.org/install.sh | bash -s -- install --import ../
   <h2>Afterwards</h2>
   <p>Installation writes a launcher into the site directory. Every later command runs from there:</p>
   <pre><code>./ghost-docker check     # diagnose the site
-./ghost-docker update    # a newer release of the stack; Ghost is unchanged
+./ghost-docker self-update  # a newer stack release; Ghost is unchanged
 docker compose logs -f ghost</code></pre>
 
   <h2>More</h2>

@@ -1,5 +1,5 @@
 // Releases of the stack, as the manager sees them: which tags are releases,
-// how they are ordered, and which channel a version belongs to (plan §2.7).
+// how they are ordered, and which channel a version belongs to (docs/architecture.md#releases-and-compatibility).
 //
 // Only `vX.Y.Z` and `vX.Y.Z-beta.N` are releases, and they are ordered by
 // semver: v1.10.0 follows v1.9.0, beta.10 follows beta.2, and a release

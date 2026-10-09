@@ -7,7 +7,7 @@
 # root or to a docker group. So: read the socket's group, then drop to the
 # caller's uid and gid with that group added. Nothing is chowned afterwards.
 #
-# The cases in which there is nothing to drop (plan §2.10):
+# The cases in which there is nothing to drop (docs/architecture.md#host-boundary):
 #   - the container was started with --user: it is already someone else
 #   - rootless Docker: root in here already is the caller on the host
 #   - no identity was given: nothing to drop to, and the manager then refuses

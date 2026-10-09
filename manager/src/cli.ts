@@ -59,7 +59,7 @@ const DESCRIPTION = `Self-hosted Ghost with Docker Compose: the manager.
 Day-to-day operation is plain Docker Compose, from the site directory:
   docker compose ps | logs -f ghost | up -d | down
 
-The plan is docs/ghost-cli-replacement.md in the repository.`;
+Usage and recovery: docs/install.md in the repository.`;
 
 export async function run(argv: readonly string[], io: Io): Promise<number> {
     const [first = 'help', ...others] = argv;

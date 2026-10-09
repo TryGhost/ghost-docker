@@ -1,9 +1,5 @@
 # Configuration
 
-> **Status.** `./ghost-docker install`, `config`, `check`, `info` and `list`
-> exist (plan step N3); see [install.md](install.md). Commands the plan has not
-> delivered yet do not exist until their step lands.
-
 ## Two files, two audiences
 
 | File | Contents | Read by |
@@ -43,7 +39,7 @@ atomically with a restrictive umask and preserve the mode of an existing file.
 Migration bundle v1 config values are raw strings, with no dotenv encoding. The
 importer applies the rules below exactly once when writing `ghost.env`; public
 and admin URLs are separate manifest fields mapped to `.env`. See
-[bundle-v1.md](bundle-v1.md) for the agreed S3 schema and source guarantees.
+[bundle-v1.md](bundle-v1.md) for the schema and source guarantees.
 
 Compose interpolates dotenv values, **including inside double quotes**, and
 `env_file` values are no exception. A literal dollar sign must be written `$$`.
@@ -77,16 +73,9 @@ accident. It cannot catch every case: a hand-written `$$` is indistinguishable
 from a correctly escaped single `$`, so writing values through `config set`
 is the only way to be sure.
 
-### A limit worth knowing
-
-Nothing above makes a hand-written `Pa$$w0rd!` safe: `$$` is indistinguishable
-from a correctly escaped single `$`, so no linter can catch it. **Do not
-hand-edit a value containing `$`** — use `./ghost-docker config set`, which encodes
-it correctly.
-
-Mounting Ghost's own JSON config file instead of `ghost.env` would remove the
-interpolation layer entirely. It was evaluated and rejected; §2.1 of
-[the plan](ghost-cli-replacement.md) records the findings and the reasons.
+`ghost.env` keeps Ghost's image-provided defaults. Replacing its JSON config
+would require maintaining a copy of those defaults; use `config set` for
+values needing escaping.
 
 ### The rules
 
@@ -223,79 +212,14 @@ contract.
 
 ## Installation metadata
 
-`.ghost-docker.json` records the schema version, installation and last update
-time, mode, release channel, how the stack was installed (from the image or a
-clone), installed stack version/ref and manager image and the ones
-before the last update, project identity,
-resolved Ghost image and digest, selected profiles, and checksums of the files the
-manager wrote. Its schema
-is specified in §2.2 of [the plan](ghost-cli-replacement.md). It is gitignored,
-mode `0600`, and machine generated — do not hand-edit it. Operations that
-change a running site hold `.ghost-docker.lock` while they run (`self-update`,
-`backup`, `restore` and `config set` now; Ghost upgrades when they land). An update keeps
-what it would put back in `.ghost-docker-update/` until it finishes, and a
-restore over a site keeps the site as it was in `.ghost-docker-restore/`
-until it is verified; see [self-update](install.md#self-update) and
-[backup and restore](install.md#backup-and-restore). Backups are directories
-under `backups/`, private and gitignored, kept until the operator removes
-them. A backup holds a copy of this file; restoring into a new directory
-rewrites `site.dir` (and `PROJECT_DIR` in `.env`) to that directory.
+`.ghost-docker.json` is private and machine-owned; do not hand-edit it. Use
+`./ghost-docker info` to inspect it. Its meaning and schema ownership are
+specified in [architecture.md](architecture.md#installation-metadata).
+[Compatibility](architecture.md#compatibility) begins with the first stable
+release; earlier development formats may be refused.
 
-```json
-{
-  "schemaVersion": 1,
-  "installedAt": "2026-09-03T09:12:44Z",
-  "updatedAt": "2026-10-08T15:02:10Z",
-  "mode": "production",
-  "channel": "stable",
-  "source": "image",
-  "stack": {
-    "version": "v1.2.3", "ref": "v1.2.3",
-    "image": "ghcr.io/tryghost/ghost-docker@sha256:…",
-    "previous": { "version": "v1.2.2", "image": "ghcr.io/tryghost/ghost-docker@sha256:…" }
-  },
-  "site": {
-    "project": "ghost-example-com", "dir": "/opt/ghost/example.com",
-    "url": "https://example.com", "domain": "example.com", "adminDomain": null
-  },
-  "ghost": {
-    "image": "ghost", "tag": "6.62.0-next-alpine",
-    "version": "6.62.0", "digest": "sha256:…"
-  },
-  "profiles": ["production"],
-  "payload": { "compose.yml": "<sha256>", "caddy/Caddyfile": "<sha256>", "ghost-docker": "<sha256>" }
-}
-```
-
-`source` is `image` when `install` wrote the stack's files from the manager
-image, and `checkout` for a clone of the repository whose files are used in
-place; it records no git commit, which is git's to know (a backup records the
-one checked out when it is taken). `stack.image` is the manager image the site's launcher is pinned to:
-a repository digest, or, for an image only this host holds, its ID. `payload`
-is the SHA-256 of every file `install` wrote from the image, so that an update
-can tell a file nobody edited from one somebody did (plan §2.7); it is empty
-in clone mode, where Git already knows. `self-update` records the checksums of the
-release it moved to, `stack.previous` (what the site ran before, which a failed
-update recovers to) and `updatedAt`; both are `null` until the first update.
-`channel` is the channel `self-update` follows by default. `self-update` does not
-update a clone: that is git's and Compose's ([install.md](install.md#updating-a-clone)).
-
-Every field is required. A field that was not supplied is `null` rather than an
-empty string, so "not known" and "deliberately empty" stay distinguishable. The digest is the
-immutable image identity, recorded so the exact image can be found again during
-recovery even after a tag moves.
-
-The manager is the reader and writer. It writes atomically, refuses a
-document without the right `schemaVersion`, and refuses to *read* one written by
-a newer schema rather than misinterpreting it. A document that does not match
-the schema is refused, naming its fields: it is damaged, or was written by a
-development release. Until the first stable release, this format may change
-in any release, and earlier shapes are not read; the first stable release is
-the compatibility baseline (plan §2.7, "Compatibility").
-
-A directory without the file was not made by `./ghost-docker install`.
-`./ghost-docker info` says so, and commands that need the metadata refuse,
-changing nothing.
+For locks, interrupted updates and set-aside restores, follow the
+[operator recovery instructions](install.md#backup-and-restore).
 
 ## The Compose invocation contract
 
@@ -311,11 +235,21 @@ selected list. The manager adds the site's `compose.override.yml` after
 `compose.yml` when it exists, which is what plain `docker compose` does on its
 own, so the two run the same site (see [Your own Compose
 overrides](#your-own-compose-overrides)). Opt into any other override file
-with `GD_COMPOSE_OVERRIDES`:
+with `GD_COMPOSE_OVERRIDES` (a comma-separated list, in merge order):
 
 ```bash
 GD_COMPOSE_OVERRIDES=compose.ipv6.yml ./ghost-docker check
 ```
+
+Relative paths are relative to the site. Only the root `compose.override.yml`
+is implicit: `overrides/compose.override.yml` is an additional override like
+any other. Backup requires additional overrides to be inside the site, records
+their order and copies them; restore requires the same selection. Use matching
+`-f` arguments for direct Compose commands.
+
+The manager passes only Docker connection/tool-path variables from its own
+environment, so its image's settings cannot override the site's `.env`.
+Explicit profile selections apply only to that invocation.
 
 ## Your own Compose overrides
 
@@ -350,61 +284,20 @@ not show.
 
 ## Ghost image layout
 
-The default `GHOST_VERSION` is a `next` variant, which installs Ghost directly
-under `/home/ghost`. The older variants use `/var/lib/ghost/versions/<v>` with a
-`current` symlink. Two variables carry the difference so that pinning an older
-image still works:
-
-| Variable | Default (`next`) | Older layout |
-| --- | --- | --- |
-| `GHOST_CONTENT_PATH` | `/home/ghost/content` | `/var/lib/ghost/content` |
-| `GHOST_TINYBIRD_PATH` | `/home/ghost/core/server/data/tinybird` | `/var/lib/ghost/current/core/server/data/tinybird` |
-
-Set both if you pin a `GHOST_VERSION` from the older layout; the content mount
-and the Tinybird sync job read them.
-
-`./ghost-docker config validate` checks that `GHOST_CONTENT_PATH` matches the image
-by reading the image's own `GHOST_CONTENT` variable, rather than inferring it
-from the tag name — so a future layout change is caught without updating a
-mapping. The check is skipped when the image has not been pulled yet.
-
-## Prerequisites
-
-The host needs **Docker Engine 25.0+** with the **Compose v2.24+** plugin, and
-`bash` to start the launcher (on Windows, inside WSL2). Nothing else. The manager image carries its own Node runtime, Docker
-client and tools, so the host needs no `jq`, `curl`, `git` or Node.
-
-`git` is needed only to work from a clone of this repository instead of a
-published image. See "Where the tooling runs" in
-[the plan](ghost-cli-replacement.md).
-
-Docker access is established by asking the daemon, never by checking `docker`
-group membership: neither rootless Docker nor a remote `DOCKER_HOST` involves
-that group, and being in it does not mean the daemon is running.
+Install and import require the `next` image layout. The manager reads the
+image's `GHOST_CONTENT` and `GHOST_INSTALL` declarations to set
+`GHOST_CONTENT_PATH` and `GHOST_TINYBIRD_PATH`; it refuses the older
+Ghost-CLI-installed layout. `config validate` checks the content path against
+the pulled image's own declaration, and skips that check before it is pulled.
+The [bundle contract](bundle-v1.md#minimum-source-version) defines the migration
+minimum and exact source-version requirement.
 
 ## Existing installations
 
-This layout is a breaking change for checkouts made before it landed. The
-migration is owned by the stack updater (S6b); the changes it has to handle are:
-
-- `caddy/Caddyfile` is now **tracked**. An existing installation has an
-  untracked file at that exact path, and Git refuses to overwrite an untracked
-  file with a tracked one. The updater moves the operator's file aside — into
-  `caddy/custom/` where its routes keep working — *before* the checkout.
-- The snippets in `caddy/snippets/` now take their upstreams and domains as
-  import arguments instead of reading `{$DOMAIN}` / `{$ACTIVITYPUB_TARGET}`
-  from the Caddy container's environment, which the `caddy` service no longer
-  sets. A hand-written Caddyfile that imports them needs the arguments added.
-- Ghost application configuration moves from `.env` to `ghost.env`. `.env`
-  keeps the Compose and operator settings and is no longer passed into the
-  Ghost container.
-- `COMPOSE_PROFILES` must gain a site mode (`production` for an existing
-  server), and `SITE_MODE`, `URL`, `PROJECT_DIR` and an exact `GHOST_IMAGE_REF`
-  pin must be added.
-
-Moving a Ghost-CLI installation to Docker is a separate matter: see
-[bundle-v1.md](bundle-v1.md). The legacy `scripts/migrate.sh` on `main` predates
-this layout and is not part of it.
+Do not use `git pull` to move a released `main` installation to this layout.
+That migration is still [roadmap work](ghost-cli-replacement.md#s6b--migration-from-the-released-main-layout).
+Moving a Ghost-CLI site is a separate, supported local import described in
+[install.md](install.md#importing-a-ghost-cli-site).
 
 ## Installed image pins
 

@@ -1,27 +1,6 @@
-// Reaching a site in order to verify it (plan §2.8).
-//
-// Each service is judged by its own Compose health check, which `up --wait`
-// already required, and nothing is described as more than it is:
-//
-//   ghost           its health check: the Admin API answers inside the container
-//   caddy           its health check: its admin API answers, so it is up with
-//                   its configuration loaded. Not that it routes each name
-//   https           Ghost's answer through Caddy, for the domain and the admin
-//                   domain: an HTTPS request to Caddy, with that name as its
-//                   SNI and Host, for Ghost's Admin API site endpoint. Serving
-//                   only when this site's Ghost answers it, by the canonical
-//                   URL it reports, which is the site's URL whichever of the
-//                   two names it was reached by; and the certificate is judged
-//                   (its name, its dates, its issuer). Pending while Caddy has
-//                   no certificate for the name, which it obtains once DNS
-//                   reaches this host: until then the route cannot be tried.
-//                   Asked from the site's own network (network.ts), because
-//                   127.0.0.1 in the manager is the manager, not the host
-//   mailpit         with that profile: its health check. That Ghost's mail
-//                   reaches it is tests/e2e/install.sh's to prove
-//   published ports what Docker says it published, not verified from the host:
-//                   the HTTPS request above goes to Caddy's container, not to
-//                   the host's ports 80 and 443
+// Health checks establish readiness; an HTTPS request through Caddy must also
+// identify this Ghost site by its canonical URL. Probe the site network, since
+// manager loopback is not host loopback. See docs/architecture.md#verification-and-service-access.
 import { ServiceUnreachable, type HttpsAnswer } from './clients.ts';
 import { composePs, type ServiceState } from './compose.ts';
 import type { Io } from './io.ts';

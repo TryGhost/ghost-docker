@@ -1,38 +1,12 @@
-// Restoring a backup into its own site directory or a new, empty one (plan
-// §2.5). `restoreSite` takes these parts in order:
-//
-//   1. Refusals that change nothing: the backup is read whole and every file
-//      checked against its checksum; the directory is this backup's own
-//      site, or empty; in a new directory, nothing on the daemon already
-//      uses the site's project name or ports, and over the site, no other
-//      directory's; the overrides in effect are the ones the backup was
-//      taken with; Compose, in this directory, resolves the files and
-//      `.env` the restore will write, read where the backup holds them, to
-//      exactly the images the backup records, with the data mounted where
-//      backup and restore handle it. Then the lock, and the recorded images
-//      are pulled before anything stops, and each must be, by its immutable
-//      identity, the image the site ran when it was backed up.
-//   2. Over the site itself: the site is stopped, and its data and every file
-//      the restore writes or replaces (siteFiles, with the overrides, and the
-//      backup's own) are moved aside into RESTORE_DIR, one at a time
-//      (recovery.ts), each copy checked against its original, which is
-//      kept until the restore has been verified. A failure here, before
-//      anything is written, moves back what had been moved.
-//   3. The backup's files are written, with the site's own path, and Compose
-//      must resolve exactly the recorded images. The content is unpacked,
-//      a fresh MySQL is started, and each dump loaded as the site's user and
-//      its rows counted against the manifest.
-//   4. `up --wait`, then verify as `check` does.
-//
-// The outcome is done, or needs the operator with what to do: a restore that
-// fails once it has written stops the services and does not put the old site
-// back by itself. What it says to do names only copies that exist.
+// Restore validates the inputs it will write before replacing the site.
+// After writing begins, failure needs the operator; recovery instructions must
+// name only copies that exist. See docs/architecture.md#restore.
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { backupSiteFiles, readBackup, refuseMovedData } from './backup.ts';
 import { SITE_FILES_DIR, type BackupManifest } from './backup/manifest.ts';
-import { composeFileList, upAndWait } from './compose.ts';
+import { composeFileList, composeOverrides, upAndWait } from './compose.ts';
 import type { Context } from './context.ts';
 import {
     DaemonError,
@@ -239,11 +213,9 @@ function classify(context: Context, dir: string, manifest: BackupManifest): Targ
  * the restored site as another.
  */
 function refuseOtherOverrides(io: Io, dir: string, manifest: BackupManifest): void {
-    const now = composeFileList(dir, io.env.GD_COMPOSE_OVERRIDES)
-        .filter(
-            (file) => file !== join(dir, COMPOSE_FILE) && file !== join(dir, COMPOSE_OVERRIDE_FILE),
-        )
-        .map((file) => insideSite(dir, file) ?? file);
+    const now = composeOverrides(dir, composeFileList(dir, io.env.GD_COMPOSE_OVERRIDES)).map(
+        (file) => insideSite(dir, file) ?? file,
+    );
     const recorded = manifest.site.overrides;
     if (now.join(',') !== recorded.join(',')) {
         throw new CliError(
@@ -547,8 +519,9 @@ function writeSiteFiles(io: Io, root: string, dir: string, manifest: BackupManif
     if (text === undefined) {
         throw new CliError(`the backup holds no ${ENV_FILE}`);
     }
-    if (restoredEnv(text, dir) !== text) {
-        atomicWrite(envPath, restoredEnv(text, dir));
+    const restored = restoredEnv(text, dir);
+    if (restored !== text) {
+        atomicWrite(envPath, restored);
     }
     const metadata = readMetadata(dir);
     if (metadata.state === 'present' && metadata.metadata.site.dir !== dir) {

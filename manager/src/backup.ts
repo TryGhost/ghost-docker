@@ -1,35 +1,5 @@
-// Taking a backup of a site, and reading one back (plan §2.5).
-//
-// A backup is a directory under backups/ in the site:
-//
-//   manifest.json          what it holds, the exact images, a checksum of each file
-//   database/<name>.sql    a mysqldump of each of the site's databases, as its own user
-//   content.tar.gz         the content directory
-//   site/...               .env, ghost.env, the metadata, the Caddy files, the
-//                          Compose overrides and, in image mode, the stack files
-//                          and the launcher the site ran
-//
-// What it records of the site is what Compose resolves from every file the
-// site runs with, and what the daemon runs (resolved.ts): the data mounts an
-// override may have moved, the overrides GD_COMPOSE_OVERRIDES adds, and the
-// exact image each running service runs, beside the one configured.
-//
-// It is written as backups/.<id>.partial and renamed into place only once it
-// has been checked: every dump loaded into a scratch MySQL, and the archive
-// listed. A backup directory without `.partial` is a checked one; a failure
-// removes the partial, so a dump that fails is an error, not a backup.
-//
-// Consistency (docs/install.md, "What a backup captures"). By default a
-// backup is live, as Ghost-CLI's was: the site keeps running, each dump is
-// one consistent snapshot of its database, but the databases and the content
-// are captured at different moments, and the manifest says so. A consistent
-// backup stops the services that write them (writers.ts) while they are
-// captured, so the dumps and the archive are one moment of the site, and
-// starts them again before the slower check: the site is down for the
-// capture alone. Writers that were not running are not started, and those
-// that were run again whether the backup succeeds or fails, unless the
-// caller owns the pause: an update keeps them stopped until the site it
-// leaves running is verified.
+// Checked backups, published by renaming a private .partial directory only after
+// scratch MySQL loads and archive validation pass. See docs/architecture.md#recovery.
 import { createHash } from 'node:crypto';
 import {
     chmodSync,
@@ -57,7 +27,7 @@ import {
     SITE_FILES_DIR,
     type BackupManifest,
 } from './backup/manifest.ts';
-import { compose, composeError, composePs, composeUp } from './compose.ts';
+import { compose, composeError, composeOverrides, composePs, composeUp } from './compose.ts';
 import { runOnce } from './docker/client.ts';
 import { CliError } from './errors.ts';
 import { WriterPause } from './writers.ts';
@@ -111,16 +81,8 @@ for db in "$@"; do
 done
 `;
 
-/**
- * The services that write the site's databases and content: stopped while a
- * consistent backup captures them. Caddy and MySQL itself keep running.
- */
 /** `2026-10-09T14-03-22Z`: sortable, and a valid file name everywhere. */
-export const backupId = (now: Date): string =>
-    now
-        .toISOString()
-        .replace(/\.\d{3}Z$/, 'Z')
-        .replaceAll(':', '-');
+export const backupId = (now: Date): string => isoSeconds(now).replaceAll(':', '-');
 
 /** The databases a site has: Ghost's, and ActivityPub's when that profile is on. */
 export function siteDatabases(site: SiteFacts): string[] {
@@ -195,7 +157,7 @@ export async function refuseDrift(io: Io, resolved: ResolvedSite): Promise<void>
  * bring it back.
  */
 export function siteOverrides(resolved: ResolvedSite): string[] {
-    return resolved.overrides.map((file) => {
+    return composeOverrides(resolved.dir, resolved.files).map((file) => {
         const inside = insideSite(resolved.dir, file);
         if (inside === null) {
             throw new CliError(

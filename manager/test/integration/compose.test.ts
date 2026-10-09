@@ -1,10 +1,12 @@
 // What the manager leaves to the image's own Compose, against that Compose.
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { ALL_PROFILES, compose, composeConfig, composeVersion } from '../../src/compose.ts';
+import { siteOverrides } from '../../src/backup.ts';
+import { resolveConfig } from '../../src/resolved.ts';
 import { operatorKeyTest } from '../../src/config.ts';
 import * as env from '../../src/env.ts';
 import { atLeast, MINIMUM } from '../../src/versions.ts';
@@ -76,3 +78,35 @@ test('every profile is `*` to Compose, so undo finds whatever a failed install s
         assert.ok(services.includes(service), `${service} not in ${services.join(', ')}`);
     }
 });
+
+for (const rootOverride of [false, true]) {
+    for (const absolute of [false, true]) {
+        test(`nested compose.override.yml is effective and inventoried (root ${rootOverride}, absolute ${absolute})`, async () => {
+            const dir = mkdtempSync(join(tmpdir(), 'gd-overrides-'));
+            try {
+                mkdirSync(join(dir, 'overrides'));
+                writeFileSync(join(dir, '.env'), 'COMPOSE_PROJECT_NAME=gd-overrides\n');
+                writeFileSync(
+                    join(dir, 'compose.yml'),
+                    'services:\n  reader:\n    image: alpine:base\n',
+                );
+                if (rootOverride) {
+                    writeFileSync(
+                        join(dir, 'compose.override.yml'),
+                        'services:\n  reader:\n    image: alpine:root\n',
+                    );
+                }
+                const file = 'overrides/compose.override.yml';
+                writeFileSync(join(dir, file), 'services:\n  reader:\n    image: alpine:nested\n');
+                const overrideIo = realIo({
+                    env: { ...io.env, GD_COMPOSE_OVERRIDES: absolute ? join(dir, file) : file },
+                });
+                const site = await resolveConfig(overrideIo, dir);
+                assert.equal(site.services.reader?.image, 'alpine:nested');
+                assert.deepEqual(siteOverrides(site), [file]);
+            } finally {
+                rmSync(dir, { recursive: true, force: true });
+            }
+        });
+    }
+}

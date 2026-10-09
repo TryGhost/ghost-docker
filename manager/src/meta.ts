@@ -1,15 +1,5 @@
-// `.ghost-docker.json`: what an operation needs to know about a site that its
-// configuration does not say. When it was installed, from which stack release
-// and how, the exact Ghost image that was resolved, and the files the manager
-// wrote.
-//
-// Machine generated, gitignored, private. The manager is its only reader and
-// writer: it writes atomically, refuses a document without the right
-// schemaVersion, and refuses to read one from a newer schema rather than
-// misreading it. Every field is required; one nobody knows is null. Formats
-// written by development releases before the first stable one are not read
-// (plan §2.7, "Compatibility"). A site without the file was not made by
-// `install`: commands that need it say so.
+// Strict, private installation metadata. Live configuration comes from Compose.
+// See docs/architecture.md#installation-metadata and #compatibility.
 import { join } from 'node:path';
 import { z } from 'zod';
 import { atomicWrite, PRIVATE, readIfExists } from './fs.ts';
@@ -59,7 +49,7 @@ export const metadataSchema = z.strictObject({
     /**
      * SHA-256 of every file the manager wrote from the image's payload, by
      * path relative to the site. An update replaces an untouched file and
-     * never silently replaces an edited one (plan §2.7). Empty in clone mode.
+     * never silently replaces an edited one (docs/architecture.md#releases-and-compatibility). Empty in clone mode.
      */
     payload: z.record(z.string(), z.string().regex(/^[0-9a-f]{64}$/)),
 });

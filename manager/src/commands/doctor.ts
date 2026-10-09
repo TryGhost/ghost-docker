@@ -351,7 +351,7 @@ function writeProbe(dir: string, keep: boolean): { check: Check; token: string |
  * a sibling container with the site directory mounted by the path the manager
  * was given, and read back the file the manager just wrote. It fails when the
  * daemon cannot start containers, when the path means another directory to the
- * daemon, and when the file is not where the daemon looks (plan §2.10).
+ * daemon, and when the file is not where the daemon looks (docs/configuration.md0).
  */
 async function bindMountCheck(context: Context, io: Io, token: string): Promise<Check> {
     const label = 'bind mounts';

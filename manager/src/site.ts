@@ -20,7 +20,7 @@ export const BACKUPS_DIR = 'backups';
 export const RESTORE_DIR = '.ghost-docker-restore';
 /**
  * Files and directories that belong to the operator: an update keeps a copy
- * of them, and a checkout of another ref never touches them (plan §2.7).
+ * of them, and a checkout of another ref never touches them (docs/architecture.md#releases-and-compatibility).
  */
 export const OPERATOR_FILES = [
     ENV_FILE,

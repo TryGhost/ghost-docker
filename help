@@ -1,82 +1,41 @@
 #!/usr/bin/env bash
 
 cat << 'HELPEOF'
-════════════════════════════════════════════════════════════════════
-                    GHOST DOCKER HELP & COMMANDS
-════════════════════════════════════════════════════════════════════
+GHOST DOCKER
 
-INSTALLATION (see docs/install.md):
-  ./ghost-docker install --domain example.com [--email ops@example.com]
-  ./ghost-docker install --local
-  ./ghost-docker check                     # diagnose this site
-  ./ghost-docker list                      # every ghost-docker container on this host
-  ./ghost-docker info                      # recorded installation metadata
+MANAGER COMMANDS:
+  ./ghost-docker help               # Supported commands and options
+  ./ghost-docker install --help     # Installation and local bundle import
+  ./ghost-docker check              # Diagnose this site
 
-  Planned: install --import BUNDLE (a local Ghost-CLI site), update, backup.
-
-SITE MODES (exactly one, selected in COMPOSE_PROFILES in .env):
-  local       ghost + db, published on 127.0.0.1:${GHOST_PORT}
-  production  ghost + db + caddy, HTTPS on ${HTTP_PORT}/${HTTPS_PORT}
-
-  Optional, additive, per-site profiles: analytics, activitypub
-
-COMMON COMMANDS:
-  docker compose up -d              # Start the services for the selected mode
-  docker compose down               # Stop all services
-  docker compose ps                 # Check service status
-  docker compose logs -f ghost      # View real-time Ghost logs
-  docker compose logs -f caddy      # View Caddy webserver logs
-  docker compose restart ghost      # Restart Ghost container
+DAILY OPERATION (Docker Compose, from the site directory):
+  docker compose up -d
+  docker compose down
+  docker compose ps
+  docker compose logs -f ghost
+  docker compose logs -f caddy
+  docker compose exec ghost sh
+  docker compose exec db mysql -u root -p
+  # Database root password: DATABASE_ROOT_PASSWORD in .env
 
 CONFIGURATION:
-  .env         Compose and operator settings, including the MySQL root
-               password. Never passed into the Ghost container.
-  ghost.env    Ghost application settings only (section__key form).
+  .env         Compose and operator settings; never passed wholesale to Ghost.
+  ghost.env    Ghost application settings. Use config set to encode values safely:
+    ./ghost-docker config set ghost.env KEY VALUE
+    ./ghost-docker config validate
+    docker compose up -d
 
-  ./ghost-docker config validate                    # Check both files by mode
-  ./ghost-docker config set ghost.env KEY VALUE     # Write safely and atomically
-
-  Restart Ghost after changes: docker compose up -d
-
-ROUTING (production):
-  This site's routes: caddy/sites/site.caddy   (written by install; yours to edit)
-  Other sites:        caddy/custom/*.caddy
-  Global options:     caddy/global/*.caddy
-
-  After editing: docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile
-
-TROUBLESHOOTING:
-  docker compose exec ghost sh      # Access Ghost container shell
-  docker compose logs --tail=100    # View last 100 log lines
-  docker stats                      # Monitor resource usage
-
-DATABASE ACCESS:
-  docker compose exec db mysql -u root -p
-  # Use the DATABASE_ROOT_PASSWORD from your .env file
-
-UPGRADES:
-  Ghost is pinned to an exact image (GHOST_IMAGE_REF in .env), so
-  docker compose pull does not change it. Scripted upgrades land in S7;
-  until then, back up, change the pin, and run docker compose up -d.
-
-  For major upgrades, always:
-  1. Backup your data first
-  2. Read Ghost's release notes
-  3. Test in a staging environment
-
-USEFUL PATHS:
-  Content: ${UPLOAD_LOCATION:-./data/ghost}
-  Database: ${MYSQL_DATA_LOCATION:-./data/mysql}
-  Metadata: ./.ghost-docker.json
-  Logs: docker compose logs
+  Edit routes in caddy/sites/site.caddy, then reload:
+    docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile
 
 DOCUMENTATION:
-  docs/install.md         Installation, ports, optional services, doctor
-  docs/configuration.md   Configuration split, profiles, lifecycle, metadata
-  docs/caddy.md           The site's routes, and how to change them
-  docs/bundle-v1.md       Migration bundle contract
+  docs/install.md                 Usage, updates, backup/restore and recovery
+  docs/configuration.md           Env files, profiles, overrides and image pins
+  docs/caddy.md                   Route edits
+  docs/bundle-v1.md               Migration bundle contract
+  docs/architecture.md            Manager invariants and state ownership
+  docs/ghost-cli-replacement.md   Remaining work and release gates
 
-MORE HELP:
   Ghost Docs: https://ghost.org/docs/
   Ghost Community: https://forum.ghost.org/
 HELPEOF

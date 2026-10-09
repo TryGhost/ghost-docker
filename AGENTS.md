@@ -1,232 +1,38 @@
 # AGENTS.md
 
-Guidance for coding agents working in this repository. This is the only such
-file: there is no separate `CLAUDE.md`.
+Execution guidance for agents. Shared behavior belongs in human documentation.
 
-## What this branch is
+## Start here
 
-`next-docker` rebuilds the self-hosted Ghost Docker setup around a **manager
-image**: a TypeScript CLI in a container, started by a launcher (`ghost-docker`)
-that needs only Docker and bash on the host. The plan, with the
-architecture, the contracts and the step breakdown, is
-[docs/ghost-cli-replacement.md](docs/ghost-cli-replacement.md). **Read the
-step you are implementing and the §2 contracts it names before writing code.**
+- [README](README.md): setup and validation commands.
+- [Architecture](docs/architecture.md): current boundaries, state and recovery.
+- [Operator guide](docs/install.md): supported commands and recovery steps.
+- [Configuration](docs/configuration.md), [Caddy](docs/caddy.md) and
+  [bundle v1](docs/bundle-v1.md): read the relevant contract before changing it.
+- [Roadmap](docs/ghost-cli-replacement.md): remaining requirements. Do not add
+  command stubs for unimplemented steps.
 
-Branches:
+## Workflow
 
-- `main` — the released layout. Existing installations update from it with
-  `git pull`, so nothing here merges into it until the legacy migration (S6b).
-- `next-docker` — this branch. Pull requests target it.
-- `next` — frozen. A complete bash implementation of the configuration
-  foundation, installer and local bundle import, with tests. It is the
-  behaviour reference for steps that port it (`git show origin/next:<path>`).
-  Do not add to it, and do not port the bash; port what it does.
+- Target pull requests at `next-docker`. `main` is the released layout and must
+  not receive this branch before its migration and release gates are satisfied.
+- Use pnpm with the versions pinned in each package; the manager requires Node
+  26. Run the README's format, lint, type and test checks for affected packages.
+- Validate Compose semantics with the real Compose parser. Fakes cannot prove
+  interpolation, file merging, mounts or networking.
+- End-to-end scenarios fail on unavailable prerequisites. Use
+  `GD_E2E_ALLOW_SKIP=1` only deliberately, and report what skipped.
+- Before committing, read [.agents/skills/commit/SKILL.md](.agents/skills/commit/SKILL.md).
 
-## Current state
+## High-value constraints
 
-Steps N1–N3, S4, S5b, S5c and S6a: the stack's files and contracts, the
-launcher and manager image, releases, and the commands: `install` (local and
-production, from the image or a clone, from a channel or a release, and
-`--import` of a local Ghost-CLI site's bundle), `self-update` (between releases,
-for image-mode sites; a clone is refused, and updated with git and Compose), `backup` and `restore` (over the site, or into a new
-directory), `config get|set|validate`, `check`, `info`, `list`, plus
-`version`, `doctor` and `help`. Every other `./ghost-docker ...` command or
-option in the documents is the planned interface: it does not exist until its
-step lands (an unknown command or option exits 2), and the plan says which step
-delivers it. `docs/install.md` describes what exists.
-
-- `ghost-docker` (bash) is the only host code. It checks Docker, chooses the
-  image, and `docker run`s it (plan §2.10). Add no logic to it that the
-  manager could hold. Windows is WSL2 only; there is no native launcher.
-  There is no `--migrate`: moving a Ghost-CLI site is documented as
-  `ghost stop`, `ghost migrate-export`, `install --import` (S5c). It reads
-  `--channel`, `--release` and `--to` to choose the image (and passes them on);
-  `self-update` from a pinned site runs the newest release on the site's channel
-  (`GD_PINNED_CHANNEL`), not its pin. It mounts `--import`'s bundle, and
-  `restore`'s backup when it is outside the site, read-only at its own path.
-- `manager/` is the CLI: TypeScript run directly by Node (types stripped, no
-  build step, so `erasableSyntaxOnly`), with dependencies installed by pnpm
-  (version pinned in `package.json`; `npm i -g corepack && corepack enable`
-  provides it). A command's options are a zod object keyed in camelCase,
-  each with its brief as `.describe()` (`src/command.ts`): the command line
-  (`--admin-domain`, a boolean as a flag) is derived from it and parsed by
-  Node's own `util.parseArgs` (strict), then the values by the schema, which
-  refuses a bad value or combination as a usage error. `src/cli.ts` holds the
-  dispatch table (each command's options, its positional arguments and its
-  handler), renders help from it and maps errors to exit codes. Handlers get
-  the schema's output and return the exit status. `src/commands/` holds what each command does, `src/context.ts` the
-  `GD_*` environment the launcher passes, `src/io.ts` the seam tests
-  substitute. Programs are run with execa, the daemon is spoken to directly (below).
-- The manager talks to the daemon over the **Engine API** on the mounted
-  socket (`src/docker/`: undici transport, zod-typed endpoints, a `runOnce`
-  for one-shot containers). It does not shell out to the `docker` CLI; the
-  CLI is in the image for Compose only, which has no API (`src/compose.ts`).
-- `manager/entrypoint.sh` drops from root to the caller's uid and gid, keeping
-  the Docker socket's group. It does not drop under rootless Docker.
-- `manager/Dockerfile` builds from the repository root and also carries the
-  stack's files under `/opt/ghost-docker/stack` (the payload `install` writes in
-  image mode) and the launcher under `/opt/ghost-docker/launcher`.
-- `src/project.ts` is a site's Compose project name, chosen once by install
-  (production: the domain's; local: the directory's and a random
-  adjective-animal pair no project on the daemon has), and who owns a project:
-  a command that changes a site first refuses one whose containers another
-  directory made (`com.docker.compose.project.working_dir`).
-  `src/resolved.ts` is the site as Compose resolves it from every file it
-  runs with (project name, files, overrides, each service's image, mounts and
-  networks) and as the daemon runs it (each container's image and image ID).
-  Backup, restore and check read the site from it, not from `.env`.
-- `src/env.ts` is the one dotenv encoder and parser; nothing else reads or
-  writes `.env` or `ghost.env`. `src/fs.ts` writes atomically. `src/site.ts`
-  holds file names, modes and profiles; `src/config.ts` validation;
-  `src/caddy.ts` fills `templates/site.caddy`, the routes install writes; `src/meta.ts` the metadata schema; `src/ghost.ts`
-  image resolution; `src/payload.ts` the image-mode files and pinned launcher.
-- `src/bundle/manifest.ts` is the bundle v1 manifest as a zod schema. It
-  imports nothing but zod, so the exporter in Ghost-CLI can share it; keep
-  importer policy out of it. `src/bundle/stage.ts` unpacks and validates a
-  bundle in staging; `src/import.ts` holds the import's steps and `Importing`,
-  what `install --import` adds to an installation, with the pieces that
-  print nothing in `src/import/config.ts` (what ghost.env carries over) and
-  `src/import/database.ts` (the client, the DEFINER filter, row counts).
-  `src/undo.ts` records what an installation created and removes it on
-  failure; an import keeps that record in its marker file.
-- Releases (`src/release.ts`): only `vX.Y.Z` and `vX.Y.Z-beta.N`, ordered
-  by semver. The manager holds only that; cutting releases is `scripts/`, a
-  package of its own that is not in the image. The Release workflow cuts them
-  as Ghost and Ghost-CLI do (`scripts/release.ts`: ✨ commits make a minor,
-  anything else a patch; release-note emojis select the notes), then publishes the image, its
-  moving `beta`/`stable` tags (`image.yml`), and the launcher to GitHub Pages as
-  `https://docker.ghost.org/install.sh` (`launcher.yml`). Every release is a
-  beta until S6b.
-- `src/commands/self-update.ts` moves a site to the release it runs as: the
-  release's images pulled while the site runs, a snapshot in
-  `.ghost-docker-update/`, the writers paused and a backup taken, managed
-  files by checksum (an edited one is kept beside `<file>.new`), validate,
-  pull, `up --wait`, verify. A failure before the release's services start
-  puts the files back and resumes the writers (restored); after, it stops
-  them, puts the files back, loads nothing, and names the backup for the
-  operator to restore. It refuses a clone,
-  whose update is git's and Compose's. `src/lock.ts` is the site lock (§2.2).
-- Until the first stable release, `.ghost-docker.json`, the backup manifest and
-  the launcher's `GD_*` contract are development formats (plan §2.7,
-  "Compatibility"): change them directly, keep the schemas strict, and add no
-  defaults, adapters or migrations for earlier shapes. The layout on `main` is
-  released, and S6b's migration of it is not covered by this.
-- `src/backup.ts` takes a backup (§2.5): a mysqldump of each of the site's
-  databases as its own user, the content as a tarball, the site's files, and
-  `backup/manifest.ts` (images, row counts, checksums), written as
-  `backups/.<id>.partial` and renamed only once every dump has loaded into a
-  scratch MySQL (a `runOnce` of the site's db image) and the archive lists.
-  `src/writers.ts` pauses Ghost and ActivityPub: a consistent backup for its
-  capture alone, an operation that may load its backup back (self-update,
-  later Ghost upgrades) from before the backup until its own services start
-  or the site is put back. `src/restore.ts` restores one over its site (set aside in
-  `.ghost-docker-restore/` until verified) or into an empty directory, through
-  a fresh MySQL and the import's client and DEFINER filter. Its outcome is
-  done or needs the operator; it never puts the old site back by itself.
-  `siteFiles` (`src/meta.ts`), with the overrides, is the one inventory of a
-  site's files that backup copies, self-update snapshots and restore sets
-  aside. Backup refuses a site whose running images are not what its
-  configuration names, stopped ones included; restore resolves the inputs
-  it will write (`restoredFiles` and the restored `.env`, through
-  `ComposeInputs`) in the destination, and checks the pulled images'
-  identities, before it changes anything.
-- The manager asks a site's services directly: `src/network.ts` joins the
-  manager's own container to the network the site's running containers share
-  (discovered, never guessed) and leaves it however the work ends, and
-  `src/clients.ts` holds the clients, `mysql2` and a TLS handshake.
-  Every service is addressed by its per-site alias. Queries go through
-  `withSiteDatabase`; dumps are still made and loaded by the db container's own
-  `mysqldump` and `mysql`. `src/verify.ts` reports each service's own health check
-  and asks the network only for Caddy's certificate: `127.0.0.1` in the
-  manager is the manager, and it cannot reach the host's ports. Dockerode and the Docker CLI were weighed and
-  not adopted (plan §2.10).
-
-- `compose.yml` — Ghost, MySQL, Caddy, optional analytics and ActivityPub,
-  and for local sites Mailpit (`--with mailpit`; validation keeps it out of
-  production).
-  Site mode is `local` or `production`, selected in `COMPOSE_PROFILES`;
-  optional profiles are additive. Long-running services take
-  `RESTART_POLICY`; one-shot jobs keep `restart: "no"`.
-- `caddy/Caddyfile` is tracked and generic. `install` writes a production
-  site's routes into `caddy/sites/site.caddy` once; after that it is the
-  operator's and the manager never rewrites it. Other sites go in
-  `caddy/custom/`, global options in `caddy/global/`. Snippets take their upstreams and domains as import
-  arguments.
-- `.env` holds Compose and operator settings, including the MySQL root
-  password, and is never passed into the Ghost container. `ghost.env` holds
-  Ghost application settings and is the `ghost` service's only `env_file`.
-- `docs/configuration.md`, `docs/caddy.md`, `docs/bundle-v1.md` — contracts.
-- Migration is `install --import` for local sites only. The legacy
-  `scripts/migrate.sh` on `main` does not understand this layout and was not
-  brought across; it remains the production path on `main` until production
-  import (S5e) exists.
-
-## Rules that hold whatever is being built
-
-- Compose interpolates dotenv values even inside double quotes: a literal `$`
-  is written `$$`. Never source or evaluate an env file. One encoder, tested by
-  a round trip through real containers. See "Value encoding" in
-  `docs/configuration.md`.
-- Compose is invoked with `--project-directory` and an explicit `-f`, never
-  `-C`, and without an inherited `COMPOSE_FILE`. The site's
-  `compose.override.yml`, when there is one, is added after `compose.yml`
-  (`composeFiles` in `src/compose.ts`), as plain Compose would.
-- A site directory must be mounted into the manager at its own absolute host
-  path, because the daemon resolves bind mounts on the host.
-- A Ghost version is resolved to a digest and pinned (`GHOST_IMAGE_REF`).
-  Changing `GHOST_VERSION` alone never changes what a site runs.
-- Installation never stops or reconfigures anything already running. A busy
-  port is an error naming what holds it.
-- Readiness is a health check passing and the Admin API answering through the
-  site's own ingress. A running container is not readiness.
-- Docker access is established by asking the daemon, never from group
-  membership.
-- Commands and options are added when their step lands, not stubbed ahead of
-  it; usage errors exit `2`.
-- The launcher holds no logic that could live in the manager.
-
-## Tests
-
-Unit tests for the CLI are TypeScript, in `manager/test/`, run by Node's own
-test runner against a fake `Io`. Integration tests, in
-`manager/test/integration/`, run the same code against the real daemon and the
-stack's real MySQL and Caddy, from a container (the manager
-Dockerfile's `integration` stage), because the manager joins its own container
-to a site's network. End-to-end scenarios that only run the real commands and
-check outcomes are shell scripts in `tests/e2e/`. Shell code passes
-ShellCheck.
-
-```bash
-cd manager && pnpm install
-pnpm run format:check && pnpm run lint && pnpm run typecheck && pnpm test
-pnpm run test:integration     # real daemon and services, from a container; pulls images
-tests/e2e/launcher.sh         # stand-in docker, then the real image
-tests/e2e/install.sh          # real installs; binds 80/443, pulls images
-tests/e2e/import.sh           # Ghost-CLI sites exported and imported; needs Node
-tests/e2e/self-update.sh      # self-updates between locally built releases, writes kept through a failed one, its backup restored; a clone refused; needs jq
-tests/e2e/backup.sh           # a site with ActivityPub backed up, restored over itself and elsewhere; needs jq
-cd scripts && pnpm install && pnpm run typecheck && pnpm test   # the release tooling
-```
-
-Unit tests fake the daemon at the transport (`test/helpers.ts`: `api`, `run`
-and `containers` for the Engine API, `composeRun` for Compose), and the site
-network and its services at the `Io` (`sql`, `certificate` and
-`network.refuse`). The fake only puts each running service at
-its per-site alias; how the network is found, joined and left is the
-integration tests' to prove, not the fake's to imitate. `test/site.ts` makes a
-site directory from the repository's own files.
-
-## Commits
-
-Commit messages follow [.agents/skills/commit/SKILL.md](.agents/skills/commit/SKILL.md)
-(also reachable as `.claude/skills/commit`).
-
-## Common commands
-
-```bash
-docker compose ps
-docker compose logs -f ghost
-docker compose exec ghost sh
-docker compose exec db mysql -u root -p
-./help
-```
+- Keep the launcher limited to work that must happen before the image starts;
+  preserve bash 3.2 and WSL2 support. The site mount must use its absolute host path.
+- Use the shared dotenv encoder; never source env files or log their values.
+- Use Compose's resolved configuration for effective images, mounts and project
+  identity. Reuse the file inventory rather than maintaining another list.
+- Never automatically load a pre-update backup after service startup was
+  attempted: newer writes may exist even if startup failed.
+- Keep native service clients and version-matched MySQL tools for bulk data.
+- Keep image-only self-update and strict development formats; retain released-main
+  migration and exact-version bundle import. See the linked contracts for details.

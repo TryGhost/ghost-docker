@@ -5,7 +5,7 @@ name: "Served launcher"
 # GitHub Pages from this workflow. There is no gh-pages branch: each deploy is
 # the whole site, built from the release. The custom domain is set in the
 # repository's Pages settings (a CNAME file is ignored for an Actions deploy).
-# Only the newest release is served, and never by hand (plan §2.7). Then
+# Only the newest release is served, and never by hand (docs/architecture.md#releases-and-compatibility). Then
 # tests what is served, not the checkout's copy: it installs the newest beta,
 # and an explicit --release.
 #

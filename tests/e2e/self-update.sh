@@ -8,12 +8,10 @@
 # changes two stack files, a third whose compose.yml does not resolve, and a
 # fourth that migrates the database and the content, then never becomes
 # healthy. A local site installed from the first is updated to the second
-# with one of those files edited, then refused a downgrade, then updated to
-# the third and the fourth, each of which fails and is put back.
-#
-# Through the fourth, a client keeps writing posts: every post Ghost accepts
-# is still there once the site is put back. Then the backup that update took
-# is restored, with its records, content, configuration and images.
+# with one file edited, then refused a downgrade. A failure before startup
+# restores the files; a failure after startup stops for operator recovery.
+# A concurrent writer proves accepted posts survive until the operator chooses
+# to restore the named backup.
 #
 # A checkout: a copy of this checkout, as a git repository, is refused
 # self-update, which is git's and Compose's there. Its backup records the

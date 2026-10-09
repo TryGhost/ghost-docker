@@ -1,4 +1,4 @@
-// Cutting releases of the stack, for the release workflows (plan §2.7).
+// Cutting releases of the stack, for the release workflows (docs/architecture.md#releases-and-compatibility).
 //
 // Only `vX.Y.Z` and `vX.Y.Z-beta.N` are releases, ordered by semver: v1.10.0
 // follows v1.9.0, beta.10 follows beta.2, and a release follows every beta of

@@ -1,17 +1,6 @@
-// Compose has no API: it is a program that talks to the daemon itself. The
-// manager runs the client that is in this image, as a template tag:
-//
-//   await compose(io, { dir, profiles })`up --detach --wait db`
-//
-// which runs `docker-compose --project-directory DIR -f DIR/compose.yml ...`.
-//
-// `--project-directory`, never `-C`, and an explicit `-f`. COMPOSE_FILE is not
-// inherited, because it changes override auto-loading; nor are the other
-// COMPOSE_* settings, which belong to the site's own `.env`, nor anything else
-// of the manager's own environment, which Compose would interpolate over
-// `.env`. The site's compose.override.yml is used when it exists, as plain
-// `docker compose` uses it, and other overrides are opted into with
-// GD_COMPOSE_OVERRIDES (docs/configuration.md).
+// Compose has no API. Invoke its client with explicit project inputs and a clean
+// environment so manager settings cannot override the site's .env.
+// See docs/configuration.md#the-compose-invocation-contract.
 import { existsSync } from 'node:fs';
 import { dirname, isAbsolute, join } from 'node:path';
 import type { Readable } from 'node:stream';
@@ -107,6 +96,11 @@ export function composeFileList(dir: string, overrides = ''): string[] {
         }
     }
     return files;
+}
+
+/** Additional overrides from the ordered file list; only the site's root override is implicit. */
+export function composeOverrides(dir: string, files: readonly string[]): string[] {
+    return files.slice(1).filter((file) => file !== join(dir, COMPOSE_OVERRIDE_FILE));
 }
 
 /**

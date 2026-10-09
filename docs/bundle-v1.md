@@ -1,43 +1,19 @@
 # Migration bundle v1 — encoding contract
 
 Ghost-CLI exports a migration bundle; ghost-docker imports it. This document
-fixes the parts of the format that the importer depends on. The exporter is
-`ghost migrate-export`, released in Ghost-CLI 1.33.0; its
-[`docs/migration-bundle.md`](https://github.com/TryGhost/Ghost-CLI/blob/v1.33.0/docs/migration-bundle.md)
-describes what a bundle contains, and this document is kept in step with it.
+owns its format and importer requirements. Use Ghost-CLI **1.33.3 or later**;
+see the exporter's [migration bundle documentation](https://github.com/TryGhost/Ghost-CLI/blob/v1.33.3/docs/migration-bundle.md)
+and [operator import steps](install.md#importing-a-ghost-cli-site).
 
-**The export command is in beta and bundle v1 is not frozen.** There is no
-draft-format compatibility path: a bundle that does not meet this contract is
-rejected with an actionable error, not silently adapted. Exporter, importer,
-documentation and fixtures change together, and only then is v1 frozen.
+The strict schema in [`manager/src/bundle/manifest.ts`](../manager/src/bundle/manifest.ts)
+depends only on zod so the exporter can share it; importer policy stays outside
+it. Bundle v1 is not frozen: exporter, importer, documentation and fixtures
+change together, without draft-format adapters.
 
-Steps referenced below are defined in
-[the implementation plan](ghost-cli-replacement.md); each lands as its own
-pull request.
-
-Status of the work:
-
-- This document and the importer-side contract: **S1**, implemented.
-- Exporter implementation, fixtures and cutover support: **S3**, released in
-  Ghost-CLI 1.33.0.
-- Alignment of this document and its fixtures with the released exporter,
-  including the `mysql-data` kind: **S5a**, implemented.
-- Importer for local `mysql-dump` and `mysql-data` bundles: **S5b**,
-  implemented as `./ghost-docker install --import BUNDLE`. The manifest schema
-  is `manager/src/bundle/manifest.ts`, a zod schema that depends on nothing
-  else so that the exporter can share it.
-- Moving a local site: **S5c**, documented rather than automated ("Moving a
-  site to Docker" in `docs/install.md`): `ghost stop`, `ghost migrate-export`,
-  then `install --import` on the source's port.
-- **S5e** (production import and cutover): not yet implemented. A `portable`
-  bundle's site and content are imported by the manager; its content JSON and
-  members CSV are imported through Ghost Admin (plan §2.4).
-- Updating existing ghost-docker installations from the pre-S1 layout: **S6b**.
-
-The importer's target is `ghost.env`. Replacing it with a mounted Ghost JSON
-config file was evaluated and rejected; see §2.1 of
-[the plan](ghost-cli-replacement.md). The serialization rules below therefore
-stand as written.
+Local `mysql-dump`, `mysql-data` and `portable` bundles are supported. For a
+portable bundle the manager installs the site and content; JSON and members CSV
+are imported through Ghost Admin. Production import remains [S5e roadmap
+work](ghost-cli-replacement.md#s5e--production-import-and-cutover).
 
 ## Bundle kinds
 
@@ -113,8 +89,6 @@ Portable `database` example (filenames can vary; always read the manifest):
 ```
 
 `kind` appears only at the top level and the version only at `ghost.version`.
-There are no `database.kind`, `ghostVersion`, or `sourceEnvironment` aliases;
-a manifest carrying one is rejected.
 Matching exporter fixtures are in `tests/fixtures/migration-bundle-v1/` and
 Ghost-CLI's `test/fixtures/migration-bundle-v1/`.
 
@@ -264,7 +238,7 @@ does guarantee is narrower and worth having: a bundle cannot write outside the
 site directory, and its SQL runs as the site's own database user, so it can
 touch nothing but that site's database.
 
-## Source consistency and cutover (S3)
+## Source consistency and cutover
 
 Ghost-CLI's `ghost migrate-export --leave-stopped` deliberately leaves the source
 stopped after successful export and attempts to stop it after export failure.
@@ -312,22 +286,9 @@ integrations; reconnect/reconcile Stripe using a supported importer.
 relationships without these losses; external services and storage still need
 separate configuration.
 
-See the exporter's [fidelity and recovery documentation](https://github.com/TryGhost/Ghost-CLI/blob/v1.33.0/docs/migration-bundle.md).
-S3 verifies schema, source lifecycle, private output, system-tar extraction,
-real Compose value transport, and a `mysql-data` load into a MySQL schema
-created by the Ghost image. The manager places a `portable` bundle's content
-and leaves its content JSON and members CSV to Ghost Admin, so their fidelity
-is that of Ghost Admin's own import. S3 does not implement
-the Docker importer.
+See the exporter's [fidelity and recovery documentation](https://github.com/TryGhost/Ghost-CLI/blob/v1.33.3/docs/migration-bundle.md).
+The manager places a portable bundle's content and leaves its content JSON and
+members CSV to Ghost Admin; their fidelity is that of Ghost Admin's own import.
 
-## Remaining S5 work
-
-Local `mysql-dump` and `mysql-data` bundles import into a fresh site
-directory (S5b), and moving a local site is documented as stop, export,
-import (S5c). Still to come: S5e adds production import and the documented
-cutover. See §2.4 and S5 of
-[the plan](ghost-cli-replacement.md).
-
-Keep the final source stopped and intact until the destination is accepted;
-restarting it permits writes that invalidate the final snapshot. Real production
-cutover must prevent writes before the final MySQL export.
+Keep the final source stopped and intact until the destination is accepted.
+Restarting it permits writes that invalidate the final snapshot.

@@ -6,13 +6,12 @@
 // with (`docker compose config`), and what is actually running is what the
 // daemon says of the project's containers. Commands that change a site, or
 // record it, ask here rather than read `.env` and guess.
-import { basename, isAbsolute, relative } from 'node:path';
+import { isAbsolute, relative } from 'node:path';
 import { composeConfig, composeFileList, type ComposeInputs } from './compose.ts';
 import { inspectImage, listContainers } from './docker/client.ts';
 import { CliError } from './errors.ts';
 import type { Io } from './io.ts';
 import { PROJECT_LABEL, refuseForeignProject, WORKING_DIR_LABEL } from './project.ts';
-import { COMPOSE_OVERRIDE_FILE } from './site.ts';
 
 /** The label Compose gives every container with the service it is of. */
 const SERVICE_LABEL = 'com.docker.compose.service';
@@ -52,8 +51,6 @@ export interface ResolvedSite {
     readonly project: string;
     /** Every Compose file, in the order Compose merges them. */
     readonly files: readonly string[];
-    /** The overrides GD_COMPOSE_OVERRIDES adds, beyond compose.yml and compose.override.yml. */
-    readonly overrides: readonly string[];
     /** The services the site's profiles select. */
     readonly services: Readonly<Record<string, ResolvedService>>;
 }
@@ -106,11 +103,6 @@ export async function resolveConfig(
         dir,
         project: project.name,
         files,
-        // Past compose.yml and, second when there is one, compose.override.yml.
-        overrides: files.filter(
-            (file, index) =>
-                index > 0 && !(index === 1 && basename(file) === COMPOSE_OVERRIDE_FILE),
-        ),
         services,
     };
     return site;
