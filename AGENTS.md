@@ -66,6 +66,15 @@ delivers it. `docs/install.md` describes what exists.
 - `manager/Dockerfile` builds from the repository root and also carries the
   stack's files under `/opt/ghost-docker/stack` (the payload `install` writes in
   image mode) and the launcher under `/opt/ghost-docker/launcher`.
+- `src/project.ts` is a site's Compose project name, chosen once by install
+  (production: the domain's; local: the directory's and a random
+  adjective-animal pair no project on the daemon has), and who owns a project:
+  a command that changes a site first refuses one whose containers another
+  directory made (`com.docker.compose.project.working_dir`).
+  `src/resolved.ts` is the site as Compose resolves it from every file it
+  runs with (project name, files, overrides, each service's image, mounts and
+  networks) and as the daemon runs it (each container's image and image ID).
+  Backup, restore and check read the site from it, not from `.env`.
 - `src/env.ts` is the one dotenv encoder and parser; nothing else reads or
   writes `.env` or `ghost.env`. `src/fs.ts` writes atomically. `src/site.ts`
   holds file names, modes and profiles; `src/config.ts` validation;

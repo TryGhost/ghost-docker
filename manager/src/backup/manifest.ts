@@ -52,9 +52,26 @@ export const backupManifestSchema = z.strictObject({
         /** In a checkout, the commit the site ran; a restore needs the same one. */
         commit: nullable,
         profiles: z.array(z.string().min(1)),
+        /** The overrides GD_COMPOSE_OVERRIDES added, relative to the site; the backup holds them. */
+        overrides: z.array(inside).default([]),
     }),
-    /** Each service the site ran, by the exact image Compose resolved for it. */
+    /** Each service the site's configuration selects, by the image Compose resolved for it. */
     images: z.record(z.string().min(1), z.string().min(1)),
+    /**
+     * Each service that was running, by the image it ran: the reference it was
+     * created from, the image's ID and its registry digests. It differs from
+     * `images` when the configuration was changed and not yet applied.
+     */
+    running: z
+        .record(
+            z.string().min(1),
+            z.strictObject({
+                image: z.string().min(1),
+                id: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+                digests: z.array(z.string().min(1)),
+            }),
+        )
+        .default({}),
     databases: z
         .array(
             z.strictObject({

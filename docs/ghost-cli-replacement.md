@@ -100,7 +100,7 @@ Example generated Compose settings (credentials omitted):
 ```dotenv
 # Local
 COMPOSE_PROFILES=local
-COMPOSE_PROJECT_NAME=ghost-local-example
+COMPOSE_PROJECT_NAME=ghost-local-example-secondary-roadrunner
 PROJECT_DIR=/absolute/path/to/site
 NODE_ENV=development
 URL=http://localhost:2368
@@ -133,6 +133,10 @@ Requirements:
   addressing when S13 is introduced.
 - Persist the project name independently of the directory name. Moving a site still
   requires updating and validating `PROJECT_DIR` and bind mounts.
+- Choose a local project name no project on the daemon has (the directory's
+  name and a random adjective-animal pair), and refuse, before any change, a
+  project whose containers another directory made: Compose addresses a
+  project by name alone.
 - Use `restart: ${RESTART_POLICY:-unless-stopped}` only for long-running services.
   Setup, migration, and deployment jobs retain `restart: "no"`.
 - Initially `URL` may be required because every supported mode contains Ghost. Do

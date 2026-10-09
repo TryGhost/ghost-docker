@@ -10,7 +10,8 @@
 //      which Ghost version it runs. `Importing` (import.ts) is everything an
 //      import adds, called at its points below.
 //   3. Preflight (doctor's checks), ports Docker knows are taken, the exact
-//      Ghost image. Still nothing has been changed.
+//      Ghost image, and a project name no other directory's containers have
+//      (project.ts). Still nothing has been changed.
 //   4. Writing: payload and launcher (image mode), `.env`, `ghost.env`, data
 //      directories, an import's content and database, routes, metadata. From
 //      here a failure removes what this installation created (undo.ts), so
@@ -23,7 +24,7 @@
 // names it.
 import { randomBytes } from 'node:crypto';
 import { existsSync, readdirSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { join } from 'node:path';
 import { ACME_EMAIL, isHostname, SITE_FILE, writeRoutes } from '../caddy.ts';
 import { ALL_PROFILES, compose, upAndWait } from '../compose.ts';
 import { z } from 'zod';
@@ -57,6 +58,7 @@ import {
     type SiteMode,
 } from '../site.ts';
 import { takenPorts } from '../ports.ts';
+import { knownProjects, projectName, refuseForeignProject } from '../project.ts';
 import { Created } from '../undo.ts';
 import { verifySite } from '../verify.ts';
 import {
@@ -249,26 +251,6 @@ async function plan(flags: Flags, prompt: Prompter | null): Promise<Plan> {
 
 // --- Identity -----------------------------------------------------------------
 
-/** A lowercase, dash-separated token that Compose accepts in a project name. */
-export const slug = (value: string): string =>
-    value
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, '-')
-        .replace(/^-+|-+$/g, '');
-
-/**
- * The site's stable identity, and the suffix of every service's network
- * alias. Derived once and kept in `.env`, so it does not change when the
- * directory is renamed. Local names come from the directory so two local
- * sites on one host do not collide.
- */
-export function projectName(mode: SiteMode, domain: string, dir: string): string {
-    if (mode === 'production') {
-        return `ghost-${slug(domain)}`;
-    }
-    return `ghost-local-${slug(basename(dir)) || 'site'}`;
-}
-
 /** 192 bits, hex: nothing in it a dotenv file, a shell or MySQL treats specially. */
 export const secret = (): string => randomBytes(24).toString('hex');
 
@@ -430,6 +412,10 @@ async function prepare(
         ? null
         : await io.busy('Resolving the manager image', () => managerPin(io, context));
 
+    const project = projectName(intent.mode, intent.domain, dir, await knownProjects(io));
+    // A production name is the domain's: another directory may already have it.
+    await refuseForeignProject(io, project, dir);
+
     const production = intent.mode === 'production';
     return {
         ...target,
@@ -439,7 +425,7 @@ async function prepare(
         mailpitPort,
         ghost,
         pin,
-        project: projectName(intent.mode, intent.domain, dir),
+        project,
         profiles: [intent.mode, ...intent.services].join(','),
         production,
         url: production ? `https://${intent.domain}` : `http://localhost:${port}`,

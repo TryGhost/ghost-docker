@@ -6,8 +6,13 @@
 //   database/<name>.sql    a mysqldump of each of the site's databases, as its own user
 //   content.tar.gz         the content directory
 //   site/...               .env, ghost.env, the metadata, the Caddy files, the
-//                          Compose override and, in image mode, the stack files
+//                          Compose overrides and, in image mode, the stack files
 //                          and the launcher the site ran
+//
+// What it records of the site is what Compose resolves from every file the
+// site runs with, and what the daemon runs (resolved.ts): the data mounts an
+// override may have moved, the overrides GD_COMPOSE_OVERRIDES adds, and the
+// exact image each running service runs, beside the one configured.
 //
 // It is written as backups/.<id>.partial and renamed into place only once it
 // has been checked: every dump loaded into a scratch MySQL, and the archive
@@ -37,7 +42,7 @@ import {
     rmSync,
     statSync,
 } from 'node:fs';
-import { join, relative } from 'node:path';
+import { join, normalize, relative } from 'node:path';
 import * as tar from 'tar';
 import {
     BACKUP_FORMAT,
@@ -50,14 +55,7 @@ import {
     SITE_FILES_DIR,
     type BackupManifest,
 } from './backup/manifest.ts';
-import {
-    compose,
-    composeConfig,
-    composeError,
-    composePs,
-    composeUp,
-    READY_SECONDS,
-} from './compose.ts';
+import { compose, composeError, composePs, composeUp, READY_SECONDS } from './compose.ts';
 import { runOnce } from './docker/client.ts';
 import { CliError } from './errors.ts';
 import { atomicWrite, copyPresent, PRIVATE } from './fs.ts';
@@ -65,6 +63,14 @@ import { DATABASE_MS, tableCount, withSiteDatabase } from './import/database.ts'
 import type { Io } from './io.ts';
 import { isoSeconds, siteFiles, type Metadata } from './meta.ts';
 import { ok, printChecks } from './report.ts';
+import {
+    imageDrift,
+    insideSite,
+    observeSite,
+    resolveSite,
+    runningImages,
+    type ResolvedSite,
+} from './resolved.ts';
 import { BACKUPS_DIR, DATA_DIRS, hasProfile, splitProfiles, type SiteFacts } from './site.ts';
 
 /** mysqldump's last line, which a dump cut short never has. */
@@ -130,20 +136,52 @@ export function siteDatabases(site: SiteFacts): string[] {
     return names;
 }
 
-/** Install never moves the data directories; a site whose operator has is refused, not half backed up. */
-export function refuseMovedData(site: SiteFacts): void {
-    for (const [key, fallback] of [
-        ['UPLOAD_LOCATION', './data/ghost'],
-        ['MYSQL_DATA_LOCATION', './data/mysql'],
+/**
+ * The data directories as Compose mounts them, which `.env` and any override
+ * decide: install never moves them, and a site whose operator has, or that
+ * mounts anything else inside them, is refused rather than half backed up.
+ */
+export function refuseMovedData(site: SiteFacts, resolved: ResolvedSite): void {
+    const content = site.settings.get('GHOST_CONTENT_PATH') || '/home/ghost/content';
+    for (const [service, data, target] of [
+        ['ghost', DATA_DIRS[0], content],
+        ['db', DATA_DIRS[1], '/var/lib/mysql'],
     ] as const) {
-        const value = site.settings.get(key);
-        if (value && value.replace(/\/+$/, '') !== fallback) {
+        const mounts = resolved.services[service]?.mounts ?? [];
+        const mount = mounts.find((each) => each.target === target);
+        const expected = join(site.dir, data);
+        if (mount === undefined || mount.type !== 'bind' || normalize(mount.source) !== expected) {
             throw new CliError(
-                `.env sets ${key} to ${value}; backup and restore handle the data only at ${fallback}.\n` +
-                    '  Nothing has been changed.',
+                `Compose mounts ${mount === undefined ? 'nothing' : `${mount.source} (${mount.type})`} at ${target} in the ${service} service;\n` +
+                    `  backup and restore handle its data only at ./${data}. Nothing has been changed.`,
+            );
+        }
+        const nested = mounts.find((each) => each.target.startsWith(`${target}/`));
+        if (nested !== undefined) {
+            throw new CliError(
+                `Compose mounts ${nested.source} at ${nested.target}, inside ${target} in the ${service} service;\n` +
+                    `  a backup of ./${data} would not hold it. Nothing has been changed.`,
             );
         }
     }
+}
+
+/**
+ * The overrides GD_COMPOSE_OVERRIDES adds, relative to the site, so a backup
+ * holds them; one outside the site is refused, since a restore could not
+ * bring it back.
+ */
+export function siteOverrides(resolved: ResolvedSite): string[] {
+    return resolved.overrides.map((file) => {
+        const inside = insideSite(resolved.dir, file);
+        if (inside === null) {
+            throw new CliError(
+                `GD_COMPOSE_OVERRIDES names ${file}, which is outside the site; a backup could not hold it.\n` +
+                    '  Move it into the site directory and name it relative to it. Nothing has been changed.',
+            );
+        }
+        return inside;
+    });
 }
 
 /** What the site has that a backup cannot hold, for the manifest and the summary. */
@@ -325,17 +363,15 @@ export async function takeBackup({
     consistent = false,
 }: BackupInput): Promise<string> {
     const dir = site.dir;
-    refuseMovedData(site);
     const databases = siteDatabases(site);
     const profiles = site.settings.get('COMPOSE_PROFILES') ?? '';
 
-    const resolved = await io.busy('Resolving the Compose project', () => composeConfig(io, dir));
-    if (!resolved.ok) {
-        throw new CliError(`Compose cannot resolve the project: ${resolved.reason}`);
-    }
+    const resolved = await io.busy('Resolving the Compose project', () => resolveSite(io, dir));
+    refuseMovedData(site, resolved);
+    const overrides = siteOverrides(resolved);
     const images: Record<string, string> = {};
-    for (const [service, definition] of Object.entries(resolved.project.services)) {
-        if (definition.image) {
+    for (const [service, definition] of Object.entries(resolved.services)) {
+        if (definition.image !== null) {
             images[service] = definition.image;
         }
     }
@@ -377,6 +413,21 @@ export async function takeBackup({
             if (up.exitCode !== 0) {
                 throw new CliError(`the database did not start: ${composeError(up)}`);
             }
+        }
+
+        // What runs, exactly: the backup records it beside what is configured,
+        // and checks the dumps with the MySQL that wrote them.
+        const running = await observeSite(io, resolved);
+        const ran = await runningImages(io, running);
+        const drift = await imageDrift(io, resolved, running);
+        if (drift.length > 0) {
+            printChecks(io, [
+                {
+                    status: 'warn',
+                    label: 'images',
+                    detail: `${drift.join('; ')}. The backup records both; docker compose up -d applies the configuration`,
+                },
+            ]);
         }
 
         io.stdout('\nThe capture\n');
@@ -451,8 +502,16 @@ export async function takeBackup({
         chmodSync(archive, PRIVATE);
 
         io.stdout('\nThe site’s files\n');
-        const copied = copyPresent(dir, siteFiles(metadata), join(partial, SITE_FILES_DIR)).length;
-        ok(io, SITE_FILES_DIR, `${copied} files and directories: configuration, metadata, Caddy`);
+        const copied = copyPresent(
+            dir,
+            [...siteFiles(metadata), ...overrides],
+            join(partial, SITE_FILES_DIR),
+        ).length;
+        ok(
+            io,
+            SITE_FILES_DIR,
+            `${copied} files and directories: configuration, metadata, Caddy${overrides.length > 0 ? `, ${overrides.join(', ')}` : ''}`,
+        );
 
         // Captured: the site runs again before the slower checks.
         await quiesced.resume();
@@ -461,7 +520,7 @@ export async function takeBackup({
         // Checked means the dump loads: into a scratch server, never the site's.
         const check = await io.busy('Loading the dumps into a scratch MySQL to check them', () =>
             runOnce(io.docker, {
-                image: dbImage,
+                image: ran.db?.id ?? dbImage,
                 entrypoint: ['sh', '-c', CHECK, 'check'],
                 cmd: databases,
                 binds: [{ source: partial, target: '/backup', readOnly: true }],
@@ -536,8 +595,10 @@ export async function takeBackup({
                 source: metadata.source,
                 commit: metadata.source === 'checkout' ? metadata.stack.commit : null,
                 profiles: splitProfiles(profiles),
+                overrides,
             },
             images,
+            running: ran,
             databases: manifestDatabases,
             content: { file: CONTENT_ARCHIVE, entries },
             files,

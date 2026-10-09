@@ -42,14 +42,16 @@ export interface Daemon {
     containers?: unknown[];
     /**
      * `docker-compose ...` after the --project-directory and -f options, with
-     * the environment it was given and its standard input: text as given, a
-     * stream as the program would have read it, to its end or to the error
-     * that ended it. Undefined falls through to "unexpected".
+     * the environment it was given, its standard input, and the project
+     * directory. Standard input is text as given, or a stream as the program
+     * would have read it, to its end or to the error that ended it.
+     * Undefined falls through to "unexpected".
      */
     composeRun?: (
         args: string[],
         env: Record<string, string>,
         input?: string,
+        dir?: string,
     ) => ProgramResult | undefined;
     /** `git ...`, as the manager runs it in a checkout; undefined: git is not installed. */
     gitRun?: (args: string[]) => ProgramResult | undefined;
@@ -275,7 +277,12 @@ export function harness(): Harness {
                             JSON.stringify(Object.fromEntries(names.map((name) => [name, {}]))),
                         );
                     }
-                    const answer = state.daemon.composeRun?.(rest, options.env ?? {}, input);
+                    const answer = state.daemon.composeRun?.(
+                        rest,
+                        options.env ?? {},
+                        input,
+                        args[1],
+                    );
                     if (answer) {
                         return answer;
                     }

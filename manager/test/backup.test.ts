@@ -31,7 +31,7 @@ import {
     type Harness,
     type ProgramResult,
 } from './helpers.ts';
-import { imageApi, imageStack, INDEX, REFERENCE, rootContainer } from './site.ts';
+import { imageApi, imageStack, INDEX, REFERENCE, resolvedProject, rootContainer } from './site.ts';
 
 const MANAGER = `sha256:${'2'.repeat(64)}`;
 const IMAGES = {
@@ -65,6 +65,8 @@ let liveTables: (database: string) => number;
 let loaded: Record<string, Record<string, number>>;
 /** Each dump the site's MySQL client was given, by database, as it read it. */
 let loads: { database: string; sql: string }[];
+/** Mounts an override adds, by service. */
+let mounts: Record<string, { type: string; source: string; target: string }[]>;
 
 const readSite = (file: string, dir = h.dir) => readFileSync(join(dir, file), 'utf8');
 const backups = () =>
@@ -99,6 +101,7 @@ beforeEach(async () => {
     ghostHealth = 'healthy';
     loaded = {};
     loads = [];
+    mounts = {};
     dump = () => ok(DUMP);
     scratch = () => ({ status: 0, stdout: scratchOutput() });
     liveTables = (database) => Object.keys(ROWS[database] ?? {}).length;
@@ -125,20 +128,11 @@ beforeEach(async () => {
         }
         return undefined;
     };
-    h.daemon.composeRun = (args, _env, input) => {
+    h.daemon.composeRun = (args, _env, input, dir = h.dir) => {
         compose.push(args);
         switch (args[0]) {
             case 'config':
-                return ok(
-                    JSON.stringify({
-                        services: Object.fromEntries(
-                            Object.entries(IMAGES).map(([service, image]) => [
-                                service,
-                                { image, environment: {} },
-                            ]),
-                        ),
-                    }),
-                );
+                return ok(resolvedProject(dir, IMAGES, mounts));
             case 'up': {
                 // What `up --wait` starts stays running, healthy or not.
                 const named = args
@@ -354,7 +348,119 @@ describe('backup', () => {
         appendFileSync(join(h.dir, '.env'), 'UPLOAD_LOCATION=/srv/content\n');
         const result = await h.run('backup');
         assert.equal(result.code, 1);
-        assert.match(result.stderr, /\.env sets UPLOAD_LOCATION to \/srv\/content/);
+        assert.match(
+            result.stderr,
+            /Compose mounts \/srv\/content \(bind\) at \/home\/ghost\/content in the ghost service/,
+        );
+        assert.deepEqual(backups(), []);
+    });
+});
+
+/** The site's project, as install named it. */
+const projectOf = (dir = h.dir) => JSON.parse(readSite('.ghost-docker.json', dir)).site.project;
+const RUNNING_DB = `sha256:${'6'.repeat(64)}`;
+/** A container of the site's project, as Compose labels it. */
+const containerOf = (service: string, extra: Record<string, unknown> = {}, dir = h.dir) => ({
+    Id: `${service}-id`,
+    Names: [`/${projectOf()}-${service}-1`],
+    State: 'running',
+    Image: IMAGES[service as keyof typeof IMAGES],
+    ImageID: INDEX,
+    Labels: {
+        'com.docker.compose.project': projectOf(),
+        'com.docker.compose.project.working_dir': dir,
+        'com.docker.compose.service': service,
+    },
+    ...extra,
+});
+
+describe('backup records what the site runs', () => {
+    test('each running service by its exact image, and the dumps checked with the MySQL that wrote them', async () => {
+        h.daemon.containers = [containerOf('ghost'), containerOf('db', { ImageID: RUNNING_DB })];
+        const images = h.daemon.api!;
+        h.daemon.api = (request) =>
+            request.method === 'GET' && request.path === `/images/${RUNNING_DB}/json`
+                ? json(200, {
+                      Id: RUNNING_DB,
+                      RepoDigests: [IMAGES.db.replace(/:[^:@]+@/, '@')],
+                      Config: { Env: [] },
+                  })
+                : images(request);
+        const result = await h.run('backup');
+        assert.equal(result.code, 0, result.stderr);
+        const read = readBackupManifest(join(h.dir, 'backups', backups()[0]!));
+        const manifest = read.state === 'present' ? read.manifest : null!;
+        assert.deepEqual(manifest.running, {
+            db: { image: IMAGES.db, id: RUNNING_DB, digests: [`mysql@sha256:${'4'.repeat(64)}`] },
+            ghost: { image: IMAGES.ghost, id: INDEX, digests: [] },
+        });
+        assert.equal(containers[0]!.image, RUNNING_DB);
+        // The db's tag-and-digest now names another image than the one running.
+        assert.match(
+            result.stderr,
+            /warning +images +db runs sha256:6{12}, and mysql:8\.0\.44@sha256:4{64} now names sha256:1{12}\./,
+        );
+    });
+
+    test('a service whose configuration names another image is reported, and both are recorded', async () => {
+        h.daemon.containers = [containerOf('ghost', { Image: 'ghost:6.0.0' })];
+        const result = await h.run('backup');
+        assert.equal(result.code, 0, result.stderr);
+        assert.match(
+            result.stderr,
+            /ghost runs ghost:6\.0\.0, and the configuration names ghost@sha256:1{64}/,
+        );
+        assert.match(result.stderr, /docker compose up -d applies the configuration/);
+        const read = readBackupManifest(join(h.dir, 'backups', backups()[0]!));
+        const manifest = read.state === 'present' ? read.manifest : null!;
+        assert.equal(manifest.images.ghost, IMAGES.ghost);
+        assert.equal(manifest.running.ghost!.image, 'ghost:6.0.0');
+    });
+
+    test('a mount an override puts inside the content is refused, not half backed up', async () => {
+        mounts = {
+            ghost: [{ type: 'bind', source: '/srv/images', target: '/home/ghost/content/images' }],
+        };
+        const result = await h.run('backup');
+        assert.equal(result.code, 1);
+        assert.match(
+            result.stderr,
+            /Compose mounts \/srv\/images at \/home\/ghost\/content\/images, inside \/home\/ghost\/content/,
+        );
+        assert.deepEqual(backups(), []);
+    });
+
+    test('the overrides GD_COMPOSE_OVERRIDES adds are in the backup, and recorded', async () => {
+        writeFileSync(join(h.dir, 'compose.ipv6.yml'), 'services: {}\n');
+        h.env.GD_COMPOSE_OVERRIDES = 'compose.ipv6.yml';
+        const root = await backUp();
+        const read = readBackupManifest(root);
+        const manifest = read.state === 'present' ? read.manifest : null!;
+        assert.deepEqual(manifest.site.overrides, ['compose.ipv6.yml']);
+        assert.ok('site/compose.ipv6.yml' in manifest.files);
+    });
+
+    test('an override outside the site is refused', async () => {
+        h.env.GD_COMPOSE_OVERRIDES = '/etc/ghost/compose.extra.yml';
+        const result = await h.run('backup');
+        assert.equal(result.code, 1);
+        assert.match(
+            result.stderr,
+            /GD_COMPOSE_OVERRIDES names \/etc\/ghost\/compose\.extra\.yml, which is outside the site/,
+        );
+        assert.deepEqual(backups(), []);
+    });
+
+    test('a project whose containers another directory made is refused before anything runs', async () => {
+        h.daemon.containers = [containerOf('ghost', {}, '/srv/other')];
+        const result = await h.run('backup');
+        assert.equal(result.code, 1);
+        assert.match(
+            result.stderr,
+            new RegExp(`the Compose project ${projectOf()} belongs to /srv/other`),
+        );
+        assert.deepEqual(composed('exec'), []);
+        assert.deepEqual(composed('up'), []);
         assert.deepEqual(backups(), []);
     });
 });
@@ -597,6 +703,55 @@ describe('restore over the site', () => {
         assert.equal(result.code, 1);
         assert.match(result.stderr, /holds another site .*this backup is of ghost-another-site/);
         assert.deepEqual(compose, []);
+    });
+});
+
+describe('check and the project', () => {
+    test("reports a project another directory's containers belong to, and reads none of them", async () => {
+        h.daemon.containers = [containerOf('ghost', {}, '/srv/other')];
+        const result = await h.run('check');
+        assert.equal(result.code, 1);
+        assert.match(
+            result.stderr,
+            new RegExp(`ERROR +project +the Compose project ${projectOf()} belongs to /srv/other`),
+        );
+        assert.deepEqual(composed('ps'), []);
+    });
+
+    test('warns of a running image the configuration no longer names', async () => {
+        h.daemon.containers = [containerOf('ghost', { Image: 'ghost:6.0.0' })];
+        const result = await h.run('check');
+        assert.match(
+            result.stderr,
+            /warning +images +ghost runs ghost:6\.0\.0, and the configuration names ghost@sha256:1{64}; docker compose up -d applies the configuration/,
+        );
+    });
+});
+
+describe('restore and the overrides', () => {
+    test('is refused when GD_COMPOSE_OVERRIDES is not what the backup was taken with', async () => {
+        writeFileSync(join(h.dir, 'compose.ipv6.yml'), 'services: {}\n');
+        h.env.GD_COMPOSE_OVERRIDES = 'compose.ipv6.yml';
+        const root = await backUp();
+        delete h.env.GD_COMPOSE_OVERRIDES;
+        compose = [];
+        const result = await h.run('restore', '--yes', root);
+        assert.equal(result.code, 1);
+        assert.match(
+            result.stderr,
+            /the backup was taken with GD_COMPOSE_OVERRIDES=compose\.ipv6\.yml, and this restore runs with none/,
+        );
+        assert.deepEqual(composed('down'), []);
+    });
+
+    test('over a site whose project another directory has containers for is refused', async () => {
+        const root = await backUp();
+        h.daemon.containers = [containerOf('ghost', {}, '/srv/other')];
+        compose = [];
+        const result = await h.run('restore', '--yes', root);
+        assert.equal(result.code, 1);
+        assert.match(result.stderr, /belongs to \/srv\/other/);
+        assert.deepEqual(composed('down'), []);
     });
 });
 
