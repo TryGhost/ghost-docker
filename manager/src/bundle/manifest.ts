@@ -19,7 +19,7 @@ export const DATABASE_FILE = 'database.sql';
 /** The content root, also at the root. */
 export const CONTENT_ROOT = 'content/';
 
-const REEXPORT = 'export the site again with Ghost-CLI 1.33.3 or later';
+const REEXPORT = 'export the site again with Ghost-CLI 1.33.4 or later';
 
 /** A field from an unreleased draft of the format, which a v1 manifest never has. */
 const draftField = (instead: string) =>

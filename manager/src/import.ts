@@ -12,6 +12,7 @@ import { basename, join } from 'node:path';
 import { lt } from 'semver';
 import { CONTENT_ROOT, type BundleManifest } from './bundle/manifest.ts';
 import { BundleRefused, removeStaging, stageBundle, type StagedBundle } from './bundle/stage.ts';
+import { isHostname } from './caddy.ts';
 import { ServiceUnreachable } from './clients.ts';
 import {
     ALL_PROFILES,
@@ -29,8 +30,8 @@ import { MINIMUM_IMPORT_VERSION, resolveExactGhost, type ResolvedGhost } from '.
 import { replaceMailTransport, sourceConfig, type CarriedConfig } from './import/config.ts';
 import { checkRows, countOf, loadFile, tableCount, withSiteDatabase } from './import/database.ts';
 import type { Io } from './io.ts';
-import { ok } from './report.ts';
-import { DATA_DIRS, ENV_FILE } from './site.ts';
+import { ok, printChecks } from './report.ts';
+import { DATA_DIRS, ENV_FILE, type SiteMode } from './site.ts';
 import { Created } from './undo.ts';
 
 /** Present from the first change an import makes until it has been verified. */
@@ -45,25 +46,8 @@ export const INCOMPLETE_PROFILE = 'import-incomplete';
 
 // --- What install calls --------------------------------------------------------
 
-/** Why these options cannot be combined with --import in this release, if they cannot. */
-export function importConflict(flags: {
-    domain?: string;
-    adminDomain?: string;
-    email?: string;
-    with: readonly string[];
-}): string | null {
-    for (const [option, value] of [
-        ['--domain', flags.domain],
-        ['--admin-domain', flags.adminDomain],
-        ['--email', flags.email],
-    ] as const) {
-        if (value !== undefined) {
-            return (
-                `${option} cannot be combined with --import: this release imports local sites.\n` +
-                '  Production import and cutover come in a later release (plan step S5e).'
-            );
-        }
-    }
+/** Why these options cannot be combined with --import, if they cannot. */
+export function importConflict(flags: { with: readonly string[] }): string | null {
     // Mailpit only replaces the mail transport; anything else would change
     // what the imported site is.
     const others = flags.with.filter((service) => service !== 'mailpit');
@@ -74,6 +58,55 @@ export function importConflict(flags: {
         );
     }
     return null;
+}
+
+/** Where an imported site is served: its mode, and a production site's domains. */
+export interface ImportedAddress {
+    readonly mode: SiteMode;
+    readonly domain: string;
+    readonly adminDomain: string;
+}
+
+/**
+ * The host a production site is served on, from one of the bundle's URLs.
+ * Caddy serves a site over HTTPS on the default port at a domain's root, so a
+ * URL it cannot serve as it is, which would change the site's address, is
+ * refused; the option names the domain to serve it on instead.
+ */
+export function servedHost(url: string, field: string, option: string): string {
+    const host = hostOf(url);
+    const parsed = host === '' ? null : new URL(url);
+    const why =
+        parsed === null || !isHostname(host)
+            ? 'it has no domain name'
+            : parsed.protocol !== 'https:'
+              ? 'it is plain http, and a production site here is served over HTTPS'
+              : parsed.port !== ''
+                ? `it has a port, ${parsed.port}, and a production site here is served on 443`
+                : parsed.pathname !== '/' || parsed.search !== '' || parsed.hash !== ''
+                  ? `it has a path, ${parsed.pathname}, and a production site here is served at its domain's root`
+                  : parsed.username !== '' || parsed.password !== ''
+                    ? 'it has credentials in it'
+                    : null;
+    if (why === null) {
+        return host;
+    }
+    throw new CliError(
+        `the bundle's ${field} is ${url}, which this production site cannot be served at: ${why}.\n` +
+            (isHostname(host)
+                ? `  Serving it at https://${host} changes its address; to do that, add ${option} ${host}.\n`
+                : `  Name the domain to serve it on with ${option}.\n`) +
+            '  Nothing has been changed.',
+    );
+}
+
+/** A URL's host, lowercased; empty for one that does not parse. */
+function hostOf(url: string): string {
+    try {
+        return new URL(url).hostname;
+    } catch {
+        return '';
+    }
 }
 
 /**
@@ -177,6 +210,64 @@ export class Importing {
     /** An import happens at the source site's version; upgrading is a separate step. */
     resolveGhost(): Promise<ResolvedGhost> {
         return resolveExactGhost(this.io, this.manifest.ghost.version);
+    }
+
+    /**
+     * The bundle says what kind of site it is. A production site is served on
+     * the source's domains unless options name others; a local one takes none.
+     * Served on another domain, it is a copy elsewhere, and the source's admin
+     * domain is not carried to it: only --admin-domain gives it one.
+     */
+    address(flags: {
+        local: boolean;
+        domain?: string;
+        adminDomain?: string;
+        email?: string;
+    }): ImportedAddress {
+        const { sourceInstallType, url, adminUrl } = this.manifest;
+        if (sourceInstallType === 'local') {
+            for (const [option, value] of [
+                ['--domain', flags.domain],
+                ['--admin-domain', flags.adminDomain],
+                ['--email', flags.email],
+            ] as const) {
+                if (value !== undefined) {
+                    throw new UsageError(
+                        `${option} applies to production sites, and this bundle is of a local site,\n` +
+                            '  which is imported as one.',
+                    );
+                }
+            }
+            return { mode: 'local', domain: '', adminDomain: '' };
+        }
+        if (flags.local) {
+            throw new UsageError(
+                `--local cannot be combined with this bundle: it is of a production site (${url}),\n` +
+                    '  which is imported as one, on its domain or the one --domain names.',
+            );
+        }
+        const domain = flags.domain ?? servedHost(url, 'url', '--domain');
+        if (flags.adminDomain !== undefined || !adminUrl) {
+            return { mode: 'production', domain, adminDomain: flags.adminDomain ?? '' };
+        }
+        if (domain !== hostOf(url)) {
+            printChecks(this.io, [
+                {
+                    status: 'warn',
+                    label: 'admin domain',
+                    detail:
+                        `not carried: the source served Ghost Admin at ${adminUrl}, but this site is on\n` +
+                        `${domain}, not the source's domain. Ghost Admin is served at https://${domain}/ghost/;\n` +
+                        'give --admin-domain for a separate one.',
+                },
+            ]);
+            return { mode: 'production', domain, adminDomain: '' };
+        }
+        return {
+            mode: 'production',
+            domain,
+            adminDomain: servedHost(adminUrl, 'adminUrl', '--admin-domain'),
+        };
     }
 
     /** From the first change until the site is verified, the marker records what was created. */
@@ -341,10 +432,13 @@ export async function readBundle(
                     '  `ghost migrate-export` again. Nothing has been changed.',
             );
         }
-        if (manifest.sourceInstallType !== 'local') {
+        // The exporter writes portable bundles of local SQLite sites only.
+        if (manifest.kind === 'portable' && manifest.sourceInstallType !== 'local') {
             throw new CliError(
-                `this bundle is of a ${manifest.sourceInstallType} site (${manifest.url}); this release imports local sites.\n` +
-                    '  Production import and cutover come in a later release (plan step S5e). Nothing has been changed.',
+                `this is a portable bundle of a ${manifest.sourceInstallType} site (${manifest.url}); portable bundles are\n` +
+                    '  imported for local sites only. Move this site through Ghost Admin instead: install\n' +
+                    "  a new site with --domain, then import the source's content export in Settings,\n" +
+                    '  Import/Export and its members CSV in Members, Import. Nothing has been changed.',
             );
         }
         if (

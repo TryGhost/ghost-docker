@@ -148,6 +148,35 @@ jobs:
       - name: Import end to end
         run: tests/e2e/import.sh
 
+  # A real Ghost-CLI production site (MySQL, systemd, nginx on port 80, an
+  # admin domain) moved to Docker on the same server, as docs/install.md says:
+  # a forced failure with nginx still running, its recovery, then the move.
+  # It changes the host, which a runner is for.
+  production-import-linux:
+    name: Production import on Linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: "22"
+
+      # Ghost-CLI installed globally: its systemd service runs it as the
+      # `ghost` user, which cannot reach npx's cache in the runner's home.
+      - name: Ghost-CLI, nginx and MySQL for the source
+        run: |
+          npm install --global ghost-cli@1.33.4
+          sudo apt-get update
+          sudo apt-get install --yes nginx
+          sudo systemctl start nginx mysql
+
+      - name: Production import end to end
+        env:
+          GD_TEST_HOST_CHANGES: "1"
+        run: tests/e2e/production-import.sh
+
   # macOS's system bash is 3.2, which the launcher has to run on. GitHub's
   # macOS runners have no Docker daemon, so the half of the test that runs the
   # real image is skipped, explicitly, here alone; the half that checks the

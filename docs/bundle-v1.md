@@ -1,8 +1,8 @@
 # Migration bundle v1 — encoding contract
 
 Ghost-CLI exports a migration bundle; ghost-docker imports it. This document
-owns its format and importer requirements. Use Ghost-CLI **1.33.3 or later**;
-see the exporter's [migration bundle documentation](https://github.com/TryGhost/Ghost-CLI/blob/v1.33.3/docs/migration-bundle.md)
+owns its format and importer requirements. Use Ghost-CLI **1.33.4 or later**;
+see the exporter's [migration bundle documentation](https://github.com/TryGhost/Ghost-CLI/blob/v1.33.4/docs/migration-bundle.md)
 and [operator import steps](install.md#importing-a-ghost-cli-site).
 
 The strict schema in [`manager/src/bundle/manifest.ts`](../manager/src/bundle/manifest.ts)
@@ -10,10 +10,14 @@ depends only on zod so the exporter can share it; importer policy stays outside
 it. Bundle v1 is not frozen: exporter, importer, documentation and fixtures
 change together, without draft-format adapters.
 
-Local `mysql-dump`, `mysql-data` and `portable` bundles are supported. For a
-portable bundle the manager installs the site and content; JSON and members CSV
-are imported through Ghost Admin. Production import remains [S5e roadmap
-work](ghost-cli-replacement.md#s5e--production-import-and-cutover).
+Local `mysql-dump`, `mysql-data` and `portable` bundles are supported, and
+production `mysql-dump` and `mysql-data` ones. For a portable bundle the manager
+installs the site and content; JSON and members CSV are imported through Ghost
+Admin. A portable bundle of a production site is refused. `sourceInstallType`
+selects the site mode; a production site is served on the hosts of `url` and
+`adminUrl` unless the operator names others (on another domain, `adminUrl` is
+not carried), and a URL with plain `http`, a
+port or a path is refused rather than served at another address.
 
 ## Bundle kinds
 
@@ -286,7 +290,7 @@ integrations; reconnect/reconcile Stripe using a supported importer.
 relationships without these losses; external services and storage still need
 separate configuration.
 
-See the exporter's [fidelity and recovery documentation](https://github.com/TryGhost/Ghost-CLI/blob/v1.33.3/docs/migration-bundle.md).
+See the exporter's [fidelity and recovery documentation](https://github.com/TryGhost/Ghost-CLI/blob/v1.33.4/docs/migration-bundle.md).
 The manager places a portable bundle's content and leaves its content JSON and
 members CSV to Ghost Admin; their fidelity is that of Ghost Admin's own import.
 

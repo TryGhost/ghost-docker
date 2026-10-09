@@ -162,7 +162,7 @@ const options = z
             .min(1, { error: 'needs the path of a migration bundle' })
             .optional()
             .describe(
-                'Import a local Ghost-CLI site from the bundle `ghost migrate-export` made: a directory, .tgz, .tar or .zip.',
+                'Import a Ghost-CLI site from the bundle `ghost migrate-export` made: a directory, .tgz, .tar or .zip.',
             ),
         channel: channelOption(
             'Install the newest release on this channel: stable or beta. The launcher resolves it.',
@@ -225,8 +225,6 @@ async function plan(flags: Flags, prompt: Prompter | null): Promise<Plan> {
         ).toLowerCase();
     }
 
-    const adminDomain = flags.adminDomain ?? '';
-    const email = flags.email ?? '';
     if (mode === 'local') {
         for (const [option, value] of [
             ['--admin-domain', flags.adminDomain],
@@ -236,17 +234,33 @@ async function plan(flags: Flags, prompt: Prompter | null): Promise<Plan> {
                 throw new UsageError(`${option} applies to production sites only`);
             }
         }
-    } else {
-        if (adminDomain !== '' && adminDomain === domain) {
+    }
+    return checked({
+        mode,
+        domain,
+        adminDomain: flags.adminDomain ?? '',
+        email: flags.email ?? '',
+        services: flags.with,
+    });
+}
+
+/** An import's plan: the bundle says what kind of site it is, and options may name its domains. */
+const imported = (importing: Importing, flags: Flags): Plan =>
+    checked({ ...importing.address(flags), email: flags.email ?? '', services: flags.with });
+
+/** What a production site cannot be, however its domains were given. */
+function checked(intent: Plan): Plan {
+    if (intent.mode === 'production') {
+        if (intent.adminDomain !== '' && intent.adminDomain === intent.domain) {
             throw new UsageError('--admin-domain must differ from --domain');
         }
-        if (flags.with.includes('mailpit')) {
+        if (intent.services.includes('mailpit')) {
             throw new UsageError(
                 "--with mailpit is for local sites only: it would catch a production site's real mail",
             );
         }
     }
-    return { mode, domain, adminDomain, email, services: flags.with };
+    return intent;
 }
 
 // --- Identity -----------------------------------------------------------------
@@ -374,15 +388,6 @@ function refuseOccupied(io: Io, context: Context, dir: string): Target {
 
 // --- Before anything is written -----------------------------------------------
 
-/** An import is of a local site, with no optional services but Mailpit (importConflict). */
-const imported = (flags: Flags): Plan => ({
-    mode: 'local',
-    domain: '',
-    adminDomain: '',
-    email: '',
-    services: flags.with,
-});
-
 /** Decides everything about the site, changing nothing. */
 async function prepare(
     target: Target,
@@ -393,7 +398,7 @@ async function prepare(
     const { io, context, dir, clone } = target;
     const release = releaseOf(requested, io.env);
     // Asked only now, so nobody answers questions to be told the directory is taken.
-    const intent = importing === null ? await plan(flags, io.prompt) : imported(flags);
+    const intent = importing === null ? await plan(flags, io.prompt) : imported(importing, flags);
     await preflight(io, context);
     const { port, mailpitPort } = await sitePorts(
         io,
@@ -774,8 +779,12 @@ function printSummary(site: Site, importing: Importing | null) {
         : production
           ? [
                 "Point the domain's DNS at this host; Caddy then obtains a certificate, and",
-                './ghost-docker check reports it. Configure mail (see ghost.env), then open',
-                'Ghost Admin and create the owner account.',
+                './ghost-docker check reports it.',
+                ...(importing === null
+                    ? [
+                          'Configure mail (see ghost.env), then open Ghost Admin and create the owner account.',
+                      ]
+                    : importing.nextSteps),
             ]
           : importing !== null
             ? importing.nextSteps
