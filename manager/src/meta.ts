@@ -1,13 +1,15 @@
 // `.ghost-docker.json`: what an operation needs to know about a site that its
 // configuration does not say. When it was installed, from which stack release
-// and how, the exact Ghost image that was resolved, the files the manager
-// wrote, and which migrations have completed.
+// and how, the exact Ghost image that was resolved, and the files the manager
+// wrote.
 //
 // Machine generated, gitignored, private. The manager is its only reader and
 // writer: it writes atomically, refuses a document without the right
 // schemaVersion, and refuses to read one from a newer schema rather than
-// misreading it. A site without the file is a supported state, "installed
-// before metadata was recorded", not a broken site.
+// misreading it. Every field is required; one nobody knows is null. Formats
+// written by development releases before the first stable one are not read
+// (plan §2.7, "Compatibility"). A site without the file was not made by
+// `install`: commands that need it say so.
 import { join } from 'node:path';
 import { z } from 'zod';
 import { atomicWrite, PRIVATE, readIfExists } from './fs.ts';
@@ -23,7 +25,7 @@ export const metadataSchema = z.strictObject({
     schemaVersion: z.literal(SCHEMA_VERSION),
     installedAt: z.iso.datetime(),
     /** When `self-update` last completed; null until it has. */
-    updatedAt: z.iso.datetime().nullable().default(null),
+    updatedAt: z.iso.datetime().nullable(),
     mode: z.enum(SITE_MODES),
     channel: z.enum(['stable', 'beta', 'edge']).nullable(),
     // `image`: the payload was written from the manager image. `checkout`: the
@@ -38,7 +40,7 @@ export const metadataSchema = z.strictObject({
          * What the site ran before its last update: the release and manager
          * image an update recovers to. Null until the first update.
          */
-        previous: z.strictObject({ version: nullable, image: nullable }).nullable().default(null),
+        previous: z.strictObject({ version: nullable, image: nullable }).nullable(),
     }),
     site: z.strictObject({
         project: z.string().min(1),
@@ -60,12 +62,9 @@ export const metadataSchema = z.strictObject({
      * never silently replaces an edited one (plan §2.7). Empty in clone mode.
      */
     payload: z.record(z.string(), z.string().regex(/^[0-9a-f]{64}$/)),
-    migrations: z.array(z.string().min(1)),
 });
 
 export type Metadata = z.infer<typeof metadataSchema>;
-/** A document to write: fields with defaults may be left out. */
-export type MetadataInput = z.input<typeof metadataSchema>;
 
 /** A moment as metadata, locks and backups record it: ISO 8601 to the second. */
 export const isoSeconds = (date = new Date()): string =>
@@ -136,14 +135,16 @@ export function readMetadata(dir: string): MetadataRead {
         const where = parsed.error.issues.map((issue) => issue.path.join('.') || '(root)');
         return {
             state: 'invalid',
-            reason: `${META_FILE} does not match its schema (${[...new Set(where)].join(', ')})`,
+            reason:
+                `${META_FILE} does not match its schema (${[...new Set(where)].join(', ')}). ` +
+                'It is damaged, or was written by a development release whose format is no longer read',
         };
     }
     return { state: 'present', metadata: parsed.data };
 }
 
 /** Validated before it is written, so a bad document never replaces a good one. */
-export function writeMetadata(dir: string, metadata: MetadataInput): void {
+export function writeMetadata(dir: string, metadata: Metadata): void {
     const valid = metadataSchema.parse(metadata);
     atomicWrite(metaPath(dir), `${JSON.stringify(sortKeys(valid), null, 2)}\n`, PRIVATE);
 }
@@ -166,7 +167,9 @@ function sortKeys(value: unknown): unknown {
 /** For a person, including for a site with no metadata at all. */
 export function describeMetadata(read: MetadataRead): string[] {
     if (read.state === 'absent') {
-        return ['installation metadata: none (installed before metadata was recorded)'];
+        return [
+            `installation metadata: none (no ${META_FILE}: ./ghost-docker install did not make this site)`,
+        ];
     }
     if (read.state === 'invalid') {
         return [`installation metadata: unreadable: ${read.reason}`];
@@ -189,6 +192,5 @@ export function describeMetadata(read: MetadataRead): string[] {
         `ghost          ${m.ghost.version} (${m.ghost.image}:${m.ghost.tag})`,
         `ghost image    ${m.ghost.image}@${m.ghost.digest}`,
         `profiles       ${m.profiles.join(',')}`,
-        `migrations     ${m.migrations.length > 0 ? m.migrations.join(',') : 'none'}`,
     ];
 }

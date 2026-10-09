@@ -671,6 +671,7 @@ function writeSiteMetadata(site: Site, created: Created) {
     writeMetadata(dir, {
         schemaVersion: SCHEMA_VERSION,
         installedAt: isoSeconds(),
+        updatedAt: null,
         mode: intent.mode,
         channel: clone ? null : channel,
         source: clone ? 'checkout' : 'image',
@@ -695,7 +696,6 @@ function writeSiteMetadata(site: Site, created: Created) {
         },
         profiles: site.profiles.split(','),
         payload: created.checksums,
-        migrations: [],
     });
     ok(io, META_FILE, 'installation metadata');
 }

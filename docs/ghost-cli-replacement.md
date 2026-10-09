@@ -231,10 +231,12 @@ never their values. Add file-based credentials later only for supported Ghost im
 last update time, mode, release channel, how the stack was installed (`image` or
 `checkout`), the installed stack version and the manager image the site's launcher
 is pinned to, and the ones before the last update, project identity, the resolved
-Ghost image, a checksum of every file written from the image (§2.7), and completed
-migrations. It records no git commit: a checkout's commit is git's to know, and a
-backup records the one checked out when it is taken (§2.5). An installation that
-predates metadata must be supported explicitly.
+Ghost image, and a checksum of every file written from the image (§2.7). Every
+field is required, `null` when it is not known. It records no git commit: a
+checkout's commit is git's to know, and a backup records the one checked out when
+it is taken (§2.5). A site without the file was not made by `install`: commands
+that need it refuse and say so, and `info` reports it. Installations of the layout
+on `main`, which has no metadata, are S6b's to migrate.
 
 Backup, restore, Ghost upgrade and stack update take a lock file (`.ghost-docker.lock`) in the site
 directory for the length of the operation, so two of them cannot run on one site
@@ -686,6 +688,27 @@ from inside the checkout (`curl -fsSL https://docker.ghost.org/install.sh | bash
 change. That is S6b's migration of the released layout on `main`, which has no
 metadata; it is not clone mode, whose sites record `source: checkout` and are
 refused.
+
+#### Compatibility
+
+Until the first stable release, everything `next-docker` has made is a
+development format: `.ghost-docker.json`, the backup manifest, and the contract
+between the launcher and the manager (the `GD_*` environment, §2.10) may change
+in any release, and the manager reads only the current shape. A document in an
+earlier shape is refused with a sentence naming its fields, and saying that it
+is damaged or from a development release; nothing is read with guessed defaults,
+and no migration is written to carry development installations or backups
+forward. Their operators reinstall, or import.
+
+The first stable release is the baseline. It records, in this section, the
+versions it supports: metadata `schemaVersion`, backup `format`/`version`, the
+launcher contract, and bundle v1 (which already has its own, §2.4). From then on
+a change to any of them is backward compatible, or comes with a new version and
+a migration or a reader for the old one, and a site's pinned launcher must
+still be able to start the newer managers `self-update` runs.
+
+None of this touches the layout on `main`, which is released: S6b's migration of
+its installations stays required.
 
 ### 2.8 The launcher and its commands
 
@@ -1524,9 +1547,10 @@ while building it:
   until the operator removes it.
 - **Validation** requires Compose to resolve the project, which plain
   `config validate` only warns about.
-- **Metadata** gained `updatedAt` and `stack.previous`, defaulting to `null`
-  so files written before them still read; `stack.commit` was removed
-  (PLA-525). `schemaVersion` stays 1.
+- **Metadata** gained `updatedAt` and `stack.previous`, required and `null`
+  until the first update; `stack.commit` and the unused `migrations` were
+  removed (PLA-525, PLA-526). `schemaVersion` stays 1 until the first stable
+  release fixes it (§2.7, "Compatibility").
 - **Backup-backed recovery** (PLA-512, ahead of S6b): `self-update` takes a
   backup after its snapshot. A failure once the services changed stops them,
   sets the data aside in `.ghost-docker-update/data/`, loads the backup's
@@ -1535,7 +1559,8 @@ while building it:
   A site whose `.env` moves its data is refused, as `backup` refuses it.
 
 **S6b — Legacy-layout migration and transactional updates.** Deps: S4, S6a. The
-release migration scripts (run in order, recorded in metadata), migration
+release migration scripts (run in order, recorded in metadata, in a field this
+step adds with the first migration that uses it), migration
 `0001-compose-profiles`, the way in for installations that have no launcher, and
 backup-backed recovery (§2.5). Gates
 merging `next-docker` into `main`.
@@ -1570,8 +1595,9 @@ while building it:
   `backup --consistent`, and the backup `self-update` takes, stop Ghost and
   ActivityPub for the capture (dumps, content, site files) and start them
   again, not recreated, before the scratch check; they end as they began on
-  success and failure. The manifest records `consistency` (absent means
-  live), so the backup version stays 1. `tests/e2e/backup.sh` seeds
+  success and failure. The manifest records `consistency`, as it records
+  `site.overrides` and `running`: required, with no default for a manifest
+  without them (§2.7, "Compatibility"). The backup version stays 1. `tests/e2e/backup.sh` seeds
   ActivityPub records, changes them after the backup, and checks their exact
   values after both restores.
 - **One dump per database**, `database/<name>.sql`, as the site's user:
@@ -1700,6 +1726,9 @@ Consolidate CI and qualify the actual minimum supported tools and image versions
 Run fresh local/production install, optional-service variants, CLI migration,
 legacy stack update, Ghost upgrade/recovery, supervisor/Admin, and restore scenarios.
 Include Linux runtime tests and macOS-compatible shell/configuration checks.
+Record the compatibility baseline (§2.7, "Compatibility"): the exact metadata
+schema, backup format, launcher contract and bundle versions the stable release
+supports, and the obligations that hold for them from then on.
 
 README/help include quick starts, prerequisites, version/compatibility policy,
 backup/restore, migration losses and cutover, custom proxy configuration, diagnostics,

@@ -102,6 +102,11 @@ delivers it. `docs/install.md` describes what exists.
   beside `<file>.new`), validate, pull, `up --wait`, verify, and on failure
   put back and report restored or needs-the-operator. It refuses a clone,
   whose update is git's and Compose's. `src/lock.ts` is the site lock (§2.2).
+- Until the first stable release, `.ghost-docker.json`, the backup manifest and
+  the launcher's `GD_*` contract are development formats (plan §2.7,
+  "Compatibility"): change them directly, keep the schemas strict, and add no
+  defaults, adapters or migrations for earlier shapes. The layout on `main` is
+  released, and S6b's migration of it is not covered by this.
 - `src/backup.ts` takes a backup (§2.5): a mysqldump of each of the site's
   databases as its own user, the content as a tarball, the site's files, and
   `backup/manifest.ts` (images, row counts, checksums), written as

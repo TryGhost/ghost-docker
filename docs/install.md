@@ -607,7 +607,9 @@ runs with, and what the daemon runs, not what `.env` alone says:
 In order:
 
 1. **Refusals.** The backup is read whole: its manifest, every file against
-   its checksum, the archive listed. A clone
+   its checksum, the archive listed. A manifest that does not match its schema
+   is refused, naming its fields: it is damaged, or was made by a development
+   release before the first stable one, whose formats are not read. A clone
    at another commit than the backup records, another site's directory, a directory
    with data in it, another operation holding the lock, and a restore that
    did not finish are refused. In a new directory, containers of the same

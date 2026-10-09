@@ -512,7 +512,6 @@ describe('a checkout', () => {
             ghost: { image: 'ghost', tag: '6-next-alpine', version: '6.67.0', digest: INDEX },
             profiles: ['local'],
             payload: {},
-            migrations: [],
         });
         gitCalls = [];
         h.daemon.gitRun = (args) => {

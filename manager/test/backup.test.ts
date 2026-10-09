@@ -1041,6 +1041,21 @@ describe('the pieces', () => {
         );
     });
 
+    test('a manifest in a development release’s earlier shape is refused, saying so', async () => {
+        const root = await backUp();
+        const manifest = JSON.parse(readFileSync(join(root, 'manifest.json'), 'utf8'));
+        delete manifest.consistency;
+        delete manifest.site.overrides;
+        delete manifest.running;
+        writeFileSync(join(root, 'manifest.json'), JSON.stringify(manifest));
+        const read = readBackupManifest(root);
+        assert.equal(read.state, 'refused');
+        assert.match(
+            read.state === 'refused' ? read.reason : '',
+            /does not match its schema \(consistency, site\.overrides, running\)\. It is damaged, or was made by a development release/,
+        );
+    });
+
     test('a manifest from a newer ghost-docker is refused, naming it', () => {
         const dir = mkdtempSync(join(tmpdir(), 'gd-manifest-'));
         writeFileSync(

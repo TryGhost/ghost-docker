@@ -227,8 +227,8 @@ contract.
 time, mode, release channel, how the stack was installed (from the image or a
 clone), installed stack version/ref and manager image and the ones
 before the last update, project identity,
-resolved Ghost image and digest, selected profiles, checksums of the files the
-manager wrote, and completed migrations. Its schema
+resolved Ghost image and digest, selected profiles, and checksums of the files the
+manager wrote. Its schema
 is specified in §2.2 of [the plan](ghost-cli-replacement.md). It is gitignored,
 mode `0600`, and machine generated — do not hand-edit it. Operations that
 change a running site hold `.ghost-docker.lock` while they run (`self-update`,
@@ -263,8 +263,7 @@ rewrites `site.dir` (and `PROJECT_DIR` in `.env`) to that directory.
     "version": "6.62.0", "digest": "sha256:…"
   },
   "profiles": ["production"],
-  "payload": { "compose.yml": "<sha256>", "caddy/Caddyfile": "<sha256>", "ghost-docker": "<sha256>" },
-  "migrations": []
+  "payload": { "compose.yml": "<sha256>", "caddy/Caddyfile": "<sha256>", "ghost-docker": "<sha256>" }
 }
 ```
 
@@ -281,18 +280,22 @@ update recovers to) and `updatedAt`; both are `null` until the first update.
 `channel` is the channel `self-update` follows by default. `self-update` does not
 update a clone: that is git's and Compose's ([install.md](install.md#updating-a-clone)).
 
-A field that was not supplied is `null` rather than an empty string, so "not known" and "deliberately empty" stay distinguishable. The digest is the
+Every field is required. A field that was not supplied is `null` rather than an
+empty string, so "not known" and "deliberately empty" stay distinguishable. The digest is the
 immutable image identity, recorded so the exact image can be found again during
 recovery even after a tag moves.
 
 The manager is the reader and writer. It writes atomically, refuses a
 document without the right `schemaVersion`, and refuses to *read* one written by
-a newer schema rather than misinterpreting it.
+a newer schema rather than misinterpreting it. A document that does not match
+the schema is refused, naming its fields: it is damaged, or was written by a
+development release. Until the first stable release, this format may change
+in any release, and earlier shapes are not read; the first stable release is
+the compatibility baseline (plan §2.7, "Compatibility").
 
-An installation that predates this file is supported explicitly: readers must
-treat a missing file as "unknown,
-pre-metadata install", not as a broken site. `./ghost-docker info` prints that
-state in words.
+A directory without the file was not made by `./ghost-docker install`.
+`./ghost-docker info` says so, and commands that need the metadata refuse,
+changing nothing.
 
 ## The Compose invocation contract
 
