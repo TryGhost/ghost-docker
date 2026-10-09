@@ -37,7 +37,7 @@ const release = (version: string) =>
 const readSite = (file: string) => readFileSync(join(h.dir, file), 'utf8');
 const metadata = () => JSON.parse(readSite('.ghost-docker.json'));
 const pinnedImage = () => /^readonly GD_PINNED_IMAGE="(.*)"$/m.exec(readSite('ghost-docker'))?.[1];
-const update = (...args: string[]) => h.run('update', ...args);
+const update = (...args: string[]) => h.run('self-update', ...args);
 const composed = (command: string) => compose.filter((args) => args[0] === command).length;
 
 /** Every file in the site, with its content, to compare before and after. */
@@ -280,7 +280,7 @@ describe('refusals that change nothing', () => {
             result.stderr,
             /1\. Upgrade Ghost to 6\.0\.0 or later on the release this site runs now \(v0\.1\.0-beta\.1\)/,
         );
-        assert.match(result.stderr, /2\. Run \.\/ghost-docker update again/);
+        assert.match(result.stderr, /2\. Run \.\/ghost-docker self-update again/);
         assert.deepEqual(snapshot(), before);
     });
 

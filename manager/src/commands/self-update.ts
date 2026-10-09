@@ -1,4 +1,4 @@
-// `update`: move a site to this manager's release of the stack (plan §2.7).
+// `self-update`: move a site to this manager's release of the stack (plan §2.7).
 //
 // The updater is the target release. The site's launcher starts the image
 // that --to or --channel names, or by default the newest release on the
@@ -298,7 +298,7 @@ async function cleanHead(io: Io, dir: string): Promise<string> {
             .map((line) => `    ${line.slice(3)}`);
         throw new CliError(
             `the checkout has local changes to tracked files, which an update would not be able to put back:\n${files.slice(0, 10).join('\n')}${files.length > 10 ? '\n    …' : ''}\n` +
-                '  Commit or stash them, then run ./ghost-docker update again. Nothing has been changed.',
+                '  Commit or stash them, then run ./ghost-docker self-update again. Nothing has been changed.',
         );
     }
     return head.stdout.trim();
@@ -345,7 +345,7 @@ async function checkoutDirection(
     if (!known.ok) {
         throw new CliError(
             `the commit this site was installed at, ${from.commit.slice(0, 12)}, is not in this checkout, so a\n` +
-                '  failed update could not go back to it. Fetch it, then run ./ghost-docker update again.\n' +
+                '  failed update could not go back to it. Fetch it, then run ./ghost-docker self-update again.\n' +
                 '  Nothing has been changed.',
         );
     }
@@ -359,7 +359,7 @@ function refuseOldGhost(metadata: Metadata, from: Stack): void {
             `this release of the stack runs Ghost ${MINIMUM.ghost} or later, and this site runs Ghost ${metadata.ghost.version}.\n` +
                 '  An update never changes Ghost. Nothing has been changed. Instead:\n' +
                 `    1. Upgrade Ghost to ${MINIMUM.ghost} or later on the release this site runs now (${describeStack(from)}).\n` +
-                '    2. Run ./ghost-docker update again.',
+                '    2. Run ./ghost-docker self-update again.',
         );
     }
 }
@@ -380,7 +380,7 @@ interface Update {
     readonly payload: Payload | null;
 }
 
-export const updateCommand = defineCommand({
+export const selfUpdateCommand = defineCommand({
     brief: 'Update the stack to a newer release: its files and manager, never Ghost. See docs/install.md.',
     options,
     async run(flags, _positionals, io) {
@@ -392,16 +392,16 @@ export const updateCommand = defineCommand({
         if (clone && (requested.channel !== null || requested.ref !== null)) {
             throw new UsageError(
                 'this site is a checkout of the repository: check the release out with git, then run\n' +
-                    '  ./ghost-docker update from the checkout. --to and --channel do not apply.',
+                    '  ./ghost-docker self-update from the checkout. --to and --channel do not apply.',
             );
         }
         if (clone !== (context.source === 'checkout')) {
             throw new CliError(
                 clone
                     ? 'this site is a checkout of the repository, and this manager was not built from it.\n' +
-                          '  Run the checkout’s own ./ghost-docker update. Nothing has been changed.'
+                          '  Run the checkout’s own ./ghost-docker self-update. Nothing has been changed.'
                     : 'this site was installed from the manager image, and this manager was built from a checkout.\n' +
-                          '  Run the site’s own ./ghost-docker update. Nothing has been changed.',
+                          '  Run the site’s own ./ghost-docker self-update. Nothing has been changed.',
             );
         }
 
@@ -462,7 +462,7 @@ export const updateCommand = defineCommand({
             throw new CliError(
                 `${join(dir, UPDATE_DIR)} is left from an update that did not finish, and holds the files it\n` +
                     '  would have put back. Once the site is as it should be (./ghost-docker check), remove it\n' +
-                    '  and run ./ghost-docker update again. Nothing has been changed.',
+                    '  and run ./ghost-docker self-update again. Nothing has been changed.',
             );
         }
 
@@ -494,7 +494,7 @@ function report({ io, clone, from, to, payload, metadata }: Update, direction: D
     }
     io.stdout(`An update is available. Ghost stays at ${metadata.ghost.version}.\n`);
     if (clone || payload === null) {
-        io.stdout('Run ./ghost-docker update to apply the checked-out files.\n');
+        io.stdout('Run ./ghost-docker self-update to apply the checked-out files.\n');
         return EXIT.ok;
     }
     const lines: Record<Action, string> = {

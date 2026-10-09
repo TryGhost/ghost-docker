@@ -2,7 +2,7 @@
 // manager image carries and writes into a site directory (plan §2.7).
 //
 // In image mode `install` writes them, with a checksum of each recorded in the
-// metadata so that `update` can tell an untouched file from an edited one, and
+// metadata so that `self-update` can tell an untouched file from an edited one, and
 // writes a copy of the launcher pinned to the image that installed the site.
 // In clone mode the site is a checkout of the repository: the files are
 // already there, are used in place, and nothing is written over them.
@@ -111,7 +111,7 @@ export async function managerPin(io: Io, context: Context): Promise<string> {
     return image.repoDigests.find((entry) => entry.startsWith(`${repository}@`)) ?? image.id;
 }
 
-/** What a site's launcher is pinned to: the image it runs, and the channel `update` follows. */
+/** What a site's launcher is pinned to: the image it runs, and the channel `self-update` follows. */
 export interface LauncherPin {
     readonly image: string;
     readonly channel: string | null;

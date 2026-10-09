@@ -10,7 +10,7 @@ import { getCommand, setCommand, validateCommand } from './commands/config.ts';
 import { doctorCommand } from './commands/doctor.ts';
 import { installCommand } from './commands/install.ts';
 import { checkCommand, infoCommand, listCommand } from './commands/site.ts';
-import { updateCommand } from './commands/update.ts';
+import { selfUpdateCommand } from './commands/self-update.ts';
 import { versionCommand } from './commands/version.ts';
 import { CliError, EXIT, UsageError } from './errors.ts';
 import type { Io } from './io.ts';
@@ -24,7 +24,7 @@ const COMMANDS: Record<string, Command> = {
     check: checkCommand,
     info: infoCommand,
     list: listCommand,
-    update: updateCommand,
+    'self-update': selfUpdateCommand,
     backup: backupCommand,
     restore: restoreCommand,
     version: versionCommand,

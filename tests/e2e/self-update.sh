@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Real updates between releases, against real containers.
 #
-#   tests/e2e/update.sh
+#   tests/e2e/self-update.sh
 #
 # Image mode: three releases of the manager image are built from this
 # checkout, tagged as the launcher names releases but never pushed: the first,
@@ -152,7 +152,7 @@ ok "$R1, Ghost $ghost_pin on 127.0.0.1:$port"
 step "--check says what would change, and changes nothing"
 printf '# mine\n' >>"$S/caddy/snippets/Logging"
 before=$(fingerprint "$S")
-run "$S/ghost-docker" --dir "$S" update --check --to "$R2"
+run "$S/ghost-docker" --dir "$S" self-update --check --to "$R2"
 expect_status 0
 expect_output "This site runs $R1\\. This release is $R2\\."
 expect_output 'compose\.ipv6\.yml: replaced'
@@ -162,7 +162,7 @@ ok "an update is available"
 
 step "Updated to the second, keeping the edited file"
 ghost_before=$(ghost_container "$S")
-run "$S/ghost-docker" --dir "$S" update --to "$R2"
+run "$S/ghost-docker" --dir "$S" self-update --to "$R2"
 expect_status 0
 expect_output "Updated from $R1 to $R2"
 [[ $(setting "$S" GHOST_IMAGE_REF) == "$ghost_pin" ]] || fail "the Ghost pin changed"
@@ -184,7 +184,7 @@ ok "check passes"
 
 step "A downgrade is refused"
 before=$(fingerprint "$S")
-run "$S/ghost-docker" --dir "$S" update --to "$R1"
+run "$S/ghost-docker" --dir "$S" self-update --to "$R1"
 expect_status 1
 expect_output "runs $R2, which is newer than $R1"
 [[ $(fingerprint "$S") == "$before" ]] || fail "a refused downgrade changed files"
@@ -193,7 +193,7 @@ ok "and nothing changed"
 step "A release whose configuration does not validate is put back before services change"
 before=$(fingerprint "$S")
 ghost_before=$(ghost_container "$S")
-run "$S/ghost-docker" --dir "$S" update --to "$R3"
+run "$S/ghost-docker" --dir "$S" self-update --to "$R3"
 expect_status 1
 expect_output 'Compose cannot resolve the project with this release'
 expect_output "Restored: the site is back on $R2, with its files as they were\\. Its services were not changed\\."
@@ -223,7 +223,7 @@ ok "at ${previous:0:12}, on 127.0.0.1:$clone_port"
 step "Local changes to tracked files are refused"
 printf '\n' >>"$C/README.md"
 before=$(fingerprint "$C")
-run env -u GD_IMAGE "$C/ghost-docker" --dir "$C" update
+run env -u GD_IMAGE "$C/ghost-docker" --dir "$C" self-update
 expect_status 1
 expect_output 'local changes to tracked files'
 [[ $(fingerprint "$C") == "$before" ]] || fail "a refused update changed files"
@@ -237,7 +237,7 @@ git_c diff --quiet compose.yml && fail "compose.yml was not changed for the brok
 git_c commit --quiet --all --message broken
 broken=$(git_c rev-parse HEAD)
 compose_before=$(git_c show "$previous:compose.yml")
-run env -u GD_IMAGE "$C/ghost-docker" --dir "$C" update
+run env -u GD_IMAGE "$C/ghost-docker" --dir "$C" self-update
 expect_status 1
 expect_output 'did not start and become healthy'
 expect_output "Restored: the site is back on commit ${previous:0:12}, with its files as they were, and its services running and healthy\\."

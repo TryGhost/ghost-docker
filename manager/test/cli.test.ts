@@ -238,3 +238,9 @@ describe('list', () => {
         assert.match(result.stderr, /docker compose ls failed/);
     });
 });
+
+test('`update` is not a command until it updates Ghost (S7); self-update updates the stack', async () => {
+    const result = await h.run('update');
+    assert.equal(result.code, 2);
+    assert.match((await h.run('help')).stdout, /self-update/);
+});

@@ -271,7 +271,7 @@ expect_run_arg "ghcr.io/tryghost/ghost-docker:v1.10.0-beta.2"
 expect_run_arg "--release=v1.10.0-beta.2"
 run_args | grep -qx -- '--pull' && fail "a release, whose tag never moves, was pulled every time" "$(run_args)"
 run_args | grep -q '^GD_CHANNEL=' && fail "a release was named, and a channel was passed on" "$(run_args)"
-with_fake ok env ${fake_socket_env[@]+"${fake_socket_env[@]}"} "$BASH_BIN" "$LAUNCHER" --dir "$SITE" update --to v2.0.0
+with_fake ok env ${fake_socket_env[@]+"${fake_socket_env[@]}"} "$BASH_BIN" "$LAUNCHER" --dir "$SITE" self-update --to v2.0.0
 expect_run_arg "ghcr.io/tryghost/ghost-docker:v2.0.0"
 ok "--channel, --release and --to choose the image, and reach the command"
 
@@ -301,17 +301,20 @@ ok "a site's own copy runs the digest it was pinned to; neither it nor GD_IMAGE 
 sed 's|^readonly GD_PINNED_CHANNEL=""$|readonly GD_PINNED_CHANNEL="stable"|' "$WORK/pinned-launcher" >"$WORK/pinned-stable"
 grep -qx 'readonly GD_PINNED_CHANNEL="stable"' "$WORK/pinned-stable" ||
     fail "the channel placeholder is not where install will look for it"
-with_fake ok env ${fake_socket_env[@]+"${fake_socket_env[@]}"} "$BASH_BIN" "$WORK/pinned-stable" --dir "$SITE" update
+with_fake ok env ${fake_socket_env[@]+"${fake_socket_env[@]}"} "$BASH_BIN" "$WORK/pinned-stable" --dir "$SITE" self-update
 expect_run_arg "ghcr.io/tryghost/ghost-docker:stable"
 expect_run_arg "GD_CHANNEL=stable"
 expect_run_arg "--pull"
-with_fake ok env ${fake_socket_env[@]+"${fake_socket_env[@]}"} "$BASH_BIN" "$WORK/pinned-stable" --dir "$SITE" update --check
+with_fake ok env ${fake_socket_env[@]+"${fake_socket_env[@]}"} "$BASH_BIN" "$WORK/pinned-stable" --dir "$SITE" self-update --check
 expect_run_arg "ghcr.io/tryghost/ghost-docker:stable"
-with_fake ok env ${fake_socket_env[@]+"${fake_socket_env[@]}"} "$BASH_BIN" "$WORK/pinned-stable" --dir "$SITE" update --channel beta
+with_fake ok env ${fake_socket_env[@]+"${fake_socket_env[@]}"} "$BASH_BIN" "$WORK/pinned-stable" --dir "$SITE" self-update --channel beta
 expect_run_arg "ghcr.io/tryghost/ghost-docker:beta"
 with_fake ok env ${fake_socket_env[@]+"${fake_socket_env[@]}"} "$BASH_BIN" "$WORK/pinned-stable" --dir "$SITE" check
 expect_run_arg "ghcr.io/tryghost/ghost-docker@sha256:abc123"
-ok "a site's update runs the newest release on the channel it follows, not its pin"
+# `update` is not the stack's: it runs the site's own pin like any other command.
+with_fake ok env ${fake_socket_env[@]+"${fake_socket_env[@]}"} "$BASH_BIN" "$WORK/pinned-stable" --dir "$SITE" update
+expect_run_arg "ghcr.io/tryghost/ghost-docker@sha256:abc123"
+ok "a site's self-update runs the newest release on the channel it follows, not its pin"
 
 step "Piped from curl"
 set +e

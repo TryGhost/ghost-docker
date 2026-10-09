@@ -9,7 +9,7 @@ export const MINIMUM = {
     dockerEngine: '25.0.0',
     // `env_file: [{path, required}]` needs Compose 2.24; `depends_on.required` 2.20.
     compose: '2.24.0',
-    // The oldest Ghost this release of the stack runs. `update` never changes
+    // The oldest Ghost this release of the stack runs. `self-update` never changes
     // a site's Ghost, so a release that raises this stops an update of a site
     // below it and says to upgrade Ghost first (plan §2.7).
     ghost: '6.0.0',

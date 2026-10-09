@@ -548,15 +548,15 @@ Rules:
   writes a launcher into the site directory that runs exactly that digest. A
   moving tag is never what a site runs.
 - **The image writes the files.** The release payload in the site directory is
-  a copy of the image's, written by `install` and replaced by `update`. They are not
+  a copy of the image's, written by `install` and replaced by `self-update`. They are not
   edited by operators; operator-owned files are `.env`, `ghost.env`,
   `caddy/sites/site.caddy` (written once by `install`), `caddy/custom/` and
   `caddy/global/`. A release that changes a snippet's arguments must say how
   to change the site's routes, or carry a migration that edits them; it may
   not overwrite them. The manager records a checksum of each
-  file it wrote, so `update` can tell an untouched file from an edited one. An
+  file it wrote, so `self-update` can tell an untouched file from an edited one. An
   untouched file is replaced. An edited one is kept, the release's version is
-  written beside it as `<file>.new`, and `update` names both; it never asks.
+  written beside it as `<file>.new`, and `self-update` names both; it never asks.
 - **Clone mode.** A launcher that finds itself in a checkout of this repository
   builds the image locally from that checkout and uses the files in place,
   writing nothing over them. Metadata records `source: checkout` and the commit
@@ -564,7 +564,7 @@ Rules:
   developed, and how someone who wants to read everything first installs it.
 
   Updating such a site is `git checkout` of a newer ref followed by
-  `./ghost-docker update`. That is the same update as in image mode — validate,
+  `./ghost-docker self-update`. That is the same update as in image mode — validate,
   pull the service images the new `compose.yml` names, apply, verify — except
   that the payload is already in place and is not written. A tracked tree with
   local modifications is refused. On a failure the updater puts the operator's
@@ -575,10 +575,14 @@ Rules:
   It is the repository's own `ghost-docker`, published by a workflow on release
   and never by hand. Test the served file rather than the checkout's copy.
 
-`./ghost-docker update [--check] [--channel stable|beta] [--to vX.Y.Z]` updates
+`./ghost-docker self-update [--check] [--channel stable|beta] [--to vX.Y.Z]` updates
 the stack, not Ghost. Preserve the exact Ghost pin; if a stack release requires a
 newer Ghost, stop with the required upgrade sequence. Initially reject stack
 downgrades unless the relevant migrations explicitly support them.
+
+The names follow Ghost-CLI, where `ghost update` updates Ghost: `update` is
+Ghost's (S7), and ghost-docker's own update is `self-update`. A bare `update`
+is an unknown command until S7 lands; there is no alias to the stack's.
 
 The updater is the *target* release's image, started by the site's launcher. It
 runs entirely outside the files it replaces, which is what makes this tractable:
@@ -614,7 +618,7 @@ legacy Compose overrides, skipped releases, repeat invocation, and failed hooks.
 
 Existing installations have no launcher. Their way in is the served launcher run
 from inside the checkout (`curl -fsSL https://docker.ghost.org/install.sh | bash
--s -- update`); do not tell them to use raw `git pull` to cross the breaking
+-s -- self-update`); do not tell them to use raw `git pull` to cross the breaking
 change.
 
 ### 2.8 The launcher and its commands
@@ -628,7 +632,7 @@ ghost-docker install [--local | --domain example.com [--admin-domain admin.examp
                      [--import BUNDLE] [--no-start]
 ghost-docker check | info | list
 ghost-docker config get|set|validate ...
-ghost-docker update | backup | restore | upgrade      (as their steps land)
+ghost-docker self-update | backup | restore | update  (as their steps land)
 ```
 
 First use is the served launcher:
@@ -1373,16 +1377,16 @@ branch into `main` before it passes.
 
 Repo: ghost-docker. Implement §2.7 in two parts.
 
-**S6a — Releases, served launcher, and `update`.** Deps: N3. A release workflow on
+**S6a — Releases, served launcher, and `self-update`.** Deps: N3. A release workflow on
 `next-docker` producing beta tags and dependency-only patch releases;
 image tags `vX.Y.Z[-beta.N]`, `stable` and `beta` published from release tags;
 tested release resolution; the workflow serving the launcher at
-`docker.ghost.org`; managed-file checksums; and `update` between releases of
+`docker.ghost.org`; managed-file checksums; and `self-update` between releases of
 this layout as described in §2.7, without the legacy migration.
 
 Acceptance: the served launchers install the newest beta and an explicit
 `--release`; version selection is tested against prerelease ordering rather than
-lexical sort; a dependency-only change produces a release; `update` moves a site
+lexical sort; a dependency-only change produces a release; `self-update` moves a site
 between two releases with the Ghost pin unchanged and the launcher re-pinned,
 refuses a downgrade, keeps a hand-edited managed file and writes the release's
 beside it, and restores the previous files when validation fails before
@@ -1391,7 +1395,7 @@ In clone mode, a failed update between two refs whose `compose.yml` differs
 leaves the checkout at the previous commit with the previous configuration and
 the site running, and a dirty tree is refused before anything changes.
 
-Status: implemented. `tests/e2e/update.sh` covers `update` in both modes
+Status: implemented. `tests/e2e/self-update.sh` covers `self-update` in both modes
 against releases built locally; `launcher.yml` installs the newest beta and an
 explicit `--release` with the served launcher after each release. Decisions made
 while building it:
@@ -1420,7 +1424,7 @@ while building it:
   git ref, and `--version` is already the Ghost version.
 - **The launcher's default** is the `beta` channel, which includes releases.
   It resolves `--channel` and `--release`/`--to` itself and passes them on. A
-  pinned site's `update` runs the newest release on the channel recorded in
+  pinned site's `self-update` runs the newest release on the channel recorded in
   the launcher (`GD_PINNED_CHANNEL`), because the updater is the target.
 - **Downgrades** are told by release number in image mode, and by ancestry in
   a clone. A site on `edge` may update to anything; a build that is not a
@@ -1428,7 +1432,7 @@ while building it:
 - **Ghost compatibility** is `MINIMUM.ghost` in `versions.ts`. A release that
   raises it stops the update of an older site before anything changes, with
   the upgrade sequence.
-- **The lock** (§2.2) is `.ghost-docker.lock`, taken by `update`; S4 uses the
+- **The lock** (§2.2) is `.ghost-docker.lock`, taken by `self-update`; S4 uses the
   same module. An interrupted update's snapshot also blocks the next one
   until the operator removes it.
 - **Validation** requires Compose to resolve the project, which plain
@@ -1507,7 +1511,7 @@ while building it:
 ### S7 — Host-driven Ghost upgrades
 
 Repo: ghost-docker. Deps: S4 and S6a compatibility rules. Implement `./ghost-docker
-upgrade [version|latest]` following §2.5, initially without a supervisor. Specify the reusable
+update [version|latest]` following §2.5, initially without a supervisor. Specify the reusable
 execution interface so the supervisor cannot diverge from backup/recovery behavior.
 Keep supported majors/downgrades constrained and feature compatibility explicit.
 

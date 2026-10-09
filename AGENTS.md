@@ -27,7 +27,7 @@ Branches:
 Steps N1–N3, S4, S5b, S5c and S6a: the stack's files and contracts, the
 launcher and manager image, releases, and the commands: `install` (local and
 production, from the image or a clone, from a channel or a release, and
-`--import` of a local Ghost-CLI site's bundle), `update` (between releases, or
+`--import` of a local Ghost-CLI site's bundle), `self-update` (between releases, or
 commits of a clone), `backup` and `restore` (over the site, or into a new
 directory), `config get|set|validate`, `check`, `info`, `list`, plus
 `version`, `doctor` and `help`. Every other `./ghost-docker ...` command or
@@ -41,7 +41,7 @@ delivers it. `docs/install.md` describes what exists.
   There is no `--migrate`: moving a Ghost-CLI site is documented as
   `ghost stop`, `ghost migrate-export`, `install --import` (S5c). It reads
   `--channel`, `--release` and `--to` to choose the image (and passes them on);
-  `update` from a pinned site runs the newest release on the site's channel
+  `self-update` from a pinned site runs the newest release on the site's channel
   (`GD_PINNED_CHANNEL`), not its pin. It mounts `--import`'s bundle, and
   `restore`'s backup when it is outside the site, read-only at its own path.
 - `manager/` is the CLI: TypeScript run directly by Node (types stripped, no
@@ -88,7 +88,7 @@ delivers it. `docs/install.md` describes what exists.
   moving `beta`/`stable` tags (`image.yml`), and the launcher to GitHub Pages as
   `https://docker.ghost.org/install.sh` (`launcher.yml`). Every release is a
   beta until S6b.
-- `src/commands/update.ts` moves a site to the release it runs as: snapshot
+- `src/commands/self-update.ts` moves a site to the release it runs as: snapshot
   in `.ghost-docker-update/`, managed files by checksum (an edited one is kept
   beside `<file>.new`), validate, pull, `up --wait`, verify, and on failure
   put back and report restored or needs-the-operator. In a clone it checks
@@ -175,7 +175,7 @@ pnpm run test:integration     # real daemon and services, from a container; pull
 tests/e2e/launcher.sh         # stand-in docker, then the real image
 tests/e2e/install.sh          # real installs; binds 80/443, pulls images
 tests/e2e/import.sh           # Ghost-CLI sites exported and imported; needs Node
-tests/e2e/update.sh           # updates between locally built releases, and a clone's commits
+tests/e2e/self-update.sh      # self-updates between locally built releases, and a clone's commits
 tests/e2e/backup.sh           # a site with ActivityPub backed up, restored over itself and elsewhere; needs jq
 cd scripts && pnpm install && pnpm run typecheck && pnpm test   # the release tooling
 ```

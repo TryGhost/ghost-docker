@@ -189,7 +189,7 @@ Generated proxy routes and helper clients use these, never the bare service
 name. `COMPOSE_PROJECT_NAME` is the site's stable identity and is kept
 independent of the directory name.
 
-The manager uses them too. `check`, `install`, `update`, `backup`, `restore`
+The manager uses them too. `check`, `install`, `self-update`, `backup`, `restore`
 and an import join the site's network while they ask its services
 something, and leave it afterwards. They find the network from the site's
 running containers, so one an override renames or makes external works the
@@ -213,11 +213,11 @@ resolved Ghost image and digest, selected profiles, checksums of the files the
 manager wrote, and completed migrations. Its schema
 is specified in §2.2 of [the plan](ghost-cli-replacement.md). It is gitignored,
 mode `0600`, and machine generated — do not hand-edit it. Operations that
-change a running site hold `.ghost-docker.lock` while they run (`update`,
+change a running site hold `.ghost-docker.lock` while they run (`self-update`,
 `backup` and `restore` now; Ghost upgrades when they land). An update keeps
 what it would put back in `.ghost-docker-update/` until it finishes, and a
 restore over a site keeps the site as it was in `.ghost-docker-restore/`
-until it is verified; see [update](install.md#update) and
+until it is verified; see [self-update](install.md#self-update) and
 [backup and restore](install.md#backup-and-restore). Backups are directories
 under `backups/`, private and gitignored, kept until the operator removes
 them. A backup holds a copy of this file; restoring into a new directory
@@ -256,10 +256,10 @@ place. `stack.image` is the manager image the site's launcher is pinned to:
 a repository digest, or, for an image only this host holds, its ID. `payload`
 is the SHA-256 of every file `install` wrote from the image, so that an update
 can tell a file nobody edited from one somebody did (plan §2.7); it is empty
-in clone mode, where Git already knows. `update` records the checksums of the
+in clone mode, where Git already knows. `self-update` records the checksums of the
 release it moved to, `stack.previous` (what the site ran before, which a failed
 update recovers to) and `updatedAt`; both are `null` until the first update.
-`channel` is the channel `update` follows by default.
+`channel` is the channel `self-update` follows by default.
 
 A field that was not supplied is `null` rather than an empty string, so "not
 known" and "deliberately empty" stay distinguishable. The digest is the
