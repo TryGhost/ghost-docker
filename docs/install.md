@@ -349,15 +349,18 @@ updates may touch `compose.yml`; see
 
 ## How a site is verified
 
-`127.0.0.1` inside the manager is the manager, so the site is asked from inside
-its own containers, and each answer is reported for what it is:
+Each service is judged by its own health check, which `up --wait` already
+required. `127.0.0.1` inside the manager is the manager, so for the one
+question no health check answers, the certificate, the manager joins the
+site's own Docker network, asks Caddy, and leaves again. Each answer is
+reported for what it is:
 
 | Check | How | Reported as |
 | --- | --- | --- |
-| ghost | Its health check, which `up --wait` already required: the Admin API answers inside the container. | `ok` or `ERROR` |
-| caddy | From the ghost container, over the site's network, Caddy is asked for `http://` and the host of `URL` (and of `ADMIN_URL`), and must redirect to HTTPS, which it does only for a name it serves. | `ok` or `ERROR` |
-| https | Whether Caddy holds a certificate for the domain. **serving** names the issuer. **pending** means there is none yet: Caddy obtains one once the domain's DNS reaches this host, `./ghost-docker check` reports the change, and `docker compose logs caddy` shows each attempt and why it failed. | `ok` or `note` |
-| mailpit | With `--with mailpit`: its health check, and from the ghost container, over the site's network, its SMTP server greets on `mailpit-${COMPOSE_PROJECT_NAME}:1025`, where Ghost sends mail. | `ok` or `ERROR` |
+| ghost | Its health check: the Admin API answers inside the container. | `ok` or `ERROR` |
+| caddy | Its health check: its admin API answers, with its configuration loaded. That says Caddy is up, not that it serves each name; **https** shows that once there is a certificate. | `ok` or `ERROR` |
+| https | Whether Caddy presents a certificate that names the domain. **serving** names the issuer. **pending** means there is none yet: Caddy obtains one once the domain's DNS reaches this host, `./ghost-docker check` reports the change, and `docker compose logs caddy` shows each attempt and why it failed. | `ok` or `note` |
+| mailpit | With `--with mailpit`: its health check. The check names `mailpit-${COMPOSE_PROJECT_NAME}:1025`, where Ghost sends mail. | `ok` or `ERROR` |
 | published ports | The ports Docker says it published. A container cannot reach the host's own loopback interface, so they are not checked from there: opening the URL is that check. | `note` |
 
 A production site installed before its DNS points at the host therefore passes

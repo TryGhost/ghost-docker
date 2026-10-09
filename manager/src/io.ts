@@ -2,9 +2,13 @@
 import input from '@inquirer/input';
 import select from '@inquirer/select';
 import { lookup } from 'node:dns/promises';
-import { statfsSync } from 'node:fs';
+import { readFileSync, statfsSync } from 'node:fs';
 import { connect } from 'node:net';
+import { hostname } from 'node:os';
 import { Spinner } from 'picospinner';
+import { nodeClients, type Clients } from './clients.ts';
+import type { ServiceState } from './compose.ts';
+import { onSiteNetwork, type SiteNetwork } from './network.ts';
 import { socketTransport, type DockerTransport } from './docker/transport.ts';
 import { exec, type Exec } from './process.ts';
 
@@ -24,6 +28,22 @@ export interface Io {
     docker: DockerTransport;
     /** Other programs: Compose, and nothing else the daemon could answer for. */
     exec: Exec;
+    /**
+     * The manager's own container, as the daemon names it, or null when it
+     * cannot tell; it joins a site's network by this (network.ts).
+     */
+    containerId: () => string | null;
+    /**
+     * Runs `work` with the manager on the network the running containers of
+     * `wanted` share, and off it again however `work` ends (network.ts).
+     */
+    siteNetwork: <T>(
+        services: readonly ServiceState[],
+        wanted: readonly string[],
+        work: (network: SiteNetwork) => Promise<T>,
+    ) => Promise<T>;
+    /** A site's services, spoken to directly once the manager is on its network. */
+    clients: Clients;
     /** Bytes free to this user on the filesystem holding `path`, or null when unknown. */
     freeBytes: (path: string) => number | null;
     /**
@@ -85,6 +105,27 @@ async function hostListens(port: number): Promise<boolean | null> {
     });
 }
 
+/**
+ * Docker bind-mounts the container's own hostname, hosts and resolv.conf
+ * from the directory named by its full ID, rootless Docker and Docker
+ * Desktop included, so the mount table names it whatever the hostname was
+ * set to. The default hostname, the short ID, is the fallback.
+ */
+function containerId(): string | null {
+    try {
+        const id = /\/containers\/([0-9a-f]{64})\//.exec(
+            readFileSync('/proc/self/mountinfo', 'utf8'),
+        );
+        if (id) {
+            return id[1]!;
+        }
+    } catch {
+        // Not Linux, or no /proc: not in a container.
+    }
+    const name = hostname();
+    return /^[0-9a-f]{12,64}$/.test(name) ? name : null;
+}
+
 export const processIo: Io = {
     stdout: (text) => void process.stdout.write(text),
     stderr: (text) => void process.stderr.write(text),
@@ -107,6 +148,9 @@ export const processIo: Io = {
     gid: () => process.getgid?.() ?? 0,
     docker: socketTransport(process.env.GD_DOCKER_SOCKET ?? '/var/run/docker.sock'),
     exec,
+    containerId,
+    siteNetwork: (services, wanted, work) => onSiteNetwork(processIo, services, wanted, work),
+    clients: nodeClients,
     hostListens,
     freeBytes: (path) => {
         try {

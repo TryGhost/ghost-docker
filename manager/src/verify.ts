@@ -1,154 +1,75 @@
 // Reaching a site in order to verify it (plan §2.8).
 //
-// 127.0.0.1 in the manager is the manager, not the host, so the site is asked
-// from inside its own containers, and nothing is described as more than it
-// is:
+// Each service is judged by its own Compose health check, which `up --wait`
+// already required, and nothing is described as more than it is:
 //
-//   ghost           its health check, which `up --wait` already required: the
-//                   Admin API answers inside the container
-//   caddy           from the ghost container, over the site's network, Caddy
-//                   redirects http://DOMAIN to HTTPS, which it does only for a
-//                   name it serves
-//   https           whether Caddy holds a certificate for the domain yet:
-//                   serving, or pending until DNS reaches this host
-//   mailpit         with that profile: its health check, and from the ghost
-//                   container, over the site's network, its SMTP greeting
+//   ghost           its health check: the Admin API answers inside the container
+//   caddy           its health check: its admin API answers, so it is up with
+//                   its configuration loaded. Not that it routes each name
+//   https           whether Caddy presents a certificate for the domain yet:
+//                   serving, or pending until DNS reaches this host. The one
+//                   question no health check answers, asked with a TLS
+//                   handshake from the site's own network (network.ts), because
+//                   127.0.0.1 in the manager is the manager, not the host
+//   mailpit         with that profile: its health check. That Ghost's mail
+//                   reaches it is tests/e2e/install.sh's to prove
 //   published ports what Docker says it published, not verified from the host
-import { compose, composeError, composePs, type ServiceState } from './compose.ts';
+import { ServiceUnreachable } from './clients.ts';
+import { composePs, type ServiceState } from './compose.ts';
 import type { Io } from './io.ts';
+import { NetworkUnavailable, type SiteNetwork } from './network.ts';
 import type { Check } from './report.ts';
 import { hasProfile, type SiteFacts } from './site.ts';
 
-/**
- * Run in the ghost container, which has Node and is on the site's network:
- * one line per domain, `STATUS LOCATION`, for http://caddy/ with that Host.
- */
-const REDIRECT_PROBE = `
-const http = require('http');
-const ask = (host) => new Promise((done) => {
-  const request = http.get({ host: 'caddy', port: 80, path: '/', headers: { Host: host }, timeout: 10000 },
-    (response) => { response.resume(); done(response.statusCode + ' ' + (response.headers.location || '')); });
-  request.on('timeout', () => request.destroy(new Error('no answer within 10 seconds')));
-  request.on('error', (error) => done('0 ' + error.message));
-});
-(async () => { for (const host of process.argv.slice(1)) console.log(await ask(host)); })();
-`;
+const describeState = (state: ServiceState | undefined): string =>
+    state ? [state.State, state.Health].filter(Boolean).join(', ') : 'no container';
 
-async function redirects(io: Io, site: SiteFacts, domains: readonly string[]): Promise<Check[]> {
-    const result = await compose(
-        io,
-        site.dir,
-        ['exec', '-T', 'ghost', 'node', '-e', REDIRECT_PROBE, ...domains],
-        { timeoutMs: 60_000 },
-    );
-    if (result.exitCode !== 0) {
-        return [
-            {
-                status: 'error',
-                label: 'caddy',
-                detail: `Caddy could not be asked from the site network: ${composeError(result, 2) || 'no answer'}`,
-            },
-        ];
-    }
-    const answers = result.stdout.trim().split('\n');
-    return domains.map((domain, index) => {
-        const [status = '0', ...rest] = (answers[index] ?? '').split(' ');
-        const location = rest.join(' ');
-        const code = Number(status);
-        if (code >= 300 && code < 400 && location.startsWith(`https://${domain}`)) {
-            return {
-                status: 'ok',
-                label: 'caddy',
-                detail: `http://${domain} redirects to HTTPS through caddy:80 on the site network`,
-            };
-        }
-        return {
-            status: 'error',
-            label: 'caddy',
-            detail:
-                code === 0
-                    ? `Caddy did not answer for http://${domain}: ${location}`
-                    : `Caddy answered ${code} for http://${domain}, not a redirect to https://${domain}; check caddy/sites/site.caddy`,
-        };
-    });
-}
-
-/** Run in the ghost container: the first line Mailpit's SMTP server sends. */
-const SMTP_PROBE = `
-const socket = require('net').connect({ host: process.argv[1], port: 1025, timeout: 10000 });
-socket.once('data', (data) => { console.log(String(data).split('\\r\\n')[0]); socket.destroy(); });
-socket.on('timeout', () => { console.log('no answer within 10 seconds'); socket.destroy(); });
-socket.on('error', (error) => console.log(error.message));
-`;
-
-/** Mailpit, healthy, and taking mail where Ghost sends it: its alias on the site network. */
-async function mailpit(
-    io: Io,
-    site: SiteFacts,
-    services: readonly ServiceState[] | null,
-): Promise<Check[]> {
-    const state = services?.find((entry) => entry.Service === 'mailpit');
-    if (state?.Health !== 'healthy') {
-        return [
-            {
-                status: 'error',
-                label: 'mailpit',
-                detail: `not healthy (${state ? [state.State, state.Health].filter(Boolean).join(', ') : 'no container'})`,
-            },
-        ];
-    }
-    const host = `mailpit-${site.settings.get('COMPOSE_PROJECT_NAME') || 'ghost'}`;
-    const result = await compose(
-        io,
-        site.dir,
-        ['exec', '-T', 'ghost', 'node', '-e', SMTP_PROBE, host],
-        { timeoutMs: 60_000 },
-    );
-    const greeting = result.stdout.trim();
-    return [
-        result.exitCode === 0 && greeting.startsWith('220')
-            ? {
-                  status: 'ok',
-                  label: 'mailpit',
-                  detail: `healthy, and takes mail at ${host}:1025 on the site network`,
-              }
-            : {
-                  status: 'error',
-                  label: 'mailpit',
-                  detail: `did not answer SMTP at ${host}:1025 from the ghost container: ${greeting || composeError(result, 2) || 'no answer'}`,
-              },
-    ];
-}
+/** A service by its own health check; `what` says what that check proves. */
+const healthy = (label: string, state: ServiceState | undefined, what: string): Check =>
+    state?.Health === 'healthy'
+        ? ok(label, `healthy: ${what}`)
+        : error(label, `not healthy (${describeState(state)})`);
 
 /**
- * HTTPS as an issuance state. Caddy obtains a certificate in the background
- * once the domain's DNS reaches this host and keeps it in its data volume;
- * until then there is none, and no probe could show more.
+ * HTTPS as an issuance state: the certificate Caddy presents for the domain.
+ * Caddy obtains one in the background once the domain's DNS reaches this
+ * host; until then the handshake fails, and no probe could show more.
  */
-async function https(io: Io, site: SiteFacts): Promise<Check> {
-    const domain = site.domain;
-    const result = await compose(
-        io,
-        site.dir,
-        ['exec', '-T', 'caddy', 'sh', '-c', 'ls -d /data/caddy/certificates/*/"$1"', 'sh', domain],
-        { timeoutMs: 60_000 },
-    );
-    const stored = result.exitCode === 0 ? result.stdout.trim().split('\n')[0] : undefined;
-    if (stored) {
-        // The directory above the domain's names the issuer.
-        return {
-            status: 'ok',
-            label: 'https',
-            detail: `serving: Caddy holds a certificate for ${domain} from ${stored.split('/').at(-2)}`,
-        };
-    }
-    return {
+async function https(io: Io, network: SiteNetwork, domain: string): Promise<Check> {
+    const address = network.address('caddy');
+    const pending = (reason: string): Check => ({
         status: 'note',
         label: 'https',
         detail:
-            `pending: there is no certificate for ${domain} yet. Caddy obtains one once the domain's DNS reaches this host;\n` +
+            `pending: there is no certificate for ${domain} yet (${reason}). Caddy obtains one once the domain's DNS reaches this host;\n` +
             '`./ghost-docker check` reports the change, and `docker compose logs caddy` shows each attempt.',
-    };
+    });
+    if (address === null) {
+        return error('https', `no running caddy container on the site network ${network.name}`);
+    }
+    try {
+        const presented = await io.clients.certificate({
+            host: address.host,
+            port: 443,
+            servername: domain,
+        });
+        return presented.covers
+            ? ok(
+                  'https',
+                  `serving: Caddy presents a certificate for ${domain} from ${presented.issuer}`,
+              )
+            : pending(`Caddy presents one from ${presented.issuer} that does not name it`);
+    } catch (failure) {
+        // Something answered and would not set up a session: Caddy has no
+        // certificate to offer for the name.
+        if (failure instanceof ServiceUnreachable && failure.stage === 'tls') {
+            return pending('the TLS handshake fails');
+        }
+        return error(
+            'https',
+            `Caddy did not answer on ${address.name}:443 on the site network: ${message(failure)}`,
+        );
+    }
 }
 
 /** Ports Docker says a service publishes. */
@@ -163,6 +84,11 @@ const publishedPorts = (services: readonly ServiceState[] | null, service: strin
         ),
     ].join(', ') || 'nothing';
 
+const ok = (label: string, detail: string): Check => ({ status: 'ok', label, detail });
+const error = (label: string, detail: string): Check => ({ status: 'error', label, detail });
+const message = (failure: unknown): string =>
+    failure instanceof Error ? failure.message : String(failure);
+
 /** Everything that can be known about a site whose services are up. */
 export async function verifyIngress(
     io: Io,
@@ -170,29 +96,39 @@ export async function verifyIngress(
     known?: readonly ServiceState[] | null,
 ): Promise<Check[]> {
     const production = site.mode === 'production';
+    const withMailpit = hasProfile(site.settings.get('COMPOSE_PROFILES') ?? '', 'mailpit');
     // `check` has the service states already.
     const services = known ?? (await composePs(io, site.dir));
-    const ghost = services?.find((entry) => entry.Service === 'ghost');
+    const state = (service: string) => services?.find((entry) => entry.Service === service);
     const checks: Check[] = [
-        ghost?.Health === 'healthy'
-            ? {
-                  status: 'ok',
-                  label: 'ghost',
-                  detail: 'healthy: its Admin API answers inside the container',
-              }
-            : {
-                  status: 'error',
-                  label: 'ghost',
-                  detail: `not healthy (${ghost ? [ghost.State, ghost.Health].filter(Boolean).join(', ') : 'no container'})`,
-              },
+        healthy('ghost', state('ghost'), 'its Admin API answers inside the container'),
     ];
     if (production) {
-        const domains = [site.domain, site.adminDomain].filter((name) => name !== '');
-        checks.push(...(await redirects(io, site, domains)), await https(io, site));
+        checks.push(
+            healthy(
+                'caddy',
+                state('caddy'),
+                'its admin API answers, with its configuration loaded',
+            ),
+        );
+        try {
+            checks.push(
+                await io.siteNetwork(services ?? [], ['caddy'], (network) =>
+                    https(io, network, site.domain),
+                ),
+            );
+        } catch (failure) {
+            if (!(failure instanceof NetworkUnavailable)) {
+                throw failure;
+            }
+            checks.push(
+                error('https', `could not be asked on the site network: ${failure.message}`),
+            );
+        }
     }
-    const withMailpit = hasProfile(site.settings.get('COMPOSE_PROFILES') ?? '', 'mailpit');
     if (withMailpit) {
-        checks.push(...(await mailpit(io, site, services)));
+        const alias = `mailpit-${site.settings.get('COMPOSE_PROJECT_NAME') || 'ghost'}`;
+        checks.push(healthy('mailpit', state('mailpit'), `Ghost sends mail to ${alias}:1025`));
     }
     checks.push({
         status: 'note',

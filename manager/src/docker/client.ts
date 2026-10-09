@@ -303,6 +303,127 @@ export async function stoppedSiteContainers(docker: DockerTransport): Promise<Co
     );
 }
 
+// --- Networks ---------------------------------------------------------------
+
+const endpoint = z.looseObject({
+    NetworkID: z.string().default(''),
+    IPAddress: z.string().default(''),
+    Aliases: z.array(z.string()).nullable().default([]),
+    // Engine 25 (API 1.44) reports every name the container answers to here.
+    DNSNames: z.array(z.string()).nullable().default([]),
+});
+
+const containerInspect = z.object({
+    Id: z.string(),
+    Name: z.string().default(''),
+    Config: z
+        .looseObject({ Labels: z.record(z.string(), z.string()).nullable().default({}) })
+        .nullable()
+        .default({ Labels: {} }),
+    NetworkSettings: z
+        .looseObject({
+            Networks: z.record(z.string(), endpoint).nullable().default({}),
+        })
+        .nullable()
+        .default({ Networks: {} }),
+});
+
+/** A container's place on one network. */
+export interface Endpoint {
+    /** The network's name, as Docker knows it: Compose prefixes the project's. */
+    readonly network: string;
+    readonly networkId: string;
+    /** Its address on that network; empty while it is not running. */
+    readonly address: string;
+    /** Every name the network's DNS answers with this container. */
+    readonly names: readonly string[];
+}
+
+export interface ContainerDetail {
+    readonly id: string;
+    /** Without Docker's leading slash. */
+    readonly name: string;
+    readonly labels: Readonly<Record<string, string>>;
+    readonly endpoints: readonly Endpoint[];
+}
+
+/** `docker inspect` of a container, or null when the daemon has none by that name or ID. */
+export async function inspectContainer(
+    docker: DockerTransport,
+    id: string,
+): Promise<ContainerDetail | null> {
+    try {
+        const container = await call(
+            docker,
+            { method: 'GET', path: `/containers/${encodeURIComponent(id)}/json` },
+            containerInspect,
+        );
+        return {
+            id: container.Id,
+            name: container.Name.replace(/^\//, ''),
+            labels: container.Config?.Labels ?? {},
+            endpoints: Object.entries(container.NetworkSettings?.Networks ?? {}).map(
+                ([network, settings]) => ({
+                    network,
+                    networkId: settings.NetworkID,
+                    address: settings.IPAddress,
+                    names: [
+                        ...new Set([...(settings.DNSNames ?? []), ...(settings.Aliases ?? [])]),
+                    ],
+                }),
+            ),
+        };
+    } catch (error) {
+        if (error instanceof DaemonError && error.status === 404) {
+            return null;
+        }
+        throw error;
+    }
+}
+
+/** `docker network connect`. */
+export async function connectNetwork(
+    docker: DockerTransport,
+    networkId: string,
+    container: string,
+): Promise<void> {
+    await call(
+        docker,
+        {
+            method: 'POST',
+            path: `/networks/${encodeURIComponent(networkId)}/connect`,
+            body: { Container: container },
+        },
+        z.unknown(),
+    );
+}
+
+/**
+ * `docker network disconnect --force`. A network or container that is
+ * already gone has nothing left to disconnect.
+ */
+export async function disconnectNetwork(
+    docker: DockerTransport,
+    networkId: string,
+    container: string,
+): Promise<void> {
+    try {
+        await call(
+            docker,
+            {
+                method: 'POST',
+                path: `/networks/${encodeURIComponent(networkId)}/disconnect`,
+                body: { Container: container, Force: true },
+            },
+            z.unknown(),
+        );
+    } catch (error) {
+        if (!(error instanceof DaemonError && error.status === 404)) {
+            throw error;
+        }
+    }
+}
+
 // --- One-shot containers ----------------------------------------------------
 
 export interface Bind {

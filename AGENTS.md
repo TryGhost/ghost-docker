@@ -102,9 +102,16 @@ delivers it. `docs/install.md` describes what exists.
   `.ghost-docker-restore/` until verified) or into an empty directory, through
   a fresh MySQL and the import's client and DEFINER filter. Its outcome is
   done or needs the operator; it never puts the old site back by itself.
-- The manager verifies a site from inside its own containers
-  (`src/verify.ts`): `127.0.0.1` in the manager is the manager, and it cannot
-  reach the host's ports.
+- The manager asks a site's services directly: `src/network.ts` joins the
+  manager's own container to the network the site's running containers share
+  (discovered, never guessed) and leaves it however the work ends, and
+  `src/clients.ts` holds the clients, `mysql2` and a TLS handshake.
+  Every service is addressed by its per-site alias. Queries go through
+  `withSiteDatabase`; dumps are still made and loaded by the db container's own
+  `mysqldump` and `mysql`. `src/verify.ts` reports each service's own health check
+  and asks the network only for Caddy's certificate: `127.0.0.1` in the
+  manager is the manager, and it cannot reach the host's ports. Dockerode and the Docker CLI were weighed and
+  not adopted (plan §2.10).
 
 - `compose.yml` — Ghost, MySQL, Caddy, optional analytics and ActivityPub,
   and for local sites Mailpit (`--with mailpit`; validation keeps it out of
@@ -153,13 +160,18 @@ delivers it. `docs/install.md` describes what exists.
 ## Tests
 
 Unit tests for the CLI are TypeScript, in `manager/test/`, run by Node's own
-test runner against a fake `Io`. End-to-end scenarios that only run the real
-commands and check outcomes are shell scripts in `tests/e2e/`. Shell code
-passes ShellCheck.
+test runner against a fake `Io`. Integration tests, in
+`manager/test/integration/`, run the same code against the real daemon and the
+stack's real MySQL and Caddy, from a container (the manager
+Dockerfile's `integration` stage), because the manager joins its own container
+to a site's network. End-to-end scenarios that only run the real commands and
+check outcomes are shell scripts in `tests/e2e/`. Shell code passes
+ShellCheck.
 
 ```bash
 cd manager && pnpm install
 pnpm run format:check && pnpm run lint && pnpm run typecheck && pnpm test
+pnpm run test:integration     # real daemon and services, from a container; pulls images
 tests/e2e/launcher.sh         # stand-in docker, then the real image
 tests/e2e/install.sh          # real installs; binds 80/443, pulls images
 tests/e2e/import.sh           # Ghost-CLI sites exported and imported; needs Node
@@ -169,8 +181,12 @@ cd scripts && pnpm install && pnpm run typecheck && pnpm test   # the release to
 ```
 
 Unit tests fake the daemon at the transport (`test/helpers.ts`: `api`, `run`
-and `containers` for the Engine API, `composeRun` for Compose); `test/site.ts`
-makes a site directory from the repository's own files.
+and `containers` for the Engine API, `composeRun` for Compose), and the site
+network and its services at the `Io` (`sql`, `certificate` and
+`network.refuse`). The fake only puts each running service at
+its per-site alias; how the network is found, joined and left is the
+integration tests' to prove, not the fake's to imitate. `test/site.ts` makes a
+site directory from the repository's own files.
 
 ## Commits
 

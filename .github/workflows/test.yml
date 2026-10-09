@@ -55,6 +55,20 @@ jobs:
       - run: pnpm run typecheck
       - run: pnpm test
 
+  # The manager's code against the real daemon: joining a site's network,
+  # the names that resolve on it, leaving it so the network can come down, and
+  # the clients talking to the stack's MySQL and Caddy. Runs in a
+  # container of the manager Dockerfile's `integration` stage.
+  integration-linux:
+    name: Manager integration on Linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Integration tests
+        run: manager/test/integration/run.sh
+
   # The real thing on Linux, where file ownership is real: the image is built
   # from the checkout, started by the launcher, and what it writes into the
   # site directory has to belong to the runner's user.
@@ -153,6 +167,7 @@ jobs:
       - shellcheck
       - manager
       - scripts
+      - integration-linux
       - launcher-linux
       - install-linux
       - update-linux

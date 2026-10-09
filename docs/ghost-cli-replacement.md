@@ -671,17 +671,19 @@ is best effort and not claimed as supported; do not infer it from linger alone.
 
 **Reaching a site in order to verify it.** `127.0.0.1` inside the manager is the
 manager, not the host, so the first implementation's probes of host loopback
-cannot be ported as they were. The site is asked from inside its own
-containers instead, and nothing is described as more than it is:
+cannot be ported as they were. Each service is judged by its own Compose
+health check, which `up --wait` already requires, and the manager repeats none
+of them. Only what no health check can answer is asked from the site's own
+network (§2.10, "Reaching a site's services"). Nothing is described as more
+than it is:
 
-- **Ghost** passes its health check, which `up --wait` already requires: the
-  Admin API answers inside the container.
-- **Routing, over the site's own network.** In production, the ghost
-  container (which has Node and is on the site's network) requests Caddy on
-  port 80 with each domain's `Host` header and expects the redirect to HTTPS
-  that Caddy issues only for a name it serves. This shows the generated routes
-  are loaded and send each domain to Caddy's HTTPS server. It needs no
-  certificate.
+- **Ghost**: its health check, in which the Admin API answers inside the
+  container.
+- **Caddy**: its health check, in which its admin API answers with its
+  configuration loaded. That says Caddy is up, not that the generated routes
+  serve each name: Caddy 2.10 redirects any name to HTTPS, served or not (the
+  integration tests found this), so a redirect from port 80 would prove no
+  more. Proving routing is PLA-517's.
 - **Published ports are reported, not verified.** A container cannot reach
   the host's loopback interface on every platform (Docker Desktop and OrbStack
   run the daemon in a VM, rootless Docker in a user namespace), and whether a
@@ -695,9 +697,10 @@ containers instead, and nothing is described as more than it is:
   certificate for a public domain name in the background, retrying with
   backoff for up to thirty days, and keeps it in its data volume; it does not
   substitute its internal CA when issuance fails. So before DNS points at the
-  host there is no certificate, and no probe can show more. The manager looks
-  for the certificate in Caddy's storage and reports *serving* (with its
-  issuer) or *pending* (no certificate yet; the message names the domain, says
+  host there is no certificate, and no probe can show more. The manager makes
+  a TLS handshake with Caddy for the domain and reports *serving* (Caddy
+  presents a certificate that names it, with its issuer) or *pending* (the
+  handshake fails, or the certificate does not name it; the message names the domain, says
   that Caddy obtains one once the domain's DNS reaches this host, that
   `./ghost-docker check` reports the change, and that `docker compose logs
   caddy` shows each attempt). Telling an issuance error that DNS will not cure
@@ -710,8 +713,8 @@ containers instead, and nothing is described as more than it is:
   the habit this setup should not teach. Operators who want internal TLS for a
   private name put `tls internal` in `caddy/custom/`, as today.
 
-A production site before its DNS points at the host therefore passes routing,
-has its ports reported as published, and shows HTTPS as pending. That is the
+A production site before its DNS points at the host therefore has Caddy
+healthy, its ports reported as published, and HTTPS shown as pending. That is the
 expected state of a fresh production installation, and the output says so in
 those words.
 
@@ -898,6 +901,61 @@ Contract for every manager invocation:
   daemon: `--project-directory`, an explicit `-f`, and no inherited
   `COMPOSE_FILE`. `docker compose config` is how configuration is resolved; do
   not reimplement Compose interpolation.
+
+**Reaching a site's services.** The manager does not run programs inside a
+site's containers to ask it questions. It joins the site's network and speaks
+to each service itself: `mysql2` for the database (connectivity, table and row
+counts, migration history), and a TLS handshake for the certificate Caddy
+presents (`src/network.ts`, `src/clients.ts`). Ghost, Caddy and Mailpit are
+otherwise judged by their own health checks; that Ghost's mail reaches
+Mailpit is the install e2e's to prove.
+
+- The network is discovered, never guessed: the one the running containers
+  Compose lists for the site share, as the daemon reports them, so a network
+  an override renames or makes external is found the same way.
+- Each service is addressed by its per-site alias (`db-<project>`), which stays
+  unambiguous on a network several sites share, and otherwise by its address
+  on that network.
+- The manager joins only a network that exists, because a container on it is
+  running, and leaves it however the work ends, before anything can take the
+  site down: `compose down` cannot remove a network with a container still on
+  it. Phases that overlap share one attachment, and the last to finish leaves;
+  a network the manager was already on is not taken from it. The supervisor
+  (§2.6) repeats these phases on the same code.
+- Dumps are still made and loaded by the `mysqldump` and `mysql` of the db
+  container's own version, through `compose exec`: the clients ask questions,
+  they do not move data. A direct check proves a service answers on the
+  site's network; it does not replace the ingress checks of §2.8.
+
+What this rests on, that the daemon resolves the per-site aliases for a
+container attached after it started, the network comes down once the manager
+has left, and the clients really talk to the stack's MySQL and Caddy,
+is what `manager/test/integration` tests, against the real daemon, from a
+container of the manager Dockerfile's `integration` stage.
+
+**Engine API client: kept, not Dockerode.** Dockerode was evaluated (PLA-513)
+and not adopted. Its 5.x release brings `@grpc/grpc-js`, `protobufjs` and
+`tar-fs` for BuildKit sessions and build contexts, and `ssh2` through
+`docker-modem` for remote daemons, none of which the manager uses (it refuses
+a remote daemon); about 16 MB and 53 packages with the optional native
+dependencies left out. Its answers are untyped, so every endpoint would still
+be wrapped in the zod schema this section requires, and its tests would need
+a fake HTTP server or mocks of its methods in place of the one transport
+function they fake now, which is no smaller. Of the client's 536 lines of
+code it would replace about 150: the socket transport, the request and
+error helpers, scanning a pull's progress stream, demultiplexing a
+one-shot container's log stream, and part of the create, start, wait and
+remove sequence. About 250 if the zod schemas went too, leaving the
+daemon's answers checked by nothing. The rest is the manager's own
+policy, which stays either way: rootless detection, the ports of stopped
+sites, label filters, a one-shot container's deadline, kill and cleanup,
+and joining and leaving networks.
+
+**The Docker CLI is not in the image.** The image carries Compose's
+standalone binary, not the `docker` CLI. Adding the CLI would let the manager
+run `docker network connect` and the like, at the cost of a second client of
+the daemon whose output would have to be parsed; everything it would do is
+one Engine API request, typed.
 
 **Windows is WSL2.** Docker Desktop's recommended backend on Windows is WSL2,
 and its WSL integration puts `docker` and the daemon socket inside the distro,

@@ -29,7 +29,7 @@ import {
     rowCountQuery,
     rowMismatches,
 } from '../src/import/database.ts';
-import { failed, harness, json, ok, type Harness, type ProgramResult } from './helpers.ts';
+import { failed, harness, json, ok, ps, type Harness, type ProgramResult } from './helpers.ts';
 import { fixture, REPO, type Manifest } from './site.ts';
 
 const INDEX = `sha256:${'1'.repeat(64)}`;
@@ -112,16 +112,20 @@ describe('row counts', () => {
     test('one query counts every table by name', () => {
         assert.equal(
             rowCountQuery(['posts', 'users']),
-            "SELECT 'posts', COUNT(*) FROM `posts` UNION ALL SELECT 'users', COUNT(*) FROM `users`;\n",
+            "SELECT 'posts', COUNT(*) FROM `posts` UNION ALL SELECT 'users', COUNT(*) FROM `users`",
         );
     });
 
     test('a table whose count differs, or that is missing, is named', () => {
-        assert.deepEqual(rowMismatches({ posts: 3, users: 1, tags: 2 }, 'posts\t3\nusers\t2\n'), [
+        const counted = new Map([
+            ['posts', 3],
+            ['users', 2],
+        ]);
+        assert.deepEqual(rowMismatches({ posts: 3, users: 1, tags: 2 }, counted), [
             'users: the bundle records 1 rows, the database has 2',
             'tags: the bundle records 2 rows, the database has none',
         ]);
-        assert.deepEqual(rowMismatches({ posts: 3 }, 'posts\t3\n'), []);
+        assert.deepEqual(rowMismatches({ posts: 3 }, counted), []);
     });
 });
 
@@ -206,6 +210,19 @@ beforeEach(() => {
     pulls = [];
     database = { rows: fixture('mysql-data').database.rows, tables: '0', migrations: '354' };
     load = () => ok('');
+    // Asked directly, as the site's user, over the site network.
+    h.daemon.sql = (sql) => {
+        if (sql.startsWith("SELECT '")) {
+            return Object.entries(database.rows).map(([table, count]) => [table, String(count)]);
+        }
+        if (sql.includes('information_schema')) {
+            return [[database.tables]];
+        }
+        if (sql.includes('`migrations`')) {
+            return [[database.migrations]];
+        }
+        return undefined;
+    };
     images = { [`${VERSION}-next-alpine`]: VERSION };
     h.daemon.api = ({ method, path, query }) => {
         if (method === 'POST' && path === '/images/create') {
@@ -257,23 +274,14 @@ beforeEach(() => {
                     }),
                 );
             case 'exec':
-                if (input === undefined) {
-                    return load();
-                }
-                if (input.startsWith("SELECT '")) {
-                    return ok(
-                        Object.entries(database.rows)
-                            .map(([table, count]) => `${table}\t${count}\n`)
-                            .join(''),
-                    );
-                }
-                if (input.includes('information_schema')) {
-                    return ok(`${database.tables}\n`);
-                }
-                if (input.includes('`migrations`')) {
-                    return ok(`${database.migrations}\n`);
-                }
-                return failed(1, `unexpected SQL: ${input}`);
+                return input === undefined ? load() : failed(1, `unexpected input: ${input}`);
+            case 'ps':
+                return ok(
+                    ps(
+                        { Service: 'db', Health: 'healthy' },
+                        { Service: 'ghost', Health: 'healthy' },
+                    ),
+                );
             default:
                 return ok('');
         }
@@ -333,7 +341,7 @@ describe('importing a local site', () => {
                 'up --detach',
                 'rm --stop',
                 'exec -T',
-                'exec -T',
+                'ps --all',
                 'down --remove-orphans',
             ],
         );
@@ -425,7 +433,10 @@ describe('importing a local site', () => {
         assert.match(result.stdout, /the database has a Ghost migration history/);
         // Ghost is never started on a dump before it is loaded.
         assert.ok(!calls.some(({ args }) => args[0] === 'up' && args.at(-1) === 'ghost'));
-        assert.ok(calls.some(({ input }) => input?.includes('information_schema')));
+        assert.deepEqual(
+            h.network.queries.map(({ sql }) => sql.split(' FROM ')[1]?.split(' ')[0]),
+            ['information_schema.tables', '`migrations`'],
+        );
     });
 
     test('an archive is imported like a directory', async () => {
@@ -613,6 +624,22 @@ describe('a failed import removes what it created', () => {
         const path = bundle(local('mysql-data'));
         assert.equal((await install('--import', path)).code, 1);
         load = () => ok('');
+        // Asked directly, as the site's user, over the site network.
+        h.daemon.sql = (sql) => {
+            if (sql.startsWith("SELECT '")) {
+                return Object.entries(database.rows).map(([table, count]) => [
+                    table,
+                    String(count),
+                ]);
+            }
+            if (sql.includes('information_schema')) {
+                return [[database.tables]];
+            }
+            if (sql.includes('`migrations`')) {
+                return [[database.migrations]];
+            }
+            return undefined;
+        };
         const result = await install('--import', path, '--no-start');
         assert.equal(result.code, 0, result.stderr);
     });
@@ -646,6 +673,22 @@ describe('an import that is kept, or killed, cannot be started and is cleared by
         );
 
         load = () => ok('');
+        // Asked directly, as the site's user, over the site network.
+        h.daemon.sql = (sql) => {
+            if (sql.startsWith("SELECT '")) {
+                return Object.entries(database.rows).map(([table, count]) => [
+                    table,
+                    String(count),
+                ]);
+            }
+            if (sql.includes('information_schema')) {
+                return [[database.tables]];
+            }
+            if (sql.includes('`migrations`')) {
+                return [[database.migrations]];
+            }
+            return undefined;
+        };
         calls = [];
         const again = await install('--import', bundle(local('mysql-data'), 'again'), '--no-start');
         assert.equal(again.code, 0, again.stderr);

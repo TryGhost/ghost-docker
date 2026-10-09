@@ -181,6 +181,8 @@ const publisher = z.looseObject({
 });
 
 const psEntry = z.looseObject({
+    /** The container's ID, which the Engine API is asked about. */
+    ID: z.string().default(''),
     Service: z.string().default(''),
     State: z.string().default(''),
     Health: z.string().default(''),
@@ -192,11 +194,18 @@ export type ServiceState = z.infer<typeof psEntry>;
 
 /**
  * Every container of the project, stopped ones included, one JSON object per
- * line (Compose 2.21 and later; the minimum is 2.24).
+ * line (Compose 2.21 and later; the minimum is 2.24). Compose lists only the
+ * services its profiles enable, so a site whose `.env` does not select them
+ * yet, such as one being imported, passes COMPOSE_PROFILES in `env`.
  */
-export async function composePs(io: Io, dir: string): Promise<ServiceState[] | null> {
+export async function composePs(
+    io: Io,
+    dir: string,
+    env?: Readonly<Record<string, string>>,
+): Promise<ServiceState[] | null> {
     const result = await compose(io, dir, ['ps', '--all', '--format', 'json'], {
         timeoutMs: 60_000,
+        ...(env === undefined ? {} : { env }),
     });
     if (result.exitCode !== 0) {
         return null;

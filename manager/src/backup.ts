@@ -45,7 +45,7 @@ import { compose, composeConfig, composeError, composePs } from './compose.ts';
 import { runOnce } from './docker/client.ts';
 import { CliError } from './errors.ts';
 import { atomicWrite, PRIVATE } from './fs.ts';
-import { BATCH, siteMysql } from './import/database.ts';
+import { tableCount, withSiteDatabase } from './import/database.ts';
 import type { Io } from './io.ts';
 import type { Metadata } from './meta.ts';
 import { printChecks } from './report.ts';
@@ -334,16 +334,20 @@ export async function takeBackup({
                 );
             }
             chmodSync(file, PRIVATE);
-            const tables = await siteMysql(io, dir, profiles, name).run(
-                "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE';\n",
-                BATCH,
+            const tables = await withSiteDatabase(
+                io,
+                dir,
+                {
+                    profiles,
+                    database: name,
+                    failure: `the ${name} database's tables could not be counted`,
+                },
+                (sql) => tableCount(sql, true),
             );
-            if (tables.exitCode !== 0 || !/^\d+$/.test(tables.stdout.trim())) {
-                throw new CliError(
-                    `the ${name} database's tables could not be counted: ${composeError(tables) || tables.stdout.trim()}`,
-                );
+            if (!Number.isInteger(tables)) {
+                throw new CliError(`the ${name} database's tables could not be counted`);
             }
-            liveTables.set(name, Number(tables.stdout.trim()));
+            liveTables.set(name, tables);
             say(io, name, `dumped, ${(statSync(file).size / 1024 ** 2).toFixed(1)} MB`);
         }
 

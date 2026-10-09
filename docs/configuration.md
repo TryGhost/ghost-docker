@@ -162,10 +162,14 @@ One-shot jobs (`activitypub-migrate`, `tinybird-login`, `tinybird-sync`,
 stopped; the restart policy is not migration orchestration and is not
 readiness.
 
-`ghost`, `db` and `mailpit` have real health checks: Ghost's probe requires
-the Admin API to answer, MySQL's probe requires a real client connection to
-the application database, and Mailpit's asks its own readiness endpoint. A
-running container or a redirect is not readiness.
+`ghost`, `db`, `caddy` and `mailpit` have real health checks: Ghost's probe
+requires the Admin API to answer, MySQL's probe requires a real client
+connection to the application database, Caddy's requires its admin API to
+answer with its configuration loaded, and Mailpit's asks its own readiness
+endpoint. A running container or a redirect is not readiness. `check` and
+installation report these health checks; they do not repeat them. Caddy's
+admin API stays on, on `127.0.0.1:2019` inside its container, because the
+health check and `caddy reload` both use it.
 
 Container logs are capped (`LOG_MAX_SIZE`, `LOG_MAX_FILE`) so a long-running
 site cannot fill the disk.
@@ -183,6 +187,13 @@ Each service has a unique alias suffixed with the project name:
 Generated proxy routes and helper clients use these, never the bare service
 name. `COMPOSE_PROJECT_NAME` is the site's stable identity and is kept
 independent of the directory name.
+
+The manager uses them too. `check`, `install`, `update`, `backup`, `restore`
+and an import join the site's network while they ask its services
+something, and leave it afterwards. They find the network from the site's
+running containers, so one an override renames or makes external works the
+same way. A service whose alias an override removes is reached by its
+address on the network instead.
 
 ## Database connection
 
