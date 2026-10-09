@@ -463,6 +463,15 @@ Write the protocol document before implementing either side. It must include:
 
 - Versioned JSON schemas for status, requests, and jobs; exact version/image fields;
   timestamps/heartbeat; supported capabilities; bounded error details.
+- Available updates in the status, in two lists. **One-click**: what the
+  supervisor can perform within the host's policy, which Admin offers to run.
+  **Manual**: what needs steps on the host, with the reason and the steps, which
+  Admin shows as a notice. Each entry names its component (`ghost`, `stack`, and
+  any added later) and its from/to versions; Admin renders both lists without
+  component-specific rules. Stack updates are always manual: the stack update
+  replaces the supervisor's own image and can change `compose.yml`, so it stays
+  a host command (`./ghost-docker update`). A Ghost upgrade the host's policy
+  forbids, or one that needs a newer stack, is manual too and says why.
 - Request states including queued, backing-up, pulling, restarting, verifying, done,
   failed, restoring, rolled-back, and recovery-required, plus legal transitions.
 - UUID validation, bounded file sizes, no symlink following, exclusive request
@@ -1517,6 +1526,10 @@ policy, and recovery rules, then implement the supervisor as a long-running
 command of the manager image. Reuse S7 behavior. Wire `--with supervisor` and
 request submission/status tooling.
 
+The status lists available updates as one-click and manual (§2.6): Ghost
+upgrades the policy allows, and stack updates and Ghost upgrades it does not, the
+latter with the reason and the host command.
+
 Acceptance: handwritten requests work before Ghost gains an adapter; duplicate and
 malformed requests, permission violations, stale status, supervisor crashes, and
 host-operation conflicts behave correctly. Verify actual exchange permissions as
@@ -1539,6 +1552,9 @@ Repo: Ghost Admin. Deps: S9. Add the current-version/available-update panel usin
 repository's current React/Shade and API conventions. Feature-detect older backends,
 show host capabilities, confirm downtime/backup behavior, and display durable job
 progress with bounded reconnection and recovery guidance. Wire notification links.
+Show the status's two update lists (§2.6): one-click updates with an action, and
+manual ones as a notice with their reason and host steps, such as a stack update
+to run with `./ghost-docker update`.
 
 Acceptance: older backend, unsupported adapter, owner/admin permissions, successful
 restart/reconnect, queued job, stale supervisor, failed restore, and recovery-required
