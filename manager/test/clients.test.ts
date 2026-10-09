@@ -42,6 +42,12 @@ const greeting = () => {
 
 const OK = Buffer.from([0, 0, 0, 2, 0, 0, 0]);
 
+/** MySQL's refusal of a sign-in: error 1045, SQL state 28000. */
+const ACCESS_DENIED = Buffer.concat([
+    Buffer.from([0xff, 0x15, 0x04]),
+    Buffer.from("#28000Access denied for user 'intruder'"),
+]);
+
 /** What the server saw of one client. */
 interface Seen {
     queries: string[];
@@ -52,8 +58,8 @@ interface Seen {
 }
 
 /**
- * Answers `DO` statements with OK and leaves anything else unanswered. It
- * never closes its side by itself, as a server that has stopped answering
+ * Refuses the user `intruder`, answers `DO` statements with OK and leaves
+ * anything else unanswered. It never closes its side by itself, as a server that has stopped answering
  * need not, so a client that only half-closes keeps the socket open.
  */
 let server: Server;
@@ -75,8 +81,11 @@ before(async () => {
                 const payload = buffered.subarray(4, 4 + length);
                 buffered = buffered.subarray(4 + length);
                 if (!signedIn) {
-                    signedIn = true;
-                    socket.write(packet(2, OK));
+                    // The handshake response: the user follows 32 bytes of
+                    // capabilities, packet size, charset and filler.
+                    const user = payload.subarray(32, payload.indexOf(0, 32)).toString('utf8');
+                    signedIn = user !== 'intruder';
+                    socket.write(packet(2, signedIn ? OK : ACCESS_DENIED));
                 } else if (payload[0] === 0x01) {
                     seen.quit = true;
                 } else if (payload[0] === 0x03) {
@@ -115,8 +124,8 @@ async function clientSockets(): Promise<number> {
     return sockets.length - clients.filter(({ socket }) => !socket.destroyed).length;
 }
 
-const connect = () =>
-    nodeClients.mysql({ host: '127.0.0.1', port, user: 'ghost', password: 'x', database: 'ghost' });
+const connect = (user = 'ghost') =>
+    nodeClients.mysql({ host: '127.0.0.1', port, user, password: 'x', database: 'ghost' });
 
 /** The last client the server saw, once its side is gone or `ms` has passed. */
 async function goneWithin(ms: number): Promise<Seen> {
@@ -197,6 +206,26 @@ test('connections that time out one after another leave none open', async () => 
     );
     assert.equal(await clientSockets(), 0);
     // And a fresh connection still works.
+    const sql = await connect();
+    assert.deepEqual(await sql.query('DO 1'), []);
+    await sql.close();
+});
+
+test('a refused sign-in is an error naming the refusal, and leaves no socket', async () => {
+    await assert.rejects(
+        connect('intruder'),
+        (error) =>
+            error instanceof ServiceUnreachable &&
+            error.stage === 'connect' &&
+            /^127\.0\.0\.1:\d+: Access denied for user 'intruder' \(ER_ACCESS_DENIED_ERROR\)$/.test(
+                error.message,
+            ),
+    );
+    // Destroying the socket raises nothing uncaught once the refusal is in;
+    // the test runner fails the test if it does.
+    assert.ok((await goneWithin(500)).gone, 'the socket stayed open');
+    assert.equal(await clientSockets(), 0);
+    // And the next sign-in works.
     const sql = await connect();
     assert.deepEqual(await sql.query('DO 1'), []);
     await sql.close();
