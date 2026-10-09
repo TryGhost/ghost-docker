@@ -12,19 +12,26 @@
 //
 //   1. Refusals that change nothing: a site without metadata, a checkout, a
 //      downgrade, a Ghost older than this release runs. Then the lock.
-//   2. A snapshot of the operator's files, the metadata and every managed
-//      file this update writes, in UPDATE_DIR. Then a checked
-//      backup (backup.ts), because a release's services may migrate their
-//      databases, ActivityPub's among them, whether or not Ghost changes.
-//   3. The managed files: an untouched one is replaced, an
-//      edited one is kept and the release's is written beside it as
-//      `<file>.new`. It never asks.
-//   4. Validate, pull, `up --wait`, verify as `check` does.
-//   5. On a failure, the snapshot is put back. Once the services had been changed, they are
-//      stopped first, the data they ran on is set aside, and the backup's
-//      databases and content are loaded (recovery.ts) before the previous
-//      release is started again. The outcome is reported as restored or as
-//      needing the operator. Never success because `up` returned zero.
+//   2. The release's images pulled while the site keeps running, where
+//      Compose can resolve them before the release is written; a pull that
+//      cannot is done again in step 4.
+//   3. A snapshot of the operator's files, the metadata and every managed
+//      file this update writes, in UPDATE_DIR. Then Ghost and ActivityPub
+//      are stopped (writers.ts), and a checked backup taken (backup.ts),
+//      because a release's services may migrate their databases,
+//      ActivityPub's among them, whether or not Ghost changes. They stay
+//      stopped until the release starts, so nothing they would accept can
+//      be lost by loading that backup back.
+//   4. The managed files: an untouched one is replaced, an edited one is
+//      kept and the release's is written beside it as `<file>.new`. It
+//      never asks. Validate, pull, `up --wait`, verify as `check` does.
+//   5. On a failure, the snapshot is put back. Before the services had
+//      been changed, the writers are then started again as they were. Once
+//      they had, they are stopped first, the data they ran on is set
+//      aside, and the backup's databases and content are loaded
+//      (recovery.ts) before the previous release is started again. The
+//      outcome is reported as restored or as needing the operator. Never
+//      success because `up` returned zero.
 //   6. On success, the site's launcher is pinned to this image, the metadata
 //      records the release, and the snapshot is removed.
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
@@ -58,9 +65,10 @@ import {
 import { compareReleases, isRelease } from '../release.ts';
 import { refuseForeignProject } from '../project.ts';
 import { heading, ok, printChecks } from '../report.ts';
-import { META_FILE, OPERATOR_FILES, UPDATE_DIR, type SiteFacts } from '../site.ts';
+import { COMPOSE_FILE, META_FILE, OPERATOR_FILES, UPDATE_DIR, type SiteFacts } from '../site.ts';
 import { verifySite } from '../verify.ts';
 import { atLeast, MINIMUM } from '../versions.ts';
+import { WriterPause } from '../writers.ts';
 import {
     channelOption,
     installedSite,
@@ -441,18 +449,50 @@ async function apply(update: Update): Promise<number> {
     const dir = site.dir;
     io.stdout(`Updating from ${describeStack(from)} to ${describeStack(to)}\n`);
 
+    // While the site still runs: the slowest step, kept out of the time the
+    // writers are stopped. Compose resolves the release's compose.yml with
+    // the site's own overrides and settings.
+    heading(io, 'Pulling the release’s images');
+    const early = await io.busy(
+        'Pulling the images this release names, while the site keeps running',
+        () =>
+            compose(io, {
+                dir,
+                composeFile: join(stack, COMPOSE_FILE),
+                timeout: PULL_MS,
+            })`pull --quiet --ignore-buildable`,
+    );
+    if (early.exitCode === 0) {
+        ok(io, 'images', 'pulled, while the site kept running');
+    } else {
+        printChecks(io, [
+            {
+                status: 'note',
+                label: 'images',
+                detail: `not pulled yet (${composeError(early, 2)}); they are pulled once the release is written`,
+            },
+        ]);
+    }
+
     heading(io, 'Keeping the current files');
     const snapshot = new Snapshot(dir, touched(payload));
     snapshot.take();
     ok(io, UPDATE_DIR, 'the configuration, the metadata and the files this update writes');
 
+    // Owned by the update, not the backup: the writers stay stopped from
+    // before the backup until the release starts, or the site is put back.
+    const pause = new WriterPause(io, dir, 'the update');
     let stage: Stage = 'backup';
     let backup: string | null = null;
     try {
         heading(io, 'Backing up the site');
-        // Consistent: the update restarts the services anyway, and a recovery
-        // loads this backup over everything the site wrote.
-        backup = await takeBackup({ io, site, metadata: update.metadata, consistent: true });
+        backup = await takeBackup({
+            io,
+            site,
+            metadata: update.metadata,
+            consistent: true,
+            pause,
+        });
         ok(io, 'backup', `${relative(dir, backup)}, checked`);
 
         stage = 'write';
@@ -479,6 +519,7 @@ async function apply(update: Update): Promise<number> {
 
         stage = 'pull';
         heading(io, 'Starting the services');
+        // Quick when the early pull got them; whatever it could not, now.
         const pull = await io.busy(
             'Pulling the images this release names',
             () => compose(io, { dir, timeout: PULL_MS })`pull --quiet --ignore-buildable`,
@@ -488,6 +529,8 @@ async function apply(update: Update): Promise<number> {
         }
 
         stage = 'start';
+        // The services are the release's from here: a recovery stops them all.
+        pause.end();
         await upAndWait(io, dir, 'Starting the services and waiting for them to be healthy');
         ok(io, 'services', 'healthy, by their own health checks');
 
@@ -497,7 +540,7 @@ async function apply(update: Update): Promise<number> {
         stage = 'record';
         record(update);
     } catch (error) {
-        return recover(update, snapshot, backup, stage, error);
+        return recover(update, snapshot, pause, backup, stage, error);
     }
     snapshot.remove();
     summarize(update, backup);
@@ -547,6 +590,7 @@ function record({ io, site, metadata, from, to, release, payload }: Update): voi
 async function recover(
     { io, context, site, from, to }: Update,
     snapshot: Snapshot,
+    pause: WriterPause,
     backup: string | null,
     stage: Stage,
     error: unknown,
@@ -572,6 +616,16 @@ async function recover(
             snapshot.restore();
         } catch (restoreError) {
             problems.push(`the files could not be put back: ${(restoreError as Error).message}`);
+        }
+    }
+    // Stopped for the update and never changed: started again as they were,
+    // on the files as they were. Left stopped when those are not back.
+    const resumed = [...pause.paused];
+    if (problems.length === 0 && !servicesChanged) {
+        try {
+            await pause.resume();
+        } catch (resumeError) {
+            problems.push((resumeError as Error).message);
         }
     }
     if (problems.length === 0 && servicesChanged) {
@@ -628,7 +682,14 @@ async function recover(
             `Restored: the site is back on ${describeStack(from)}, with its files as they were` +
                 (servicesChanged
                     ? ', its databases and content from the backup, and its services running and healthy.'
-                    : '. Its services were not changed.'),
+                    : resumed.length > 0
+                      ? `. Its services were not changed; ${resumed.join(' and ')}, stopped for the update, ${resumed.length > 1 ? 'are' : 'is'} running again.`
+                      : '. Its services were not changed.'),
+            ...(stage === 'verify' || stage === 'record'
+                ? [
+                      `${describeStack(to)} ran before the update failed: anything the site accepted while it ran was not kept.`,
+                  ]
+                : []),
             ...kept,
             ...(left === null ? [] : [left]),
             '',
