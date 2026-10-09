@@ -212,15 +212,24 @@ describe('release.ts', () => {
     const script = join(SCRIPTS, 'release.ts');
     let work: string;
     let checkout: string;
-    const git = (...args: string[]) =>
-        execFileSync(
-            'git',
-            ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', ...args],
-            {
-                cwd: checkout,
-                encoding: 'utf8',
-            },
-        ).trim();
+    /**
+     * git with none of this machine's configuration: a person's signing,
+     * hooks or default branch would otherwise change what the fixtures and
+     * the script do. The tag is annotated, so it needs an identity, which a
+     * CI runner has none of; the Release workflow sets its own.
+     */
+    const GIT_ENV = {
+        ...process.env,
+        GIT_CONFIG_GLOBAL: '/dev/null',
+        GIT_CONFIG_NOSYSTEM: '1',
+        GIT_AUTHOR_NAME: 'Test',
+        GIT_AUTHOR_EMAIL: 'test@example.com',
+        GIT_COMMITTER_NAME: 'Test',
+        GIT_COMMITTER_EMAIL: 'test@example.com',
+    };
+    const gitIn = (cwd: string | undefined, ...args: string[]) =>
+        execFileSync('git', args, { cwd, encoding: 'utf8', env: GIT_ENV }).trim();
+    const git = (...args: string[]) => gitIn(checkout, ...args);
     const commit = (message: string) => {
         writeFileSync(join(checkout, 'file'), message);
         git('add', 'file');
@@ -231,25 +240,15 @@ describe('release.ts', () => {
             cwd: checkout,
             encoding: 'utf8',
             stdio: ['ignore', 'pipe', 'pipe'],
-            // The tag is annotated, so it needs an identity, which a CI
-            // runner has none of; the Release workflow sets its own.
-            env: {
-                ...process.env,
-                GITHUB_OUTPUT: '',
-                GIT_CONFIG_GLOBAL: '/dev/null',
-                GIT_AUTHOR_NAME: 'Test',
-                GIT_AUTHOR_EMAIL: 'test@example.com',
-                GIT_COMMITTER_NAME: 'Test',
-                GIT_COMMITTER_EMAIL: 'test@example.com',
-            },
+            env: { ...GIT_ENV, GITHUB_OUTPUT: '' },
         });
 
     // A checkout with its own origin, so that tags can be pushed.
     test.beforeEach(() => {
         work = realpathSync(mkdtempSync(join(tmpdir(), 'gd-release-')));
         checkout = join(work, 'checkout');
-        execFileSync('git', ['init', '--quiet', '--bare', join(work, 'origin.git')]);
-        execFileSync('git', ['init', '--quiet', checkout]);
+        gitIn(undefined, 'init', '--quiet', '--bare', join(work, 'origin.git'));
+        gitIn(undefined, 'init', '--quiet', checkout);
         git('remote', 'add', 'origin', join(work, 'origin.git'));
     });
     test.afterEach(() => rmSync(work, { recursive: true, force: true }));
@@ -265,10 +264,7 @@ describe('release.ts', () => {
         commit('✨ Added backups');
         assert.equal(release('cut'), 'v0.2.0-beta.1\n');
         assert.deepEqual(
-            execFileSync('git', ['ls-remote', '--tags', '--refs', join(work, 'origin.git')], {
-                encoding: 'utf8',
-            })
-                .trim()
+            gitIn(undefined, 'ls-remote', '--tags', '--refs', join(work, 'origin.git'))
                 .split('\n')
                 .map((line) => line.split('refs/tags/')[1])
                 .sort(),
@@ -284,11 +280,6 @@ describe('release.ts', () => {
         commit('Added the foundation');
         assert.equal(release('cut', '--dry-run'), 'v0.1.0-beta.1\n');
         assert.equal(git('tag', '--list'), 'v0.1.0-beta.1');
-        assert.equal(
-            execFileSync('git', ['ls-remote', '--tags', join(work, 'origin.git')], {
-                encoding: 'utf8',
-            }),
-            '',
-        );
+        assert.equal(gitIn(undefined, 'ls-remote', '--tags', join(work, 'origin.git')), '');
     });
 });

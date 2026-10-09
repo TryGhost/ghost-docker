@@ -54,7 +54,7 @@ dependencies and the contracts in §2 before implementing it.
 | Ghost nightly channel | Future explicit opt-in via `--ghost-channel nightly`; published to GHCR, independently of the stack release channel. Stable remains the default. |
 | Service image registry | Future `--image-registry dockerhub|ghcr` selects dual-published traffic-analytics and ActivityPub images, including migrations. |
 | Redis | Default on new installations once S16 ships, with explicit `--without redis` opt-out. |
-| Tests | Unit tests for the CLI in TypeScript. End-to-end scenarios that only run the real commands and check outcomes are shell scripts in `tests/e2e/`, so they do not depend on how the commands are implemented. |
+| Tests | Unit tests for the CLI in TypeScript. End-to-end scenarios that only run the real commands and check outcomes are shell scripts in `tests/e2e/`, so they do not depend on how the commands are implemented. A scenario the host cannot run fails the script unless `GD_E2E_ALLOW_SKIP=1`, so a green run, in CI above all, ran everything. |
 
 Explicitly document initial limitations: no shared-infra provisioning, no automatic
 major Ghost/MySQL upgrades, no arbitrary downgrade support, and no import of a
@@ -1283,7 +1283,8 @@ commands. Decisions made while building it, which later steps rely on:
   containers publish; it refuses those before writing anything. A program
   outside Docker holding a port is found at `up`. OrbStack publishes the port
   over such a program without an error, so on macOS with OrbStack that conflict
-  is not detected at all; the e2e records it as skipped there. The e2e itself
+  is not detected at all; the e2e fails there, or records it as skipped with
+  `GD_E2E_ALLOW_SKIP=1`. The e2e itself
   requests the host's ports with curl, which is the check the manager cannot
   make. A failed `up` is reported in Compose's own words, which name the port
   (their wording differs between Docker 28 and 29, so it is quoted, not
