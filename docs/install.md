@@ -468,7 +468,8 @@ docker compose up -d
 
 Then use the copy, and remove it (`docker compose down`, then the directory)
 once the rehearsal is done. Its bundle is not the move's: export again, with
-the source stopped, for the move itself.
+the source stopped and to a new path (the exporter never writes over an
+existing bundle), for the move itself.
 
 ## Ports, and your existing proxy
 

@@ -279,6 +279,8 @@ ok "ghost start: the source answers through nginx, as before"
 
 step "Move the site as docs/install.md describes, on the same server"
 ghost_cli stop
+# The exporter refuses an existing output, so the final export is a new bundle.
+BUNDLE=$WORK/bundle-final
 ghost_cli migrate-export --force --no-prompt --output "$BUNDLE"
 source_active && fail "the final export started the stopped source"
 sudo systemctl stop nginx
