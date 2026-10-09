@@ -1,6 +1,7 @@
 // A site directory for tests: the repository's own compose.yml and examples,
 // a `.env` written through the real encoder, and a scripted
 // `docker compose config` that answers what Compose would.
+import { execFileSync } from 'node:child_process';
 import {
     copyFileSync,
     cpSync,
@@ -28,6 +29,42 @@ import {
 } from './helpers.ts';
 
 export const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+
+/**
+ * The released main layout's commit: `origin/main` until `next-docker` is
+ * merged into it, then pinned to main's last commit before that merge (S12 in
+ * docs/ghost-cli-replacement.md). Read from git, so it never drifts from main.
+ */
+export const RELEASED_MAIN = process.env.GD_RELEASED_MAIN ?? 'origin/main';
+
+let releasedMainDir: string | undefined;
+
+/**
+ * The released main layout's files, checked out once per test process into a
+ * directory of their own, removed when the process exits.
+ */
+export function releasedMain(): string {
+    if (releasedMainDir !== undefined) {
+        return releasedMainDir;
+    }
+    let archive: Buffer;
+    try {
+        archive = execFileSync('git', ['-C', REPO, 'archive', '--format=tar', RELEASED_MAIN], {
+            stdio: ['ignore', 'pipe', 'pipe'],
+            maxBuffer: 256 * 1024 * 1024,
+        });
+    } catch (error) {
+        throw new Error(
+            `the released main layout (${RELEASED_MAIN}) is not in this repository: ` +
+                `git fetch origin main, or set GD_RELEASED_MAIN. ${(error as Error).message}`,
+        );
+    }
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'gd-released-main-')));
+    execFileSync('tar', ['-x', '-C', dir], { input: archive });
+    process.on('exit', () => rmSync(dir, { recursive: true, force: true }));
+    releasedMainDir = dir;
+    return dir;
+}
 
 /** A bundle manifest, loosely typed so tests can break it. */
 export type Manifest = Record<string, any>;
@@ -322,7 +359,7 @@ export function writeSiteData(dir: string): void {
  */
 export function scriptSite(
     h: Harness,
-    config: (args: string[]) => ProgramResult | undefined,
+    config: (args: string[], envFile?: string) => ProgramResult | undefined,
     images: Record<string, string> = {
         ghost: REFERENCE,
         db: `mysql:8.0.44@sha256:${'4'.repeat(64)}`,
@@ -362,11 +399,11 @@ export function scriptSite(
         }
         return undefined;
     };
-    h.daemon.composeRun = (args, _env, input) => {
+    h.daemon.composeRun = (args, _env, input, _dir, envFile) => {
         site.compose.push(args);
         switch (args[0]) {
             case 'config': {
-                const answer = config(args);
+                const answer = config(args, envFile);
                 if (answer === undefined || answer.exitCode !== 0) {
                     return answer;
                 }

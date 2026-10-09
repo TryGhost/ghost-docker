@@ -277,6 +277,14 @@ export interface BackupInput {
      * resumes them as soon as the capture is done.
      */
     readonly pause?: WriterPause;
+    /**
+     * The configuration was just rewritten from the released main layout, with
+     * the writers stopped (legacy.ts): the stopped containers ran the old
+     * layout's images, which the configuration deliberately no longer names.
+     * Drift is not refused, and only services running exactly what the
+     * configuration names are recorded as having run it.
+     */
+    readonly migrating?: boolean;
 }
 
 /** The manager taking the backup, as it was built. */
@@ -321,6 +329,7 @@ export async function takeBackup({
     now = new Date(),
     consistent = false,
     pause,
+    migrating = false,
 }: BackupInput): Promise<string> {
     const dir = site.dir;
     const databases = siteDatabases(site);
@@ -329,7 +338,9 @@ export async function takeBackup({
     const resolved = await io.busy('Resolving the Compose project', () => resolveSite(io, dir));
     refuseMovedData(site, resolved);
     const overrides = siteOverrides(resolved);
-    await refuseDrift(io, resolved);
+    if (!migrating) {
+        await refuseDrift(io, resolved);
+    }
     const images: Record<string, string> = {};
     for (const [service, definition] of Object.entries(resolved.services)) {
         if (definition.image !== null) {
@@ -381,7 +392,12 @@ export async function takeBackup({
         // What runs, exactly: the backup records it beside what is configured,
         // and checks the dumps with the MySQL that wrote them.
         const running = await observeSite(io, resolved);
-        const ran = await runningImages(io, running);
+        const ran = await runningImages(
+            io,
+            migrating
+                ? running.filter((each) => resolved.services[each.service]?.image === each.image)
+                : running,
+        );
         const commit = metadata.source === 'checkout' ? await checkedOut(io, dir) : null;
 
         io.stdout('\nThe capture\n');

@@ -257,4 +257,22 @@ useful fresh/damaged-install diagnostics. Bundle v1 has its own
 S12 must record the exact schema/format/launcher versions supported by the stable
 release here. Subsequent changes must be compatible or explicitly versioned with
 a migration or old-format reader; pinned launchers must still start newer update
-managers. Migration from the released `main` layout remains required in S6b.
+managers.
+
+### Migration from the released main layout
+
+`src/legacy.ts` is migration `0001-compose-profiles`: the one way an installation
+of the released `main` layout (a clone with no metadata) reaches this layout,
+entered through the served launcher's `self-update`. `src/legacy/caddy.ts`
+carries the operator's Caddyfile as written, with main's environment variables
+filled in and main's snippets kept beside it rather than translated into this
+layout's shape; Caddy decides whether it loads. `src/legacy/config.ts` splits
+its `.env`.
+It decides everything before changing anything: Compose resolves the staged
+configuration with the operator's overrides and Caddy loads the staged routes.
+It then follows self-update's recovery boundary, reusing its snapshot, writer
+pause and backup; the backup skips drift refusal because the stopped containers
+deliberately ran main's images. The metadata is written last and is the only
+record of completion: a site with it is never migrated again. There is no
+general migration framework; a later migration from a released layout adds
+what it needs.

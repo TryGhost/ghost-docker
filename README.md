@@ -5,9 +5,9 @@ Configuration to run Ghost and its services with Docker Compose.
 > **This is the `next-docker` development branch.** It is being rebuilt around
 > a manager image: a small CLI in a container, started by a bash launcher that
 > uses Docker. It installs local and production sites, imports local and production
-> Ghost-CLI sites, backs up and restores them, and updates image installations
-> between beta releases. Migration from the released `main` layout remains on
-> the [roadmap](docs/ghost-cli-replacement.md). For a supported setup
+> Ghost-CLI sites, backs up and restores them, updates image installations
+> between beta releases, and moves installations of the released `main` layout
+> onto it. Remaining work is on the [roadmap](docs/ghost-cli-replacement.md). For a supported setup
 > today, use the `main` branch.
 
 ## The launcher
@@ -91,6 +91,7 @@ From `scripts/`, run `pnpm install --frozen-lockfile`, `pnpm run typecheck` and
 tests/e2e/launcher.sh        # stand-in Docker, then the real image
 tests/e2e/install.sh         # real installations: pulls images, binds 80 and 443
 tests/e2e/self-update.sh     # release updates, failed-update write retention and recovery
+tests/e2e/migrate-main.sh    # an installation of the released main layout, migrated
 tests/e2e/backup.sh          # real backups and restores, including ActivityPub
 tests/e2e/import.sh          # real Ghost-CLI sites exported and imported
 GD_TEST_HOST_CHANGES=1 tests/e2e/production-import.sh  # a Ghost-CLI production site moved; changes the host

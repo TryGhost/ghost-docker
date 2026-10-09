@@ -98,7 +98,7 @@ caddy/custom/*
 caddy/global/*
 !caddy/global/.gitignore
 !caddy/global/README.md
-# Operator's own Caddyfile from pre-1.0 installations (see the S6 migration)
+# The released main layout's own Caddyfile, kept by its migration (docs/install.md)
 caddy/Caddyfile.local
 # The operator's own Compose overrides (docs/configuration.md)
 compose.override.yml

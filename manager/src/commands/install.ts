@@ -496,7 +496,7 @@ async function sitePorts(
 }
 
 /** The first port no container publishes and, where that can be told, nothing on the host holds. */
-async function freeOnHost(
+export async function freeOnHost(
     io: Io,
     published: ReadonlySet<number>,
     start = DEFAULT_PORT,

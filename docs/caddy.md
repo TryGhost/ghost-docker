@@ -25,6 +25,16 @@ import /etc/caddy/sites/*.caddy
 import /etc/caddy/custom/*.caddy
 ```
 
+## Routes moved from the released main layout
+
+A site moved from `main` keeps its own Caddyfile as `caddy/sites/site.caddy`
+([install.md](install.md#moving-from-the-released-main-layout)). It imports
+main's snippets, which take no arguments, from `caddy/sites/legacy-snippets/`,
+and proxies to bare service names (`ghost:2368`), which resolve on the site's
+own network. Both keep working. Moving to this layout's snippets and aliases,
+as `install` writes them, is optional, and is needed before the site joins a
+shared Caddy.
+
 ## Changing routes
 
 Edit the file, then reload Caddy explicitly:

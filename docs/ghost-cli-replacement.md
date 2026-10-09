@@ -11,8 +11,8 @@ Linear](https://linear.app/ghost/issue/PLA-412).
 
 | Outcome | Remaining work | Dependencies |
 | --- | --- | --- |
-| Tagged single-site production | S6b legacy-layout migration, S5e production import, S12 qualification | Existing image self-update, local import, backup and restore |
-| Several sites behind shared Caddy | S13 | Existing backup/restore; S6b for converting existing sites |
+| Tagged single-site production | S5e production import, S12 qualification | Existing image self-update, local import, backup and restore |
+| Several sites behind shared Caddy | S13 | Existing backup/restore and released-main migration |
 | Admin-driven Ghost upgrades | S7 host upgrade, S8 supervisor, S9 core adapter/API, S10 Admin | S7 before supervisor execution; S8 protocol before S9; S9 before S10; S13 integration if shipped |
 | Later extensions | S11 file secrets, S14 service references, S15 nightlies, S16 Redis | See each step |
 
@@ -42,37 +42,6 @@ assets, redirects and configuration preserved.
 its recovery, and the admin domain in CI; the cross-host move is run by hand. This replaces `main`'s
 `scripts/migrate.sh`; S12 must not merge `next-docker` into `main` before these
 scenarios pass.
-
-### S6b — Migration from the released main layout
-
-Repo: ghost-docker. Depends on image self-update and backup/restore. This migration
-remains required regardless of the development-format [compatibility
-policy](architecture.md#compatibility), and gates merging into `main`.
-
-Implement ordered release migration scripts, recording completion in metadata when the
-first migration needs that field. `0001-compose-profiles` must:
-
-- Handle both absent profiles and existing `analytics,activitypub`, adding
-  `production`; preserve credentials and project identity.
-- Split Ghost application configuration into `ghost.env`, keeping operator
-  settings in `.env`; add `SITE_MODE`, `URL`, `PROJECT_DIR` and an exact pin for
-  the currently running Ghost version.
-- Preserve the existing untracked Caddyfile before managed files are written.
-  Custom routes must still work with snippets that take explicit upstream and
-  domain arguments. Preserve supported customizations automatically, or stop
-  before changing the live site and explain what must be resolved.
-
-Existing installations have no launcher or metadata. The entry point is the served
-launcher from inside the installation (`curl -fsSL https://docker.ghost.org/install.sh |
-bash -s -- self-update`), not a raw `git pull` across the breaking change. This is a
-migration of the released layout, distinct from self-update of a current `source:
-checkout` site.
-
-Acceptance: absent metadata, an untagged starting commit, existing optional profiles,
-custom Caddy routes and Compose overrides, skipped releases, repeated invocation and
-failed hooks. Failures during migration, pulling or startup must follow the [recovery
-boundary](architecture.md#recovery) and report the observed state accurately, retaining
-any writes after startup.
 
 ### S7 — Host-driven Ghost upgrades
 
@@ -244,13 +213,15 @@ environment-based installs, older imports, restart, and restore still work.
 
 ### S12 — Single-site release qualification and documentation
 
-Repo: ghost-docker, with cross-repo fixtures. Deps: S5e and S6b, plus existing install,
-backup/restore and self-update; qualify S13, S7-S10 and S11 when they have shipped.
+Repo: ghost-docker, with cross-repo fixtures. Deps: S5e, plus existing install,
+backup/restore, self-update and released-main migration; qualify S13, S7-S10 and S11 when they have shipped.
 Gates the first stable tag and merging `next-docker` into `main`. Include the launcher
 on Linux, macOS and WSL2. Consolidate CI and qualify the actual minimum supported tools
 and image versions. Run fresh local/production install, optional-service variants, CLI
 migration, legacy stack update, Ghost upgrade/recovery, supervisor/Admin, and restore
-scenarios. Include Linux runtime tests and macOS-compatible shell/configuration checks.
+scenarios. Before merging, pin the migration tests' `GD_RELEASED_MAIN`
+(default `origin/main`, in `manager/test/site.ts`, `tests/e2e/migrate-main.sh` and
+the manager CI job) to `main`'s last commit, and rerun them. Include Linux runtime tests and macOS-compatible shell/configuration checks.
 Record the [compatibility baseline](architecture.md#compatibility): the exact metadata
 schema, backup format, launcher contract and bundle versions the stable release
 supports, and the obligations that hold for them from then on.
@@ -265,7 +236,8 @@ shipped.
 ### S13 — Optional shared Caddy
 
 Repo: ghost-docker. Depends on backup/restore for new member sites; converting an
-existing site into a member (PLA-504) also needs S6b. Several sites on one server, as
+existing site into a member (PLA-504) starts from a site on this layout, which the
+released-main migration provides. Several sites on one server, as
 Ghost-CLI ran several sites behind one nginx. 80 and 443 can belong to one Caddy only,
 so that Caddy is shared; everything else stays per site, MySQL included, so backup,
 restore, upgrade and import are unchanged.
