@@ -55,6 +55,7 @@ ghost-docker install [--local | --domain example.com [--admin-domain admin.examp
                      [--port 2368] [--version 6.61.0] [--with activitypub,mailpit]
                      [--channel stable|beta | --release vX.Y.Z] [--no-prompt] [--no-start]
 ghost-docker install --import BUNDLE [--port 2368] [--with mailpit] [--no-prompt] [--no-start]
+ghost-docker install --import BUNDLE [--domain DOMAIN] [--admin-domain DOMAIN] [--email EMAIL] [--no-start]
 ```
 
 | Option | Meaning |
@@ -70,7 +71,7 @@ ghost-docker install --import BUNDLE [--port 2368] [--with mailpit] [--no-prompt
 | `--release vX.Y.Z` | Install that release. |
 | `--no-prompt` | Never ask: every input must then be an option. |
 | `--no-start` | Write the configuration and routes; create no containers. |
-| `--import BUNDLE` | Import a local Ghost-CLI site from the bundle `ghost migrate-export` made; see [Importing a Ghost-CLI site](#importing-a-ghost-cli-site). |
+| `--import BUNDLE` | Import a local or production Ghost-CLI site from the bundle `ghost migrate-export` made; see [Importing a Ghost-CLI site](#importing-a-ghost-cli-site). |
 
 With neither `--local` nor `--domain`, `install` asks which kind of site, and
 for a production site its domain. It asks only at a terminal, including when
@@ -175,7 +176,7 @@ anything it prints the services' last log lines.
 
 ## Importing a Ghost-CLI site
 
-A local Ghost-CLI site — the kind `ghost install local` makes — moves to Docker
+A Ghost-CLI site, local (`ghost install local`) or production, moves to Docker
 in two commands, once it runs **Ghost 6.61.0 or later**: the first release
 published as a `next` image, which is what the import runs. Bring the source up
 to date first, Ghost-CLI and then the site, in the site's directory, and check
@@ -186,7 +187,7 @@ npm install -g ghost-cli@latest
 ghost update
 ```
 
-Then export it with Ghost-CLI 1.33.3 or later:
+Then export it with Ghost-CLI 1.33.4 or later:
 
 ```bash
 ghost migrate-export --output ~/my-site-bundle --archive tgz
@@ -198,7 +199,9 @@ Then, in a new empty directory, install from the bundle:
 ./ghost-docker install --import ~/my-site-bundle.tgz
 ```
 
-No `--local` is needed: the bundle says what kind of site it is. The launcher
+No `--local` or `--domain` is needed: the bundle says what kind of site it
+is, and a production site is imported as one, on its own domain (see
+[below](#importing-a-production-site)). The launcher
 mounts the bundle into the manager read-only, at its own path; the bundle can
 be anywhere on the host.
 
@@ -207,7 +210,7 @@ The exporter picks the bundle kind from the source database:
 | Source | Bundle kind | Imported how |
 | --- | --- | --- |
 | Local SQLite | `mysql-data` | Ghost starts once on a fresh MySQL database to create its schema, then every row is loaded and the row counts are compared with the bundle's. |
-| Local MySQL | `mysql-dump` | The dump is loaded into a fresh MySQL database. |
+| Local or production MySQL | `mysql-dump` | The dump is loaded into a fresh MySQL database. |
 
 Either way the database arrives whole: posts, members, staff accounts and their
 passwords, settings, and history. Themes, images, files, media, routes and
@@ -225,7 +228,7 @@ What to expect:
   different version is a usage error. A bundle from a source older than Ghost
   6.61.0 is refused before anything is created, whichever Ghost-CLI wrote it:
   run `ghost update` in the source, check the site, and export again.
-- **A new address.** The site is served at `http://localhost:PORT`, on the
+- **A new address**, for a local site. It is served at `http://localhost:PORT`, on the
   first free port at or above 2368 unless `--port` says
   otherwise. An ordinary export preserves the source's original running state, so the two sit side
   by side until you run `ghost stop` in the source directory. They are separate
@@ -281,15 +284,52 @@ so set those up again. Export without `--sqlite-format portable` to get a
 
 Refused, each with a message that says so:
 
-- A bundle from a production installation, and `--import` with `--domain`,
-  until production import and cutover (S5e).
 - `--import` with `--with`: import the site first, then enable optional
-  services.
+  services. A local site may take `--with mailpit`.
+- `--domain`, `--admin-domain` or `--email` with a local site's bundle, and
+  `--local` with a production site's.
+- A `portable` bundle of a production site. The exporter makes portable
+  bundles of local SQLite sites only; a site that must move through Ghost
+  Admin is installed new, then its content and members are imported there.
+
+### Importing a production site
+
+A bundle of a production site is installed as a production site: Ghost,
+MySQL and Caddy with HTTPS, as `install --domain` makes one, with the source's
+database, content and configuration.
+
+- **Its own domains.** The domain comes from the bundle's `url`, and a
+  separate Ghost Admin domain from its `adminUrl` when the source had one.
+  `--domain` and `--admin-domain` serve it on others instead; `--email` names
+  the ACME account, as for any production site. On a domain other than the
+  source's, the source's admin domain is not carried, with a warning: Ghost
+  Admin is on the site's own domain unless `--admin-domain` names another. Caddy serves a site over HTTPS,
+  on 443, at its domain's root, so a source URL with plain `http`, a port, or
+  a path is refused before anything changes: it names the `--domain` (or
+  `--admin-domain`) that serves the site at that host's root over HTTPS, which
+  changes its address.
+- **Its mail.** The source's mail settings are carried into `ghost.env`, and
+  the imported site sends real mail through them. `--with mailpit` is for
+  local sites only.
+- **Its staff.** The database arrives whole, so there is no owner to create:
+  sign in with the source's staff accounts. Ghost treats the new site as a new
+  device and emails a sign-in code, through the carried mail settings, so mail
+  has to work.
+- **Nothing is stopped.** Installation never stops anything already running
+  (see [Ports](#ports-and-your-existing-proxy)). Where nginx or Apache still
+  holds 80 and 443, as on the server Ghost-CLI ran on, Docker cannot start
+  Caddy: the import fails naming the port, and removes what it created.
+  Stopping that proxy is a step of the move below, not the importer's.
+
+Production is supported on Linux with rootful Docker Engine.
 
 See the [roadmap](ghost-cli-replacement.md) for remaining work, and
 [bundle-v1.md](bundle-v1.md) for the bundle contract.
 
 ### Moving a site to Docker
+
+These are the steps for a local site; a production site's are in [Moving a
+production site](#moving-a-production-site), below.
 
 The commands above copy a site and leave the source running beside the copy.
 To move it instead, so that the Docker site takes over the source's address
@@ -326,7 +366,7 @@ curl -fsSL https://docker.ghost.org/install.sh | bash -s -- install --import ../
   with a `compose.override.yml`; see [Your own Compose
   overrides](configuration.md#your-own-compose-overrides).
 
-Exporting needs Ghost-CLI 1.33.3 or later (`ghost --version`) and a source
+Exporting needs Ghost-CLI 1.33.4 or later (`ghost --version`) and a source
 on Ghost 6.61.0 or later; on anything older, run `ghost update` there and check
 the site works before exporting. When the exporter
 refuses a SQLite site because some values would not load into MySQL, it lists
@@ -334,6 +374,104 @@ them: fix them in the source and export again, or move the site through Ghost
 Admin with `ghost migrate-export --sqlite-format portable` (see the
 `portable` bundle above). A Ghost-CLI site on native Windows is exported
 there and imported from WSL2, with the bundle under `/mnt/c/`.
+
+### Moving a production site
+
+A production move is the local one with a proxy and DNS in it. The source is
+stopped before its final export, so the bundle is its final state and the two
+sites never both take writes; it stays stopped and intact, and is how you go
+back, until you remove it. Nothing here is automated: there is no maintenance
+page, and the site is down from `ghost stop` until the Docker site serves it.
+
+First, in either case, bring the source up to date and check it, as above:
+Ghost-CLI 1.33.4 or later, and the site on a Ghost release with a `next`
+image. The import runs exactly that release; upgrade afterwards. Run the
+export and the import as the same user, who can read the bundle the exporter
+made private to them.
+
+#### On the same server
+
+The Docker site takes over ports 80 and 443 from Ghost-CLI's nginx:
+
+```bash
+cd /var/www/ghost
+ghost stop
+ghost migrate-export --output ~/my-site-bundle
+sudo systemctl stop nginx
+mkdir ~/my-site && cd ~/my-site
+curl -fsSL https://docker.ghost.org/install.sh | bash -s -- install --import ~/my-site-bundle
+```
+
+- **Stop nginx yourself.** Nothing in the import stops it; it may serve other
+  sites too, which the Docker site's Caddy does not. Move those first (see
+  [your existing proxy](#ports-and-your-existing-proxy)), or keep the source.
+- **The same domain.** DNS already points here. Caddy obtains its own
+  certificate when it starts, which `./ghost-docker check` reports.
+- **If the import fails**, it removes what it created. Put everything back
+  with `sudo systemctl start nginx`, then `ghost start` in the source. The
+  bundle is unchanged, so the import can be run again from it.
+- **Afterwards**, keep both from coming back at boot, which would take the
+  ports and the writes: `sudo systemctl disable nginx`, and disable the source's
+  service, `ghost_` and its domain (`systemctl list-unit-files 'ghost_*'`
+  names it). The source's files and MySQL database stay as they were.
+
+#### To another host
+
+```bash
+# On the old host
+cd /var/www/ghost
+ghost stop
+ghost migrate-export --output ~/my-site-bundle --archive tgz
+scp ~/my-site-bundle.tgz new-host:
+
+# On the new host
+mkdir ~/my-site && cd ~/my-site
+curl -fsSL https://docker.ghost.org/install.sh | bash -s -- install --import ~/my-site-bundle.tgz
+```
+
+Then point the domain's DNS at the new host. Until it moves, `check` reports
+HTTPS as pending: Caddy obtains a certificate once the domain reaches this
+host. A low DNS TTL, set a day ahead, shortens the time some visitors still
+reach the old host. If the import fails, `ghost start` on the old host brings
+the site back; DNS has not moved.
+
+The source is stopped before the new site can serve, and stays stopped:
+`ghost start` there would let a second copy take writes the new one never
+sees. Disable its service as above once the new site is accepted.
+
+#### A rehearsal copy
+
+To try the move first, import a copy on another domain or host while the
+source keeps running. An ordinary export, without `ghost stop`, stops the
+source while it copies and starts it again. Import without starting, on a
+domain of its own (the source's admin domain is not carried to it; name the
+copy's own with `--admin-domain` if it needs one):
+
+```bash
+curl -fsSL https://docker.ghost.org/install.sh | bash -s -- install --import ~/my-site-bundle.tgz --domain staging.example.com --no-start
+```
+
+**A copied database sends real mail.** Before starting the copy, remove the
+`mail__` and `bulkEmail__` settings from `ghost.env`, so staff emails and
+newsletters go nowhere. The importer leaves them, because a move needs them.
+Newsletters' Mailgun account, webhooks and Stripe are also configured in the
+database, and a scheduled post would send its newsletter to real members, and
+Stripe keys let the copy register its own webhook with the live account. Clear
+them in the copy's database before Ghost starts on it:
+
+```bash
+docker compose up -d db
+docker compose exec db sh -c 'mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE"' <<'SQL'
+UPDATE settings SET value = NULL WHERE `key` IN ('mailgun_api_key', 'mailgun_domain', 'stripe_secret_key', 'stripe_publishable_key', 'stripe_connect_secret_key', 'stripe_connect_publishable_key');
+DELETE FROM webhooks;
+SQL
+docker compose up -d
+```
+
+Then use the copy, and remove it (`docker compose down`, then the directory)
+once the rehearsal is done. Its bundle is not the move's: export again, with
+the source stopped and to a new path (the exporter never writes over an
+existing bundle), for the move itself.
 
 ## Ports, and your existing proxy
 

@@ -297,7 +297,7 @@ minimum and exact source-version requirement.
 Do not use `git pull` to move a released `main` installation to this layout.
 The served launcher's `self-update` migrates it, splitting its `.env` into
 `.env` and `ghost.env` as this page describes; [install.md](install.md#moving-from-the-released-main-layout)
-lists what each setting becomes. Moving a Ghost-CLI site is a separate, supported local import described in
+lists what each setting becomes. Moving a Ghost-CLI site is a separate, supported import described in
 [install.md](install.md#importing-a-ghost-cli-site).
 
 ## Installed image pins

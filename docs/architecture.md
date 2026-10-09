@@ -129,7 +129,11 @@ An import writes into a fresh site and records what it creates in an incomplete
 marker. Until verified, `.env` selects no services, so ordinary Compose cannot
 start a half-imported site. A failed import removes its work; the next import
 clears interrupted work before retrying. A portable bundle's JSON and members CSV
-are imported through Ghost Admin, as [install.md](install.md) describes.
+are imported through Ghost Admin, as [install.md](install.md) describes. The
+bundle's `sourceInstallType` selects the site mode; a production import is an
+ordinary production install on the bundle's domains, refused before any write
+when its URLs cannot be served as they are. Moving the source's traffic (stopping
+it, its proxy, DNS) is documented, not automated.
 
 ## Verification and service access
 

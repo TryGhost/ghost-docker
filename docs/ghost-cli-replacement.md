@@ -25,28 +25,22 @@ outside the planned scope.
 
 ### S5e — Production import and cutover
 
-Repo: ghost-docker. Depends on the existing local importer and [bundle
-contract](bundle-v1.md), including its minimum source version and exact-version import.
-Support `sourceInstallType: production`, separate admin URLs, and the same-server case
-with an existing proxy on 80/443.
+Repo: ghost-docker. `install --import` takes production bundles and the cutover is
+documented in [install.md](install.md#moving-a-production-site). Remaining:
 
-Document cutover: stop the source before its final export (or explicitly use
-`--leave-stopped`), import into a fresh destination, then point DNS at the new host or
-switch the proxy on the same server. Keep the source stopped and intact until the
-destination is accepted. Never stop an existing proxy automatically; it may serve other
-applications. A rehearsal with copied configuration must not send real mail, newsletters
-or webhooks.
+Bound expansion and check space for extracted content and the database restore;
+compressed archive size times 1.5 is insufficient. Do not guess ownership as uid
+1000 under rootless/user namespaces.
 
-Retain staging/path validation and database-user isolation. Bound expansion and check
-space for extracted content, database restore and recovery copies; compressed archive
-size times 1.5 is insufficient. Verify the source version's image on every supported
-architecture before provisioning. Preserve supported URL path/port semantics or reject
-them clearly. Do not guess ownership as uid 1000 under rootless/user namespaces.
-
-Acceptance: same-server migration with an existing proxy on 80/443 and cross-host
-migration following the documented cutover; exact source version, staff sign-in,
-records, active theme, assets, redirects and configuration preserved. This replaces
-`main`'s `scripts/migrate.sh`; S12 must not merge `next-docker` into `main` before these
+Acceptance, on Linux with rootful Docker Engine and a real Ghost-CLI production
+install (MySQL, systemd, nginx): same-server and cross-host moves following the
+documented steps; a forced import failure leaving the directory as it was, with the
+documented recovery bringing back the source and nginx; a separate admin domain
+carried from the bundle; exact source version, staff sign-in, records, active theme,
+assets, redirects and configuration preserved.
+`tests/e2e/production-import.sh` covers the same-server move, the forced failure and
+its recovery, and the admin domain in CI; the cross-host move is run by hand. This replaces `main`'s
+`scripts/migrate.sh`; S12 must not merge `next-docker` into `main` before these
 scenarios pass.
 
 ### S7 — Host-driven Ghost upgrades

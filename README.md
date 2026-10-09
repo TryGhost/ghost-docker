@@ -4,10 +4,10 @@ Configuration to run Ghost and its services with Docker Compose.
 
 > **This is the `next-docker` development branch.** It is being rebuilt around
 > a manager image: a small CLI in a container, started by a bash launcher that
-> uses Docker. It installs local and production sites, imports local Ghost-CLI
-> sites, backs up and restores them, and updates image installations between
-> beta releases, and moves installations of the released `main` layout onto it.
-> Production import remains on the [roadmap](docs/ghost-cli-replacement.md). For a supported setup
+> uses Docker. It installs local and production sites, imports local and production
+> Ghost-CLI sites, backs up and restores them, updates image installations
+> between beta releases, and moves installations of the released `main` layout
+> onto it. Remaining work is on the [roadmap](docs/ghost-cli-replacement.md). For a supported setup
 > today, use the `main` branch.
 
 ## The launcher
@@ -94,6 +94,7 @@ tests/e2e/self-update.sh     # release updates, failed-update write retention an
 tests/e2e/migrate-main.sh    # an installation of the released main layout, migrated
 tests/e2e/backup.sh          # real backups and restores, including ActivityPub
 tests/e2e/import.sh          # real Ghost-CLI sites exported and imported
+GD_TEST_HOST_CHANGES=1 tests/e2e/production-import.sh  # a Ghost-CLI production site moved; changes the host
 ```
 
 Shell changes also pass ShellCheck. Unit tests substitute `Io` at the Engine API,
