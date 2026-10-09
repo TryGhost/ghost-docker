@@ -41,9 +41,9 @@ export interface Daemon {
     /** What GET /containers/json answers, as the Engine API spells it. */
     containers?: unknown[];
     /**
-     * `docker-compose ...` after the --project-directory and -f options, with
-     * the environment it was given, its standard input, and the project
-     * directory. Standard input is text as given, or a stream as the program
+     * `docker-compose ...` after the --project-directory, -f and --env-file
+     * options, with the environment it was given, its standard input, the
+     * project directory, and the `.env` named instead of the site's. Standard input is text as given, or a stream as the program
      * would have read it, to its end or to the error that ended it.
      * Undefined falls through to "unexpected".
      */
@@ -52,6 +52,7 @@ export interface Daemon {
         env: Record<string, string>,
         input?: string,
         dir?: string,
+        envFile?: string,
     ) => ProgramResult | undefined;
     /** `git ...`, as the manager runs it in a checkout; undefined: git is not installed. */
     gitRun?: (args: string[]) => ProgramResult | undefined;
@@ -268,6 +269,11 @@ export function harness(): Harness {
                         files.push(rest[1]!);
                         rest = rest.slice(2);
                     }
+                    let envFile: string | undefined;
+                    if (rest[0] === '--env-file') {
+                        envFile = rest[1];
+                        rest = rest.slice(2);
+                    }
                     // What Compose answers: the variables its files interpolate.
                     if (rest[0] === 'config' && rest.includes('--variables')) {
                         const names = files.flatMap((file) =>
@@ -286,6 +292,7 @@ export function harness(): Harness {
                         options.env ?? {},
                         input,
                         args[1],
+                        envFile,
                     );
                     if (answer) {
                         return answer;

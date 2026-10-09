@@ -20,23 +20,22 @@
 //      are stopped (writers.ts), and a checked backup taken (backup.ts),
 //      because a release's services may migrate their databases,
 //      ActivityPub's among them, whether or not Ghost changes. They stay
-//      stopped until the release starts, so nothing they would accept can
-//      be lost by loading that backup back.
+//      stopped until the release starts.
 //   4. The managed files: an untouched one is replaced, an edited one is
 //      kept and the release's is written beside it as `<file>.new`. It
 //      never asks. Validate, pull, `up --wait`, verify as `check` does.
 //   5. On a failure, the snapshot is put back. Before the services had
-//      been changed, the writers are then started again as they were. Once
-//      they had, they are stopped first, the data they ran on is set
-//      aside, and the backup's databases and content are loaded
-//      (recovery.ts) before the previous release is started again. The
-//      outcome is reported as restored or as needing the operator. Never
-//      success because `up` returned zero.
+//      been changed, the writers are then started again as they were, and
+//      the site is restored. Once they had, Ghost may have accepted writes
+//      since the backup, so the backup is never loaded automatically: the
+//      release is stopped first, and the operator is told how to restore
+//      the backup or start the previous release on the data as it is.
+//      Never success because `up` returned zero.
 //   6. On success, the site's launcher is pinned to this image, the metadata
 //      records the release, and the snapshot is removed.
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
-import { readBackup, refuseDrift, takeBackup } from '../backup.ts';
+import { refuseDrift, takeBackup } from '../backup.ts';
 import { compose, composeConfig, composeError, upAndWait } from '../compose.ts';
 import { z } from 'zod';
 import { defineCommand, flag } from '../command.ts';
@@ -55,13 +54,7 @@ import {
     sha256,
     stackDir,
 } from '../payload.ts';
-import {
-    describeServices,
-    loadBackupData,
-    runningServices,
-    SetAside,
-    stopServices,
-} from '../recovery.ts';
+import { describeServices, runningServices, stopServices } from '../recovery.ts';
 import { compareReleases, isRelease } from '../release.ts';
 import { resolveSite } from '../resolved.ts';
 import { heading, ok, printChecks } from '../report.ts';
@@ -595,9 +588,19 @@ function record({ io, site, metadata, from, to, release, payload }: Update): voi
 /**
  * Puts the site back as it was before the update, as far as it can, and
  * says which: restored, or needing the operator.
+ *
+ * Before the release's services start, nothing but files has changed and
+ * the writers have been stopped since before the backup: the files are put
+ * back and the writers started again, and the site is restored. Once they
+ * have started, Ghost may have accepted writes, and Ghost and the release's
+ * other services may have changed the data, and the update cannot tell
+ * which. Loading the backup then would discard whatever was written since
+ * it was taken, so it is never done automatically: the release is stopped,
+ * its files are put back, and the operator chooses between the backup and
+ * the data as it is.
  */
 async function recover(
-    { io, context, site, from, to }: Update,
+    { io, site, from, to }: Update,
     snapshot: Snapshot,
     pause: WriterPause,
     backup: string | null,
@@ -606,14 +609,11 @@ async function recover(
 ): Promise<number> {
     const dir = site.dir;
     io.stderr(`\n${describeError(error)}\n`);
-    // Once the release's services have started, they may have migrated the
-    // databases: those are put back from the backup, with nothing running.
     const servicesChanged = stage === 'start' || stage === 'verify' || stage === 'record';
     io.stderr(
-        `\nThe update to ${describeStack(to)} did not complete. Putting ${describeStack(from)} back\n`,
+        `\nThe update to ${describeStack(to)} did not complete. Putting ${describeStack(from)}'s files back\n`,
     );
     const problems: string[] = [];
-    const aside = new SetAside(io, context, dir, UPDATE_DIR);
     if (servicesChanged) {
         const stopped = await stopServices(io, dir, `Stopping ${describeStack(to)}`);
         if (stopped.error !== null) {
@@ -637,70 +637,63 @@ async function recover(
             problems.push((resumeError as Error).message);
         }
     }
-    if (problems.length === 0 && servicesChanged) {
-        try {
-            const manifest = await readBackup(io, backup!);
-            await aside.moveData();
-            await loadBackupData(io, backup!, dir, manifest);
-            await upAndWait(io, dir, `Starting ${describeStack(from)} again`);
-            await verifySite(io, dir);
-        } catch (upError) {
-            problems.push((upError as Error).message);
-        }
-    }
 
     const kept =
         backup === null
             ? []
             : [`The backup taken before the update is kept in ${relative(dir, backup)}.`];
-    if (problems.length > 0) {
+    if (servicesChanged || problems.length > 0) {
         const running = await runningServices(io, dir);
+        const filesBack = problems.length === 0;
         io.stderr(
             [
                 '',
-                'The site needs you. It could not be put back as it was:',
+                'The site needs you.',
                 ...problems.map((problem) => `  ${problem}`),
-                describeServices(running),
-                '',
-                ...(backup !== null && servicesChanged
+                ...(servicesChanged
                     ? [
-                          `Before the update, the site was backed up to ${backup}: its databases,`,
-                          'content and files. To put the site back from it, in the site directory:',
-                          `  ./ghost-docker restore --yes ${relative(dir, backup)}`,
-                          '',
-                      ]
-                    : kept),
-                `The files as they were before the update are in ${snapshot.root}/files.`,
-                ...(aside.data.length > 0
-                    ? [
-                          `The data the update's services ran on is in ${snapshot.root}/data, set aside.`,
+                          `${describeStack(to)}'s services started before the update failed, so they may have changed`,
+                          'the databases and content, and Ghost may have accepted writes, since the backup.',
+                          'Nothing was loaded over them: the data is as the update left it.',
                       ]
                     : []),
+                describeServices(running),
+                ...(filesBack ? [`The files are ${describeStack(from)}'s again.`] : []),
+                '',
+                ...(backup !== null && servicesChanged && filesBack
+                    ? [
+                          'Choose one, in the site directory:',
+                          `  - Put the site back as it was when the update began, discarding anything written since:`,
+                          `      ./ghost-docker restore --yes ${relative(dir, backup)}`,
+                          `  - Or, if ${describeStack(to)} did not change the data (docker compose logs says what it did),`,
+                          `    start ${describeStack(from)} on it as it is: docker compose up -d, then ./ghost-docker check`,
+                          '',
+                      ]
+                    : backup !== null && servicesChanged
+                      ? [
+                            `Before the update, the site was backed up to ${relative(dir, backup)}: its databases,`,
+                            'content and files. Restoring it discards anything written since:',
+                            `  ./ghost-docker restore --yes ${relative(dir, backup)}`,
+                            '',
+                        ]
+                      : kept),
+                `The files as they were before the update are in ${snapshot.root}/files.`,
                 `The site ran the manager image ${from.image}; its launcher still runs it.`,
-                `Once the site is as it should be (./ghost-docker check), remove ${snapshot.root}` +
-                    (aside.data.length > 0 ? ' (it needs sudo: MySQL owns part of it).' : '.'),
+                `Once the site is as it should be (./ghost-docker check), remove ${snapshot.root}.`,
                 '',
             ].join('\n'),
         );
         throw new CliError('the update failed, and the site needs the operator.');
     }
-    const left = await aside.remove();
+    snapshot.remove();
     io.stderr(
         [
             '',
             `Restored: the site is back on ${describeStack(from)}, with its files as they were` +
-                (servicesChanged
-                    ? ', its databases and content from the backup, and its services running and healthy.'
-                    : resumed.length > 0
-                      ? `. Its services were not changed; ${resumed.join(' and ')}, stopped for the update, ${resumed.length > 1 ? 'are' : 'is'} running again.`
-                      : '. Its services were not changed.'),
-            ...(stage === 'verify' || stage === 'record'
-                ? [
-                      `${describeStack(to)} ran before the update failed: anything the site accepted while it ran was not kept.`,
-                  ]
-                : []),
+                (resumed.length > 0
+                    ? `. Its services were not changed; ${resumed.join(' and ')}, stopped for the update, ${resumed.length > 1 ? 'are' : 'is'} running again.`
+                    : '. Its services were not changed.'),
             ...kept,
-            ...(left === null ? [] : [left]),
             '',
         ].join('\n'),
     );

@@ -77,6 +77,12 @@ function snapshot(dir = h.dir, prefix = ''): Record<string, string> {
     return files;
 }
 
+/** The site's files, without the update's own snapshot of them. */
+const siteOnly = (): Record<string, string> =>
+    Object.fromEntries(
+        Object.entries(snapshot()).filter(([path]) => !path.startsWith('.ghost-docker-update/')),
+    );
+
 beforeEach(async () => {
     h = harness();
     stack = imageStack(h);
@@ -423,59 +429,59 @@ describe('a failed update', () => {
         assert.deepEqual([...site.running].sort(), ['db', 'ghost']);
     });
 
-    test('services that do not start: the previous release is started again', async () => {
+    test('services that do not start are stopped, their files put back, and the operator chooses', async () => {
         const before = snapshot();
         site.ups = [failed(1, 'container ghost is unhealthy')];
         const result = await update();
         assert.equal(result.code, 1);
         assert.match(result.stderr, /container ghost is unhealthy/);
+        assert.match(result.stderr, /The site needs you\./);
         assert.match(
             result.stderr,
-            /Restored: .*, its databases and content from the backup, and its services running and healthy\./,
+            /v0\.1\.0-beta\.2's services started before the update failed, so they may have changed\nthe databases and content, and Ghost may have accepted writes, since the backup\./,
         );
-        assert.match(result.stderr, /the update failed; v0\.1\.0-beta\.1 was restored/);
-        assert.deepEqual(snapshot(), before);
+        assert.match(result.stderr, /Its services are stopped\./);
+        assert.match(result.stderr, /The files are v0\.1\.0-beta\.1's again\./);
+        assert.match(
+            result.stderr,
+            /discarding anything written since:\n +\.\/ghost-docker restore --yes backups\/\d{4}-\d\d-\d\dT/,
+        );
+        assert.match(result.stderr, /start v0\.1\.0-beta\.1 on it as it is: docker compose up -d/);
+        assert.match(result.stderr, /the update failed, and the site needs the operator/);
+        assert.deepEqual(siteOnly(), before);
         assert.equal(pinnedImage(), FIRST);
-        // The release's, a new database for the backup, then the previous release's.
-        assert.equal(started(), 3);
-        assert.deepEqual([...site.running].sort(), ['db', 'ghost']);
+        // The release's services, then nothing: no backup loaded, nothing started again.
+        assert.equal(started(), 1);
+        assert.deepEqual([...site.running], []);
+        assert.ok(existsSync(join(h.dir, '.ghost-docker-update', 'files', '.env')));
+        assert.ok(!existsSync(join(h.dir, '.ghost-docker.lock')));
     });
 
-    test('a release that migrated the database, then failed, is put back from the backup', async () => {
-        const before = snapshot();
-        const rows = { ...site.rows };
-        // The release's services migrate the database as they start, and Ghost never becomes healthy.
+    test('a release that migrated the database, then failed, leaves the data as it is', async () => {
+        const migrated = { ...site.rows, migrations: 121, activitypub_inbox: 0 };
         site.onUp = () => {
-            site.rows = { ...site.rows, migrations: 121, activitypub_inbox: 0 };
+            site.rows = migrated;
             site.onUp = () => {};
         };
         site.ups = [failed(1, 'container ghost is unhealthy')];
         const result = await update();
         assert.equal(result.code, 1);
-        assert.match(result.stderr, /Restored: the site is back on v0\.1\.0-beta\.1/);
         assert.match(
             result.stderr,
-            /The backup taken before the update is kept in backups\/\d{4}-\d\d-\d\dT/,
+            /Nothing was loaded over them: the data is as the update left it\./,
         );
-
-        // The database as it was, its content, its files and the previous images.
-        assert.deepEqual(site.rows, rows);
+        // The backup is not loaded: what the release did, and anything it
+        // accepted, is still there for the operator to keep or discard.
+        assert.deepEqual(site.rows, migrated);
+        assert.equal(readSite('data/mysql/ibdata1'), 'the database');
         assert.equal(readSite('data/ghost/images/photo.jpg'), 'jpeg');
-        // MySQL started on a new, empty data directory, and the dump was loaded into it.
-        assert.deepEqual(readdirSync(join(h.dir, 'data', 'mysql')), []);
-        assert.deepEqual(snapshot(), before);
-        assert.equal(pinnedImage(), FIRST);
-        assert.ok(!existsSync(join(h.dir, '.ghost-docker-update')));
-        assert.ok(!existsSync(join(h.dir, '.ghost-docker.lock')));
-
-        // Stopped before anything was put back, then started on the backup's data.
         const after = compose.slice(compose.findLastIndex((args) => args[0] === 'pull') + 1);
         assert.deepEqual(
             after.map((args) => args[0]),
-            ['up', 'down', 'ps', 'up', 'exec', 'ps', 'up', 'ps'],
+            ['up', 'down', 'ps', 'ps'],
         );
-        assert.equal(after[3]!.at(-1), 'db');
-        assert.deepEqual([...site.running].sort(), ['db', 'ghost']);
+        const [backup] = readdirSync(join(h.dir, 'backups'));
+        assert.match(result.stderr, new RegExp(`restore --yes backups/${backup}`));
     });
 
     test('services that cannot be stopped are reported running, and nothing is put back over them', async () => {
@@ -496,31 +502,6 @@ describe('a failed update', () => {
         assert.equal(readSite('data/mysql/ibdata1'), 'the database');
         assert.ok(!existsSync(join(h.dir, '.ghost-docker-update', 'data')));
         assert.deepEqual([...site.running].sort(), ['db', 'ghost']);
-    });
-
-    test('when the previous release does not start either, it says the operator is needed', async () => {
-        site.ups = [
-            failed(1, 'container ghost is unhealthy'),
-            ok(''),
-            failed(1, 'still unhealthy'),
-        ];
-        const result = await update();
-        assert.equal(result.code, 1);
-        assert.match(result.stderr, /The site needs you/);
-        assert.match(result.stderr, /still unhealthy/);
-        assert.match(result.stderr, /These of its services are still running: db, ghost\./);
-        assert.match(result.stderr, /\.\/ghost-docker restore --yes backups\/\d{4}-/);
-        assert.match(result.stderr, /its launcher still runs it/);
-        assert.match(result.stderr, /the site needs the operator/);
-        // What it would have restored is kept for the operator, with the
-        // data the failed release ran on.
-        assert.ok(existsSync(join(h.dir, '.ghost-docker-update', 'files', '.env')));
-        assert.equal(readSite('.ghost-docker-update/data/mysql/ibdata1'), 'the database');
-        assert.match(
-            result.stderr,
-            /The data the update's services ran on is in .*\.ghost-docker-update\/data/,
-        );
-        assert.ok(!existsSync(join(h.dir, '.ghost-docker.lock')));
     });
 
     test('a backup that fails changes nothing', async () => {
@@ -572,7 +553,7 @@ describe('the writers through an update', () => {
         return accepted;
     }
 
-    test('nothing Ghost accepts is lost when the release migrates, fails to start, and is put back', async () => {
+    test('nothing Ghost accepts is lost when the release migrates and fails to start', async () => {
         const accepted = writing();
         site.onUp = () => {
             site.rows = { ...site.rows, migrations: 121 };
@@ -581,20 +562,19 @@ describe('the writers through an update', () => {
         site.ups = [failed(1, 'container ghost is unhealthy')];
         const result = await update();
         assert.equal(result.code, 1);
-        assert.match(result.stderr, /Restored: the site is back on v0\.1\.0-beta\.1/);
+        assert.match(result.stderr, /the site needs the operator/);
 
         // Ghost wrote while the images were pulled, before the backup, and
-        // again once the previous release was running: never in between.
-        assert.ok(accepted.length >= 2, `Ghost accepted ${accepted.length} writes`);
+        // never while it was stopped; no backup was loaded over any of it.
+        assert.ok(accepted.length >= 1, `Ghost accepted ${accepted.length} writes`);
         assert.equal(site.rows.posts, 3 + accepted.length);
-        assert.equal(site.rows.migrations, 120);
         for (const upload of accepted) {
             assert.equal(readSite(`data/ghost/images/${upload}`), upload);
         }
-        assert.deepEqual([...site.running].sort(), ['db', 'ghost']);
+        assert.deepEqual([...site.running], []);
     });
 
-    test('a release that fails verification is put back, saying what it ran was not kept', async () => {
+    test('a release that fails verification is stopped, and nothing it accepted is discarded', async () => {
         const previous = h.daemon.composeRun!;
         let release = false;
         h.daemon.composeRun = (args, env, input, dir) => {
@@ -609,19 +589,18 @@ describe('the writers through an update', () => {
             }
             return previous(args, env, input, dir);
         };
+        // The release's Ghost accepts a post before verification fails.
+        site.onUp = () => {
+            site.rows = { ...site.rows, posts: site.rows.posts! + 1 };
+            site.onUp = () => {};
+        };
         const result = await update();
         assert.equal(result.code, 1);
         assert.match(result.stderr, /not reachable through its own ingress/);
-        assert.match(
-            result.stderr,
-            /Restored: .*, its databases and content from the backup, and its services running and healthy\./,
-        );
-        assert.match(
-            result.stderr,
-            /v0\.1\.0-beta\.2 ran before the update failed: anything the site accepted while it ran was not kept\./,
-        );
+        assert.match(result.stderr, /Ghost may have accepted writes, since the backup/);
+        assert.equal(site.rows.posts, 4);
         assert.equal(pinnedImage(), FIRST);
-        assert.deepEqual([...site.running].sort(), ['db', 'ghost']);
+        assert.deepEqual([...site.running], []);
     });
 
     test('writers that do not start again after an early failure need the operator', async () => {

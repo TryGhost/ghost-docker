@@ -21,6 +21,7 @@ import { afterEach, beforeEach, describe, test } from 'node:test';
 import * as tar from 'tar';
 import { backupId, parseCounts } from '../src/backup.ts';
 import { readBackupManifest } from '../src/backup/manifest.ts';
+import * as env from '../src/env.ts';
 import { acquireLock } from '../src/lock.ts';
 import { readMetadata, writeMetadata } from '../src/meta.ts';
 import {
@@ -129,11 +130,11 @@ beforeEach(async () => {
         }
         return undefined;
     };
-    h.daemon.composeRun = (args, _env, input, dir = h.dir) => {
+    h.daemon.composeRun = (args, _env, input, dir = h.dir, envFile) => {
         compose.push(args);
         switch (args[0]) {
             case 'config':
-                return ok(resolvedProject(dir, IMAGES, mounts));
+                return ok(resolvedProject(dir, IMAGES, mounts, envFile));
             case 'up': {
                 // What `up --wait` starts stays running, healthy or not.
                 const named = args
@@ -441,6 +442,17 @@ describe('backup records what the site runs', () => {
                 /ghost runs ghost:6\.0\.0, and the configuration names ghost@sha256:1{64}/,
             ],
             [
+                'a stopped database was created from another image',
+                () => {
+                    // Starting it for the dump would run 8.0.44 over 8.0.43's data.
+                    running.delete('db');
+                    h.daemon.containers = [
+                        containerOf('db', { State: 'exited', Image: 'mysql:8.0.43' }),
+                    ];
+                },
+                /db is exited, and ran mysql:8\.0\.43, and the configuration names mysql:8\.0\.44@sha256:4{64}/,
+            ],
+            [
                 'the reference now names another image',
                 () => {
                     h.daemon.containers = [containerOf('db', { ImageID: RUNNING_DB })];
@@ -659,10 +671,10 @@ describe('restore over the site', () => {
         const root = await backUp();
         const answer = h.daemon.composeRun!;
         // As a checkout's compose.yml at another commit would.
-        h.daemon.composeRun = (args, env, input, dir) =>
-            args[0] === 'config' && dir !== undefined && dir !== h.dir
-                ? ok(resolvedProject(dir, { ...IMAGES, db: 'mysql:8.0.45' }))
-                : answer(args, env, input, dir);
+        h.daemon.composeRun = (args, env, input, dir, envFile) =>
+            args[0] === 'config' && envFile !== undefined
+                ? ok(resolvedProject(dir!, { ...IMAGES, db: 'mysql:8.0.45' }, {}, envFile))
+                : answer(args, env, input, dir, envFile);
         compose = [];
         const result = await h.run('restore', '--yes', root);
         assert.equal(result.code, 1);
@@ -672,6 +684,44 @@ describe('restore over the site', () => {
         );
         assert.deepEqual(composed('down'), []);
         assert.ok(!existsSync(join(h.dir, '.ghost-docker-restore')));
+    });
+
+    /** The -f files and --env-file of the restore's check of the backup's configuration. */
+    const checkedWith = () => {
+        const call = h.calls.find(
+            (args) => args[0] === 'docker-compose' && args.includes('--env-file'),
+        )!;
+        return {
+            dir: call[call.indexOf('--project-directory') + 1],
+            files: call.flatMap((arg, index) => (call[index - 1] === '-f' ? [arg] : [])),
+        };
+    };
+
+    test("the backup's own override is checked, whatever GD_COMPOSE_OVERRIDES spells it as", async () => {
+        writeFileSync(join(h.dir, 'compose.custom.yml'), '# as backed up\n');
+        h.env.GD_COMPOSE_OVERRIDES = join(h.dir, 'compose.custom.yml');
+        const root = await backUp();
+        writeFileSync(join(h.dir, 'compose.custom.yml'), '# edited since\n');
+        h.calls.length = 0;
+        const result = await h.run('restore', '--yes', root);
+        assert.equal(result.code, 0, result.stderr);
+        // In this directory, from the backup's files, as the restore writes them.
+        assert.deepEqual(checkedWith(), {
+            dir: h.dir,
+            files: [join(root, 'site', 'compose.yml'), join(root, 'site', 'compose.custom.yml')],
+        });
+        assert.equal(readSite('compose.custom.yml'), '# as backed up\n');
+    });
+
+    test('data at its own place, named by an absolute path, is restored over the site', async () => {
+        writeFileSync(
+            join(h.dir, '.env'),
+            env.set(readSite('.env'), 'MYSQL_DATA_LOCATION', join(h.dir, 'data', 'mysql')),
+        );
+        const root = await backUp();
+        const result = await h.run('restore', '--yes', root);
+        assert.equal(result.code, 0, result.stderr);
+        assert.match(result.stdout, /configuration +the backup's resolves the images it records/);
     });
 
     test('rows that do not match the backup need the operator, with the old site kept', async () => {
@@ -896,6 +946,24 @@ describe('restore into a new directory', () => {
         h.cwd = dir;
     };
 
+    test('data an absolute path keeps in the old site is refused before anything is written', async () => {
+        writeFileSync(
+            join(h.dir, '.env'),
+            env.set(readSite('.env'), 'MYSQL_DATA_LOCATION', join(h.dir, 'data', 'mysql')),
+        );
+        const root = await backUp();
+        into(fresh);
+        const result = await h.run('restore', root);
+        assert.equal(result.code, 1);
+        assert.match(
+            result.stderr,
+            new RegExp(
+                `in the backup's configuration, Compose mounts ${join(h.dir, 'data', 'mysql')} \\(bind\\) at /var/lib/mysql`,
+            ),
+        );
+        assert.deepEqual(readdirSync(fresh), []);
+    });
+
     test('writes the site with its new path, from the backup alone', async () => {
         const root = await backUp();
         into(fresh);
@@ -1029,8 +1097,8 @@ describe('consistency', () => {
         running.add('activitypub');
         events = [];
         const answer = h.daemon.composeRun!;
-        h.daemon.composeRun = (args, env, input, dir) => {
-            const result = answer(args, env, input, dir);
+        h.daemon.composeRun = (args, env, input, dir, envFile) => {
+            const result = answer(args, env, input, dir, envFile);
             const services = args
                 .slice(1)
                 .filter((arg) => /^[a-z]+$/.test(arg))

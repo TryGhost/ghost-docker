@@ -6,13 +6,13 @@
 // with (`docker compose config`), and what is actually running is what the
 // daemon says of the project's containers. Commands that change a site, or
 // record it, ask here rather than read `.env` and guess.
-import { isAbsolute, join, relative } from 'node:path';
-import { composeConfig, composeFileList } from './compose.ts';
+import { basename, isAbsolute, relative } from 'node:path';
+import { composeConfig, composeFileList, type ComposeInputs } from './compose.ts';
 import { inspectImage, listContainers } from './docker/client.ts';
 import { CliError } from './errors.ts';
 import type { Io } from './io.ts';
 import { PROJECT_LABEL, refuseForeignProject, WORKING_DIR_LABEL } from './project.ts';
-import { COMPOSE_FILE, COMPOSE_OVERRIDE_FILE } from './site.ts';
+import { COMPOSE_OVERRIDE_FILE } from './site.ts';
 
 /** The label Compose gives every container with the service it is of. */
 const SERVICE_LABEL = 'com.docker.compose.service';
@@ -71,12 +71,16 @@ export async function resolveSite(io: Io, dir: string): Promise<ResolvedSite> {
 }
 
 /**
- * The configuration in `dir` as Compose resolves it, asking nothing of the
- * daemon: also of a directory that is not where the site runs, such as a
- * backup's files staged to be checked before a restore writes them.
+ * The site in `dir` as Compose resolves it, asking nothing of the daemon:
+ * from its own files, or from `inputs`, such as a backup's files and `.env`
+ * read where they are, checked before a restore writes them into `dir`.
  */
-export async function resolveConfig(io: Io, dir: string): Promise<ResolvedSite> {
-    const resolved = await composeConfig(io, dir);
+export async function resolveConfig(
+    io: Io,
+    dir: string,
+    inputs?: ComposeInputs,
+): Promise<ResolvedSite> {
+    const resolved = await composeConfig(io, dir, inputs);
     if (!resolved.ok) {
         throw new CliError(`Compose cannot resolve the project: ${resolved.reason}`);
     }
@@ -97,13 +101,15 @@ export async function resolveConfig(io: Io, dir: string): Promise<ResolvedSite> 
                 definition.labels[LIFECYCLE_LABEL] === 'one-shot' ? 'one-shot' : 'long-running',
         };
     }
-    const files = composeFileList(dir, io.env.GD_COMPOSE_OVERRIDES);
+    const files = inputs?.files ?? composeFileList(dir, io.env.GD_COMPOSE_OVERRIDES);
     const site: ResolvedSite = {
         dir,
         project: project.name,
         files,
+        // Past compose.yml and, second when there is one, compose.override.yml.
         overrides: files.filter(
-            (file) => file !== join(dir, COMPOSE_FILE) && file !== join(dir, COMPOSE_OVERRIDE_FILE),
+            (file, index) =>
+                index > 0 && !(index === 1 && basename(file) === COMPOSE_OVERRIDE_FILE),
         ),
         services,
     };
@@ -180,31 +186,36 @@ export async function runningImages(
 }
 
 /**
- * The services whose running container is not what Compose now resolves:
- * the configuration names another image, or its tag now names a newer one.
- * Either way `docker compose up -d` has not been run since.
+ * The services whose container is not what Compose now resolves: the
+ * configuration names another image, or its tag now names a newer one.
+ * Either way `docker compose up -d` has not been run since. A stopped
+ * container counts as much as a running one: the data it left was written
+ * by its image, and the next start, a backup's included, would run another
+ * over it. A one-shot job's container is only a record of its last run.
  */
 export async function imageDrift(
     io: Io,
     site: ResolvedSite,
-    running: readonly RunningService[],
+    containers: readonly RunningService[],
 ): Promise<string[]> {
     const drift: string[] = [];
-    for (const each of running) {
-        const configured = site.services[each.service]?.image;
-        if (each.state !== 'running' || configured == null) {
+    for (const each of containers) {
+        const service = site.services[each.service];
+        const configured = service?.image;
+        if (configured == null || service!.lifecycle === 'one-shot') {
             continue;
         }
+        const ran = each.state === 'running' ? 'runs' : `is ${each.state || 'stopped'}, and ran`;
         if (each.image !== configured) {
             drift.push(
-                `${each.service} runs ${each.image}, and the configuration names ${configured}`,
+                `${each.service} ${ran} ${each.image}, and the configuration names ${configured}`,
             );
             continue;
         }
         const now = await inspectImage(io.docker, configured);
         if (now !== null && each.imageId !== '' && now.id !== each.imageId) {
             drift.push(
-                `${each.service} runs ${each.imageId.slice(0, 19)}, and ${configured} now names ${now.id.slice(0, 19)}`,
+                `${each.service} ${ran} ${each.imageId.slice(0, 19)}, and ${configured} now names ${now.id.slice(0, 19)}`,
             );
         }
     }

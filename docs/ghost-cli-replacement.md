@@ -444,9 +444,13 @@ its backup back over the site owns the pause of Ghost and ActivityPub, not the
 backup: they are stopped before the checkpoint is taken and stay stopped
 until the services the operation starts are its own, or the site is put
 back. A failure before any service changed puts the files back, then starts
-the same containers again; once the operation has started the services, a
-recovery stops them all, loads the checkpoint and starts the site again.
-Nothing a writer accepts after the checkpoint can be lost by loading it.
+the same containers again: nothing was written after the checkpoint, and the
+site is restored. Once the operation has started the services, Ghost may
+accept writes (and the services may change the data) before a later step
+fails, and the operation cannot tell. Loading the checkpoint then would
+discard them, so it is never done automatically: the operation stops the
+services, puts the files back, and the operator chooses between the
+checkpoint and the data as it is.
 Whatever can be done before the pause is: a stack update pulls the release's
 images while the site still runs. A standalone `backup --consistent` still
 resumes the writers as soon as the capture is done. Stack updates, Ghost
@@ -679,10 +683,12 @@ Flow:
 4. Write the managed files, run the release's migration scripts in order (each
    recorded in metadata when it completes), validate Compose, pull images, `up
    --wait`, and verify as `check` does.
-5. On a failure, put the previous payload and configuration back. Once
-   services had changed, stop them first and load the backup's databases and
-   content (recovery.ts) before `up --wait` and verify. Report restored or needs the operator. Never report
-   success because `up -d` returned zero.
+5. On a failure, put the previous payload and configuration back. Before
+   services changed, start the writers again: restored. Once they had, stop
+   them first, load nothing, and report that the operator is needed, with the
+   `restore` command for the backup (which discards what was written since)
+   and the alternative of starting the previous release on the data as it
+   is. Never report success because `up -d` returned zero.
 6. On success, rewrite the site's launcher to pin the new digest. The launcher
    holds the pin, so it is replaced even when edited; an edited copy is kept as
    `ghost-docker.edited`.
@@ -1537,7 +1543,8 @@ then removed (PLA-525): a checkout's update is git's and Compose's, and
 
 Status: implemented. `tests/e2e/self-update.sh` covers `self-update` against
 releases built locally, including a release whose Ghost never becomes healthy
-and is put back from its backup, and a checkout's refusal; `launcher.yml`
+and is stopped for the operator, who restores the backup it names, and a
+checkout's refusal; `launcher.yml`
 installs the newest beta and an explicit `--release` with the served launcher
 after each release. Decisions made
 while building it:
@@ -1583,11 +1590,12 @@ while building it:
   removed (PLA-525, PLA-526). `schemaVersion` stays 1 until the first stable
   release fixes it (§2.7, "Compatibility").
 - **Backup-backed recovery** (PLA-512, ahead of S6b): `self-update` takes a
-  backup after its snapshot. A failure once the services changed stops them,
-  sets the data aside in `.ghost-docker-update/data/`, loads the backup's
-  databases and content, and starts and verifies the previous release; if
-  that fails, it names the backup to `restore`. The backup is kept either way.
-  A site whose `.env` moves its data is refused, as `backup` refuses it.
+  backup after its snapshot, and keeps it either way. A site whose `.env`
+  moves its data is refused, as `backup` refuses it. It first loaded the
+  backup automatically after any failure; once the release's services have
+  started, that would discard what Ghost accepted meanwhile, so a failure
+  after that point now stops them, puts the files back, and names the
+  backup to `restore` for the operator to choose.
 
 **S6b — Legacy-layout migration and transactional updates.** Deps: S4, S6a. The
 release migration scripts (run in order, recorded in metadata, in a field this
@@ -1685,11 +1693,17 @@ while building it:
   a site before capturing anything, as `self-update` does before its
   snapshot: every backup is then one whose configuration and running images
   are the same, and the operator resolves the difference while it can still
-  be resolved. A restore checks it again before it changes anything: the
-  backup's configuration, staged outside the site (with a clone's own
-  `compose.yml`), must resolve exactly the recorded images and mount the
-  data where restore loads it, and each pulled image must be, by ID or
-  registry digest, the one that ran.
+  be resolved. A stopped container counts as much as a running one: a
+  backup that started a database whose configuration names another image
+  would upgrade its data before anything was captured. A restore checks it
+  again before it changes anything: Compose resolves, in the destination,
+  exactly the inputs the restore will write (the backup's files where it
+  holds them, with a clone's own `compose.yml`, the overrides the manifest
+  records, and the `.env` with the destination as `PROJECT_DIR`), which
+  must name the recorded images and mount the data where restore loads it;
+  and each pulled image must be, by ID or registry digest, the one that
+  ran. Validation and the restore read the same inputs, so an absolute
+  override path or data path means the same to both.
 - **No metadata changes**: `schemaVersion` stays 1.
 
 ### S7 — Host-driven Ghost upgrades
