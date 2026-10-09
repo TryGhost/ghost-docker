@@ -76,13 +76,13 @@
 
   <h2>A production site</h2>
   <p>Ports 80 and 443 must be free. Make an empty directory for the site and run, from inside it:</p>
-  <pre><code>curl -fsSL https://docker.ghost.org/install.sh | bash -s -- install --domain example.com --email you@example.com</code></pre>
+  <pre><code>curl -fsSL https://docker.ghost.org/install.sh | bash -s -- --domain example.com --email you@example.com</code></pre>
   <p>Then point the domain's DNS at this host. Caddy obtains a certificate once it does, and <code>./ghost-docker check</code> reports it.</p>
 
   <h2>A local site</h2>
   <p>For themes, and for trying Ghost, on <code>127.0.0.1</code>:</p>
   <pre><code>mkdir ~/my-site &amp;&amp; cd ~/my-site
-curl -fsSL https://docker.ghost.org/install.sh | bash -s -- install --local</code></pre>
+curl -fsSL https://docker.ghost.org/install.sh | bash -s -- --local</code></pre>
 
   <h2>Moving a Ghost-CLI site</h2>
   <p>A local Ghost-CLI site (one made with <code>ghost install local</code>) moves to Docker with its posts, members, staff accounts, settings, themes, images and configuration. You need Ghost-CLI 1.33.4 or later, and Ghost 6.61.0 or later in the site: the import runs the exact version the site did, and 6.61.0 is the first with a Docker image the import can use. Older sites are refused, so update first.</p>
@@ -93,7 +93,7 @@ ghost update
 ghost stop
 ghost migrate-export --output ../my-blog-bundle
 mkdir ../my-blog-docker &amp;&amp; cd ../my-blog-docker
-curl -fsSL https://docker.ghost.org/install.sh | bash -s -- install --import ../my-blog-bundle --port 2368</code></pre>
+curl -fsSL https://docker.ghost.org/install.sh | bash -s -- --import ../my-blog-bundle --port 2368</code></pre>
   <ul>
     <li>The Docker site runs the exact Ghost version the source did, at the same <code>http://localhost:2368</code>. Use the source's port: <code>server.port</code> in its <code>config.development.json</code>.</li>
     <li>Staff sign in with their existing passwords.</li>

@@ -2,13 +2,16 @@
 
 ```bash
 mkdir ~/my-site && cd ~/my-site
-curl -fsSL https://docker.ghost.org/install.sh | bash -s -- install --local   # or: --domain example.com
+curl -fsSL https://docker.ghost.org/install.sh | bash -s -- --local   # or: --domain example.com
 ```
 
 `install.sh` is the launcher, `ghost-docker`, from the newest release. Piped
-into bash it installs the newest release on the `beta` channel; `install`
-writes a copy of it into the site, and every later command is
-`./ghost-docker ...` from there.
+into bash with no command, it runs `install` with the options given, from the
+newest release on the `beta` channel; plain `curl -fsSL
+https://docker.ghost.org/install.sh | bash` asks for the site mode. `install`
+writes a copy of the launcher into the site, and every later command is
+`./ghost-docker ...` from there. Other commands can still be piped by name:
+`bash -s -- self-update`.
 
 ## Releases
 
@@ -26,7 +29,7 @@ a beta.
 | The development image | `GD_CHANNEL=edge` | `edge`, built from every push to `next-docker`. Not a release. |
 
 These go to the launcher with the command: `curl -fsSL
-https://docker.ghost.org/install.sh | bash -s -- install --local --release
+https://docker.ghost.org/install.sh | bash -s -- --local --release
 v0.1.0-beta.1`. A site always runs one image digest, never a channel: `install`
 pins the site's launcher to the digest it ran as, and records the channel the
 site follows, which `self-update` uses.
@@ -341,7 +344,7 @@ cd ~/sites/my-blog
 ghost stop
 ghost migrate-export --output ../my-blog-bundle
 mkdir ../my-blog-docker && cd ../my-blog-docker
-curl -fsSL https://docker.ghost.org/install.sh | bash -s -- install --import ../my-blog-bundle --port 2368
+curl -fsSL https://docker.ghost.org/install.sh | bash -s -- --import ../my-blog-bundle --port 2368
 ```
 
 - **Stop first.** The exporter stops a running site while it copies, and
@@ -399,7 +402,7 @@ ghost stop
 ghost migrate-export --output ~/my-site-bundle
 sudo systemctl stop nginx
 mkdir ~/my-site && cd ~/my-site
-curl -fsSL https://docker.ghost.org/install.sh | bash -s -- install --import ~/my-site-bundle
+curl -fsSL https://docker.ghost.org/install.sh | bash -s -- --import ~/my-site-bundle
 ```
 
 - **Stop nginx yourself.** Nothing in the import stops it; it may serve other
@@ -426,7 +429,7 @@ scp ~/my-site-bundle.tgz new-host:
 
 # On the new host
 mkdir ~/my-site && cd ~/my-site
-curl -fsSL https://docker.ghost.org/install.sh | bash -s -- install --import ~/my-site-bundle.tgz
+curl -fsSL https://docker.ghost.org/install.sh | bash -s -- --import ~/my-site-bundle.tgz
 ```
 
 Then point the domain's DNS at the new host. Until it moves, `check` reports
@@ -448,7 +451,7 @@ domain of its own (the source's admin domain is not carried to it; name the
 copy's own with `--admin-domain` if it needs one):
 
 ```bash
-curl -fsSL https://docker.ghost.org/install.sh | bash -s -- install --import ~/my-site-bundle.tgz --domain staging.example.com --no-start
+curl -fsSL https://docker.ghost.org/install.sh | bash -s -- --import ~/my-site-bundle.tgz --domain staging.example.com --no-start
 ```
 
 **A copied database sends real mail.** Before starting the copy, remove the

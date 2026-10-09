@@ -59,6 +59,7 @@ use native clients; bulk database operations use version-matched MySQL tools.
   would refer to a different machine.
 - External import bundles and restore backups are mounted read-only at their
   own paths. Prompts use the terminal even when the launcher is piped from curl.
+- Piped from curl with no command word, the launcher runs `install`.
 - `doctor` writes a file and reads it through a sibling container mounting the
   same host path. Seeing the directory inside the manager alone cannot establish
   that the daemon sees the same files.

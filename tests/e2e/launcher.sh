@@ -344,6 +344,25 @@ expect_status 0
 expect_run_arg "ghcr.io/tryghost/ghost-docker:beta"
 ok "runs with no file of its own, and uses the published image"
 
+mkdir -p "$WORK/piped"
+: >"$WORK/piped/piped.tgz"
+set +e
+OUT=$(cd "$WORK" && FAKE_DOCKER=ok PATH="$FAKE:$PATH" env ${fake_socket_env[@]+"${fake_socket_env[@]}"} \
+    "$BASH_BIN" -s -- --dir "$SITE" --channel stable --local --import piped/piped.tgz <"$LAUNCHER" 2>&1)
+RC=$?
+set -e
+expect_status 0
+[[ $(run_args | tail -7) == $'ghcr.io/tryghost/ghost-docker:stable\ninstall\n--channel\nstable\n--local\n--import\n'"$WORK/piped/piped.tgz" ]] ||
+    fail "a piped launcher with no command did not run install" "$(run_args)"
+expect_run_arg "$WORK/piped/piped.tgz:$WORK/piped/piped.tgz:ro"
+rm -rf "$WORK/piped"
+cp "$LAUNCHER" "$WORK/no-command-launcher"
+with_fake ok env ${fake_socket_env[@]+"${fake_socket_env[@]}"} GD_IMAGE=example/manager:1 \
+    "$BASH_BIN" "$WORK/no-command-launcher" --dir "$SITE" --local
+[[ $(run_args | tail -2) == $'example/manager:1\n--local' ]] ||
+    fail "a launcher run from a file was given a command" "$(run_args)"
+ok "with no command, piped means install, and the bundle is still mounted; a file is not given one"
+
 step "The manager's exit status"
 for status in 0 1 2 3; do
     : >"$FAKE_CALLS"
