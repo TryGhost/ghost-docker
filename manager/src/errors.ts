@@ -1,7 +1,7 @@
 // Exit statuses, and the errors that map to them.
 //
 // The launcher passes the manager's exit status through unchanged, so these
-// are the statuses a caller of `./ghost-docker` sees (plan §2.8).
+// are the statuses a caller of `./ghost-docker` sees (docs/install.md).
 
 export const EXIT = {
     ok: 0,

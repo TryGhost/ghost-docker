@@ -1,5 +1,5 @@
 // The release payload: the files compose.yml needs beside it, which the
-// manager image carries and writes into a site directory (plan §2.7).
+// manager image carries and writes into a site directory (docs/architecture.md#releases-and-compatibility).
 //
 // In image mode `install` writes them, with a checksum of each recorded in the
 // metadata so that `self-update` can tell an untouched file from an edited one, and

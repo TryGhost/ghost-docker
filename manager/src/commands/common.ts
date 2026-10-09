@@ -55,7 +55,7 @@ export function installedSite(io: Io): InstalledSite {
 
 /**
  * The release the command line asked for. The launcher has already chosen the
- * image from these options (plan §2.10); the manager checks them again, so a
+ * image from these options (docs/configuration.md0); the manager checks them again, so a
  * manager started any other way reads them the same, and records them.
  */
 export interface Requested {

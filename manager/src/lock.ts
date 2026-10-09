@@ -1,4 +1,4 @@
-// The site lock (plan §2.2): one operation that changes a running site at a
+// The site lock (docs/architecture.md#recovery): one operation that changes a running site at a
 // time. self-update, backup, restore and `config set` take it; Ghost upgrades
 // will when they land.
 //

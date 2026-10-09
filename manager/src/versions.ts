@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { coerce, gte } from 'semver';
 import { z } from 'zod';
 
-/** Declared minimums. Verified in CI against this exact minimum and a current release. */
+/** Declared minimums; qualification against exact minimum versions is a release gate. */
 export const MINIMUM = {
     // `healthcheck.start_interval` needs Docker Engine 25.0.
     dockerEngine: '25.0.0',
@@ -11,7 +11,7 @@ export const MINIMUM = {
     compose: '2.24.0',
     // The oldest Ghost this release of the stack runs. `self-update` never changes
     // a site's Ghost, so a release that raises this stops an update of a site
-    // below it and says to upgrade Ghost first (plan §2.7).
+    // below it and says to upgrade Ghost first (docs/architecture.md#releases-and-compatibility).
     ghost: '6.0.0',
 } as const;
 
@@ -19,7 +19,7 @@ export const MINIMUM = {
  * Is `version` at least `minimum`? Versions are coerced first: a leading `v`
  * and anything after the numbers (`-beta.1`, `+ce`, `-desktop.1`) are
  * dropped, which is what a minimum-version check needs. Release ordering for
- * the stack itself has its own rules (plan §2.10) and is not this.
+ * the stack itself has its own rules (docs/configuration.md0) and is not this.
  */
 export const atLeast = (version: string, minimum: string): boolean =>
     gte(coerce(version) ?? '0.0.0', minimum);

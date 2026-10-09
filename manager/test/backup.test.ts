@@ -487,15 +487,37 @@ describe('backup records what the site runs', () => {
         assert.deepEqual(backups(), []);
     });
 
-    test('the overrides GD_COMPOSE_OVERRIDES adds are in the backup, and recorded', async () => {
-        writeFileSync(join(h.dir, 'compose.ipv6.yml'), 'services: {}\n');
-        h.env.GD_COMPOSE_OVERRIDES = 'compose.ipv6.yml';
-        const root = await backUp();
-        const read = readBackupManifest(root);
-        const manifest = read.state === 'present' ? read.manifest : null!;
-        assert.deepEqual(manifest.site.overrides, ['compose.ipv6.yml']);
-        assert.ok('site/compose.ipv6.yml' in manifest.files);
-    });
+    for (const rootOverride of [false, true]) {
+        for (const file of [
+            'compose.ipv6.yml',
+            'overrides/compose.override.yml',
+            'overrides/compose.yml',
+        ]) {
+            test(`backs up and restores ${file}, root override ${rootOverride ? 'present' : 'absent'}`, async () => {
+                const original = 'services: {}\n';
+                rmSync(join(h.dir, 'compose.override.yml'), { force: true });
+                if (rootOverride) {
+                    writeFileSync(join(h.dir, 'compose.override.yml'), original);
+                }
+                mkdirSync(join(h.dir, 'overrides'), { recursive: true });
+                writeFileSync(join(h.dir, file), original);
+                h.env.GD_COMPOSE_OVERRIDES = file;
+                const root = await backUp();
+                const read = readBackupManifest(root);
+                assert.equal(read.state, 'present');
+                const manifest = read.state === 'present' ? read.manifest : null!;
+                assert.deepEqual(manifest.site.overrides, [file]);
+                assert.ok(`site/${file}` in manifest.files);
+                assert.equal(readFileSync(join(root, 'site', file), 'utf8'), original);
+
+                writeFileSync(join(h.dir, file), '# changed after backup\nservices: {}\n');
+                const result = await h.run('restore', '--yes', root);
+                assert.equal(result.code, 0, result.stderr);
+                assert.equal(readSite(file), original);
+                assert.equal(existsSync(join(h.dir, 'compose.override.yml')), rootOverride);
+            });
+        }
+    }
 
     test('an override outside the site is refused', async () => {
         h.env.GD_COMPOSE_OVERRIDES = '/etc/ghost/compose.extra.yml';

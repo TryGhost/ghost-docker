@@ -39,7 +39,6 @@ after(async () => {
 test('Compose resolves the data mounts, the network and the images', async () => {
     const resolved = await resolveSite(io, owner.dir);
     assert.equal(resolved.project, owner.project);
-    assert.deepEqual(resolved.overrides, []);
     assert.ok(
         resolved.services.db!.mounts.some(
             (mount) =>

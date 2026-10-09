@@ -1,20 +1,6 @@
-// Validating the configuration split (docs/configuration.md).
-//
-//   .env        Compose and operator settings, including infrastructure
-//               credentials. Read by Compose for interpolation; never passed
-//               into the Ghost container.
-//   ghost.env   Ghost application settings only; the ghost service's only
-//               env_file.
-//
-// Only what nothing else catches is checked. A missing URL or
-// DATABASE_PASSWORD is left to compose.yml's own `:?` guards, which report it
-// at the point of use. Requirements are by mode rather than `:?` guards on
-// optional-service variables, because Compose interpolates inactive services
-// too.
-//
-// Two lists are derived rather than written down, so they cannot drift: the
-// keys the container owns (what `docker compose config` says Ghost receives)
-// and the operator settings (what Compose interpolates).
+// Validate the configuration split (docs/configuration.md). Derive operator keys
+// and container-owned values from Compose instead of maintaining parallel lists.
+// Compose interpolates inactive services too; optional requirements are mode-specific.
 import { join } from 'node:path';
 import { composeConfig, composeVariables } from './compose.ts';
 import { inspectImage } from './docker/client.ts';

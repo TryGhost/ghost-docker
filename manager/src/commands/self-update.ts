@@ -1,38 +1,6 @@
-// `self-update`: move a site to this manager's release of the stack (plan §2.7).
-//
-// The updater is the target release. The site's launcher starts the image
-// that --to or --channel names, or by default the newest release on the
-// channel the site follows, and this is that image: it runs outside the files
-// it replaces. It updates only a site installed from the image: a checkout of
-// the repository is the operator's to update with git and Compose, and is
-// refused with the steps.
-//
-// It updates the stack, never Ghost: `.env`, and the exact Ghost image it
-// pins, are not touched. `run` takes these parts in order:
-//
-//   1. Refusals that change nothing: a site without metadata, a checkout, a
-//      downgrade, a Ghost older than this release runs. Then the lock.
-//   2. The release's images pulled while the site keeps running, where
-//      Compose can resolve them before the release is written; a pull that
-//      cannot is done again in step 4.
-//   3. A snapshot of the operator's files, the metadata and every managed
-//      file this update writes, in UPDATE_DIR. Then Ghost and ActivityPub
-//      are stopped (writers.ts), and a checked backup taken (backup.ts),
-//      because a release's services may migrate their databases,
-//      ActivityPub's among them, whether or not Ghost changes. They stay
-//      stopped until the release starts.
-//   4. The managed files: an untouched one is replaced, an edited one is
-//      kept and the release's is written beside it as `<file>.new`. It
-//      never asks. Validate, pull, `up --wait`, verify as `check` does.
-//   5. On a failure, the snapshot is put back. Before the services had
-//      been changed, the writers are then started again as they were, and
-//      the site is restored. Once they had, Ghost may have accepted writes
-//      since the backup, so the backup is never loaded automatically: the
-//      release is stopped first, and the operator is told how to restore
-//      the backup or start the previous release on the data as it is.
-//      Never success because `up` returned zero.
-//   6. On success, the site's launcher is pinned to this image, the metadata
-//      records the release, and the snapshot is removed.
+// Image-only stack update. The target manager runs outside the files it replaces.
+// Recovery must not load the checkpoint after service startup was attempted:
+// even a failed start may have accepted writes. See docs/architecture.md#recovery.
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { refuseDrift, takeBackup } from '../backup.ts';
@@ -40,7 +8,6 @@ import { compose, composeConfig, composeError, upAndWait } from '../compose.ts';
 import { z } from 'zod';
 import { defineCommand, flag } from '../command.ts';
 import { findingErrors, validate } from '../config.ts';
-import type { Context } from '../context.ts';
 import { CliError, describeError, EXIT } from '../errors.ts';
 import { atomicWrite, copyPresent } from '../fs.ts';
 import type { Io } from '../io.ts';
@@ -316,7 +283,6 @@ function refuseOldGhost(metadata: Metadata, from: Stack): void {
 
 interface Update {
     readonly io: Io;
-    readonly context: Context;
     readonly site: SiteFacts;
     readonly metadata: Metadata;
     readonly from: Stack;
@@ -367,7 +333,7 @@ export const selfUpdateCommand = defineCommand({
 
         const stack = stackDir(io.env);
         const payload = planPayload(dir, stack, metadata.payload);
-        const update: Update = { io, context, site, metadata, from, to, release, stack, payload };
+        const update: Update = { io, site, metadata, from, to, release, stack, payload };
 
         if (flags.check) {
             return report(update, decided);
@@ -443,9 +409,6 @@ function report({ io, from, to, payload, metadata }: Update, direction: Directio
     return EXIT.ok;
 }
 
-/** The stage a failure happened in decides how much has to be put back. */
-type Stage = 'backup' | 'write' | 'validate' | 'pull' | 'start' | 'verify' | 'record';
-
 async function apply(update: Update): Promise<number> {
     const { io, site, from, to, stack, payload } = update;
     const dir = site.dir;
@@ -484,7 +447,7 @@ async function apply(update: Update): Promise<number> {
     // Owned by the update, not the backup: the writers stay stopped from
     // before the backup until the release starts, or the site is put back.
     const pause = new WriterPause(io, dir, 'the update');
-    let stage: Stage = 'backup';
+    let servicesChanged = false;
     let backup: string | null = null;
     try {
         heading(io, 'Backing up the site');
@@ -497,11 +460,9 @@ async function apply(update: Update): Promise<number> {
         });
         ok(io, 'backup', `${relative(dir, backup)}, checked`);
 
-        stage = 'write';
         heading(io, 'Writing the stack');
         writePayloadChanges(io, dir, stack, payload);
 
-        stage = 'validate';
         // validate() only warns when Compose cannot resolve the project; here
         // that is the release failing.
         const resolved = await io.busy('Resolving the Compose project', () =>
@@ -519,7 +480,6 @@ async function apply(update: Update): Promise<number> {
         }
         ok(io, 'configuration', 'valid with this release');
 
-        stage = 'pull';
         heading(io, 'Starting the services');
         // Quick when the early pull got them; whatever it could not, now.
         const pull = await io.busy(
@@ -530,19 +490,17 @@ async function apply(update: Update): Promise<number> {
             throw new CliError(`the images could not be pulled: ${composeError(pull)}`);
         }
 
-        stage = 'start';
-        // The services are the release's from here: a recovery stops them all.
+        // Set before attempting up: even a failed start may migrate data or accept writes.
+        servicesChanged = true;
         pause.end();
         await upAndWait(io, dir, 'Starting the services and waiting for them to be healthy');
         ok(io, 'services', 'healthy, by their own health checks');
 
-        stage = 'verify';
         await verifySite(io, dir);
 
-        stage = 'record';
         record(update);
     } catch (error) {
-        return recover(update, snapshot, pause, backup, stage, error);
+        return recover(update, snapshot, pause, backup, servicesChanged, error);
     }
     snapshot.remove();
     summarize(update, backup);
@@ -585,31 +543,17 @@ function record({ io, site, metadata, from, to, release, payload }: Update): voi
     ok(io, META_FILE, `records ${describeStack(to)}`);
 }
 
-/**
- * Puts the site back as it was before the update, as far as it can, and
- * says which: restored, or needing the operator.
- *
- * Before the release's services start, nothing but files has changed and
- * the writers have been stopped since before the backup: the files are put
- * back and the writers started again, and the site is restored. Once they
- * have started, Ghost may have accepted writes, and Ghost and the release's
- * other services may have changed the data, and the update cannot tell
- * which. Loading the backup then would discard whatever was written since
- * it was taken, so it is never done automatically: the release is stopped,
- * its files are put back, and the operator chooses between the backup and
- * the data as it is.
- */
+/** Restore files and resume only before startup; afterwards preserve data for the operator. */
 async function recover(
     { io, site, from, to }: Update,
     snapshot: Snapshot,
     pause: WriterPause,
     backup: string | null,
-    stage: Stage,
+    servicesChanged: boolean,
     error: unknown,
 ): Promise<number> {
     const dir = site.dir;
     io.stderr(`\n${describeError(error)}\n`);
-    const servicesChanged = stage === 'start' || stage === 'verify' || stage === 'record';
     io.stderr(
         `\nThe update to ${describeStack(to)} did not complete. Putting ${describeStack(from)}'s files back\n`,
     );

@@ -2,7 +2,7 @@
 // and its database. A portable bundle has none to load: Ghost creates an empty
 // one, and its content JSON and members CSV are Ghost Admin's to import. The order and the policy are install's; `Importing` is
 // what install calls, at its points, when --import is given. The contract is
-// docs/bundle-v1.md and the sequence §2.4 of docs/ghost-cli-replacement.md.
+// docs/bundle-v1.md and docs/architecture.md#installation-and-import.
 //
 // The pieces that print nothing and decide no order are in import/:
 // config.ts, what ghost.env receives; database.ts, the client, the dump

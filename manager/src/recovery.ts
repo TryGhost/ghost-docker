@@ -1,16 +1,6 @@
-// What an operation that replaces a site's data needs when it fails, shared by
-// restore, self-update and (when they land) Ghost upgrades and the supervisor
-// (plan §2.5):
-//
-//   - the services stopped, so nothing writes to data about to be put back,
-//     and their state as Compose observes it, never as assumed;
-//   - the site's data and files set aside one boundary at a time, so what the
-//     operator is told refers only to copies that exist, and nothing is ever
-//     removed on the strength of a step that did not complete;
-//   - a backup's content and databases loaded into the site.
-//
-// Each caller decides what its outcome is; none of this resumes an operation
-// that was killed.
+// Shared recovery primitives: observed shutdown, verified set-aside copies and
+// database/content loading. Callers own outcome policy; nothing resumes a crash.
+// See docs/architecture.md#recovery.
 import { cpSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import * as tar from 'tar';

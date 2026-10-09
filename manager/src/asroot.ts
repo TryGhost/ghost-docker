@@ -1,7 +1,7 @@
 // Files in the site directory that only root may change: MySQL's data
 // directory belongs to MySQL's user once it has run. Each change is made in a
 // short-lived container of the manager's own image that does only that, with
-// the site mounted at /site and no network (plan §2.10).
+// the site mounted at /site and no network (docs/configuration.md0).
 import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { runOnce, type RunResult } from './docker/client.ts';

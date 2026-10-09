@@ -9,7 +9,7 @@ name: "Manager image"
 #
 # A release is published when the Release workflow calls this one with its
 # tag, or when a release tag is pushed by hand. The moving tags only resolve a
-# channel to a release; a site always runs a digest (plan §2.7).
+# channel to a release; a site always runs a digest (docs/architecture.md#releases-and-compatibility).
 on:
   push:
     branches:
