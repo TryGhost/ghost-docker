@@ -803,10 +803,13 @@ than it is:
   host there is no certificate, and no probe can show more. The manager makes
   an HTTPS request to Caddy's container on the site network, with the domain
   (and the admin domain, separately) as SNI and Host, for Ghost's
-  `/ghost/api/admin/site/`, and reports *serving* only when Ghost answered
-  through Caddy, naming the certificate's issuer and expiry; a certificate
-  browsers would not trust is a warning, and an out-of-date one or an answer
-  that is not Ghost's (a broken route) an error. It reports *pending* when
+  `/ghost/api/admin/site/`, and reports *serving* only when this site's Ghost
+  answered through Caddy, naming the certificate's issuer and expiry. Ghost
+  reports its canonical site URL by whichever name it is reached, so the
+  answer must name the site's `URL`, on the admin domain too; another URL is
+  another site's Ghost, a route to the wrong upstream (PLA-524). A
+  certificate browsers would not trust is a warning, and an out-of-date one,
+  an answer that is not Ghost's (a broken route) or another site's an error. It reports *pending* when
   the handshake fails or the certificate does not name the domain: Ghost
   could not be asked through Caddy yet, and the message says so, that Caddy
   obtains a certificate once the domain's DNS reaches this host, that

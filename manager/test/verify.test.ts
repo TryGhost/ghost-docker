@@ -108,8 +108,38 @@ describe('a production site', () => {
         assert.equal(checks.https!.status, 'ok');
         assert.match(
             checks.https!.detail,
-            /^serving: Ghost answers through Caddy at https:\/\/example\.com, with a certificate from Let's Encrypt valid until 2027-01-07$/,
+            /^serving: Ghost for https:\/\/example\.com\/ answers through Caddy at https:\/\/example\.com, with a certificate from Let's Encrypt valid until 2027-01-07$/,
         );
+    });
+
+    test("another site's Ghost answering through Caddy is an error, naming both sites", async () => {
+        caddy['example.com'] = serving({
+            body: JSON.stringify({ site: { title: 'Another', url: 'https://wrong.example/' } }),
+        });
+        const checks = await verify(PRODUCTION);
+        assert.equal(checks.https!.status, 'error');
+        assert.match(
+            checks.https!.detail,
+            /^Caddy serves example\.com, but another site's Ghost answered through it: it reports https:\/\/wrong\.example\/, and this site is https:\/\/example\.com\/\.\nCheck that the routes in caddy\/sites\/ send example\.com to this site's Ghost$/,
+        );
+    });
+
+    test('the site is told by its URL as Ghost writes it: a trailing slash and case aside, and its path', async () => {
+        caddy['example.com'] = serving();
+        assert.equal(
+            (await verify({ ...PRODUCTION, URL: 'https://EXAMPLE.com/' })).https!.status,
+            'ok',
+        );
+        const blog = await verify({ ...PRODUCTION, URL: 'https://example.com/blog' });
+        assert.equal(blog.https!.status, 'error');
+        assert.match(blog.https!.detail, /this site is https:\/\/example\.com\/blog\//);
+    });
+
+    test('a URL that is not one is an error, and nothing is asked', async () => {
+        const checks = await verify({ ...PRODUCTION, URL: 'https://' });
+        assert.equal(checks.https!.status, 'error');
+        assert.match(checks.https!.detail, /URL in \.env \(https:\/\/\) is not a URL/);
+        assert.deepEqual(h.network.probes, []);
     });
 
     test('a broken route from Caddy to Ghost is an error, whatever the certificate', async () => {
@@ -123,10 +153,12 @@ describe('a production site', () => {
     });
 
     test('a 200 that is not Ghost is an error, not serving', async () => {
-        caddy['example.com'] = serving({ body: 'alpha' });
-        const checks = await verify(PRODUCTION);
-        assert.equal(checks.https!.status, 'error');
-        assert.match(checks.https!.detail, /gave HTTP 200: alpha/);
+        for (const body of ['alpha', '{"site":{"title":"no url"}}', 'null']) {
+            caddy['example.com'] = serving({ body });
+            const checks = await verify(PRODUCTION);
+            assert.equal(checks.https!.status, 'error', body);
+            assert.match(checks.https!.detail, /Ghost did not answer through it: .* gave HTTP 200/);
+        }
     });
 
     test('a certificate browsers do not trust is serving, with a warning', async () => {
@@ -182,7 +214,33 @@ describe('a production site', () => {
         const checks = await verify({ ...PRODUCTION, ADMIN_URL: 'https://admin.example.com' });
         assert.equal(checks.https!.status, 'ok', checks.https!.detail);
         assert.match(checks.https!.detail, /\(sending its Admin API to admin\.example\.com\)/);
+        // Reached by the admin domain, Ghost still reports the site's own URL.
         assert.equal(checks['admin https']!.status, 'ok');
+        assert.match(
+            checks['admin https']!.detail,
+            /^serving: Ghost for https:\/\/example\.com\/ answers through Caddy at https:\/\/admin\.example\.com,/,
+        );
+    });
+
+    test('the admin domain answering as a site of its own, or as another, is an error', async () => {
+        caddy['example.com'] = serving({
+            status: 301,
+            location: 'https://admin.example.com/ghost/api/admin/site/',
+            body: '',
+        });
+        for (const url of ['https://admin.example.com/', 'https://wrong.example/']) {
+            caddy['admin.example.com'] = serving({
+                body: JSON.stringify({ site: { title: 'Another', url } }),
+            });
+            const checks = await verify({ ...PRODUCTION, ADMIN_URL: 'https://admin.example.com' });
+            assert.equal(checks['admin https']!.status, 'error', url);
+            assert.match(
+                checks['admin https']!.detail,
+                new RegExp(
+                    `another site's Ghost answered through it: it reports ${url.replace(/\./g, '\\.')}, and this site is https://example\\.com/`,
+                ),
+            );
+        }
     });
 
     test('a redirect anywhere else is not Ghost answering', async () => {
