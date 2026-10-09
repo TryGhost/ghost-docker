@@ -105,12 +105,12 @@ delivers it. `docs/install.md` describes what exists.
 - The manager asks a site's services directly: `src/network.ts` joins the
   manager's own container to the network the site's running containers share
   (discovered, never guessed) and leaves it however the work ends, and
-  `src/clients.ts` holds the clients, `mysql2` and Node's HTTP, TLS and TCP.
+  `src/clients.ts` holds the clients, `mysql2` and a TLS handshake.
   Every service is addressed by its per-site alias. Queries go through
   `withSiteDatabase`; dumps are still made and loaded by the db container's own
-  `mysqldump` and `mysql`. `src/verify.ts` keeps direct checks (Ghost, Mailpit)
-  apart from ingress (Caddy): `127.0.0.1` in the manager is the manager, and it
-  cannot reach the host's ports. Dockerode and the Docker CLI were weighed and
+  `mysqldump` and `mysql`. `src/verify.ts` reports each service's own health check
+  and asks the network only for Caddy's certificate: `127.0.0.1` in the
+  manager is the manager, and it cannot reach the host's ports. Dockerode and the Docker CLI were weighed and
   not adopted (plan §2.10).
 
 - `compose.yml` — Ghost, MySQL, Caddy, optional analytics and ActivityPub,
@@ -162,7 +162,7 @@ delivers it. `docs/install.md` describes what exists.
 Unit tests for the CLI are TypeScript, in `manager/test/`, run by Node's own
 test runner against a fake `Io`. Integration tests, in
 `manager/test/integration/`, run the same code against the real daemon and the
-stack's real MySQL, Caddy and Mailpit, from a container (the manager
+stack's real MySQL and Caddy, from a container (the manager
 Dockerfile's `integration` stage), because the manager joins its own container
 to a site's network. End-to-end scenarios that only run the real commands and
 check outcomes are shell scripts in `tests/e2e/`. Shell code passes
@@ -182,8 +182,8 @@ cd scripts && pnpm install && pnpm run typecheck && pnpm test   # the release to
 
 Unit tests fake the daemon at the transport (`test/helpers.ts`: `api`, `run`
 and `containers` for the Engine API, `composeRun` for Compose), and the site
-network and its services at the `Io` (`sql`, `http`, `certificate`,
-`greeting`, and `network.refuse`). The fake only puts each running service at
+network and its services at the `Io` (`sql`, `certificate` and
+`network.refuse`). The fake only puts each running service at
 its per-site alias; how the network is found, joined and left is the
 integration tests' to prove, not the fake's to imitate. `test/site.ts` makes a
 site directory from the repository's own files.

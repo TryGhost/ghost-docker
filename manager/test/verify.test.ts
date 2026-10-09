@@ -8,29 +8,20 @@ import { harness, ok, type Harness } from './helpers.ts';
 import { LOCAL, makeSite, PRODUCTION } from './site.ts';
 
 let h: Harness;
-let site: { ghost: string; redirect: string; certificate: boolean; mailpit: string; smtp: string };
+let site: { ghost: string; caddy: string; certificate: boolean; mailpit: string };
 beforeEach(() => {
     h = harness();
     site = {
         ghost: 'healthy',
-        redirect: '308 https://example.com/',
+        caddy: 'healthy',
         certificate: false,
         mailpit: 'healthy',
-        smtp: '220 a1b2c3 Mailpit ESMTP Service ready',
     };
-    // Asked directly, from the manager on the site network.
-    h.daemon.http = ({ port }) => {
-        if (port === 2368) {
-            return { status: 200, location: '' };
-        }
-        const [status = '0', location = ''] = site.redirect.split(' ');
-        return { status: Number(status), location };
-    };
+    // The one question asked directly, from the manager on the site network.
     h.daemon.certificate = () =>
         site.certificate
             ? { issuer: "Let's Encrypt", covers: true }
             : new ServiceUnreachable('tls', 'tlsv1 alert internal error');
-    h.daemon.greeting = () => (site.smtp.startsWith('220') ? site.smtp : new Error(site.smtp));
     h.daemon.composeRun = (args) => {
         if (args[0] === 'ps') {
             return ok(
@@ -44,6 +35,7 @@ beforeEach(() => {
                     {
                         Service: 'caddy',
                         State: 'running',
+                        Health: site.caddy,
                         Publishers: [{ URL: '0.0.0.0', PublishedPort: 80 }],
                     },
                     {
@@ -69,10 +61,10 @@ const verify = async (values: Record<string, string>) => {
 };
 
 describe('a production site', () => {
-    test('before DNS: Ghost healthy, Caddy serving the name, HTTPS pending, ports reported', async () => {
+    test('before DNS: Ghost and Caddy healthy, HTTPS pending, ports reported', async () => {
         const checks = await verify(PRODUCTION);
-        assert.equal(checks.ghost!.status, 'ok');
-        assert.match(checks.caddy!.detail, /http:\/\/example\.com redirects to HTTPS/);
+        assert.match(checks.ghost!.detail, /^healthy: its Admin API answers inside the container/);
+        assert.match(checks.caddy!.detail, /^healthy: its admin API answers/);
         assert.equal(checks.https!.status, 'note');
         assert.match(
             checks.https!.detail,
@@ -94,57 +86,56 @@ describe('a production site', () => {
         );
     });
 
-    test('a name Caddy does not serve, and an unhealthy Ghost, are errors', async () => {
-        site.redirect = '200 ';
+    test('an unhealthy Ghost or Caddy is an error', async () => {
+        site.caddy = 'starting';
         site.ghost = 'unhealthy';
         const checks = await verify(PRODUCTION);
         assert.equal(checks.caddy!.status, 'error');
-        assert.match(
-            checks.caddy!.detail,
-            /answered 200 .* not a redirect .* caddy\/sites\/site\.caddy/,
-        );
+        assert.match(checks.caddy!.detail, /not healthy \(running, starting\)/);
         assert.match(checks.ghost!.detail, /not healthy \(running, unhealthy\)/);
     });
 });
 
-test('a local site has no Caddy to ask', async () => {
+test('a local site has no Caddy, and nothing to ask on its network', async () => {
     const checks = await verify(LOCAL);
     assert.deepEqual(Object.keys(checks), ['ghost', 'published ports']);
+    assert.deepEqual(h.network.probes, []);
 });
 
 describe('a local site with Mailpit', () => {
     const MAILPIT = { ...LOCAL, COMPOSE_PROFILES: 'local,mailpit' };
 
-    test('healthy, it takes mail at its alias, and its inbox port is reported', async () => {
+    test('healthy by its own check, it names where Ghost sends mail, and its inbox port is reported', async () => {
         const checks = await verify(MAILPIT);
         assert.equal(checks.mailpit!.status, 'ok');
-        assert.match(checks.mailpit!.detail, /takes mail at mailpit-ghost-local-site:1025/);
+        assert.match(
+            checks.mailpit!.detail,
+            /^healthy: Ghost sends mail to mailpit-ghost-local-site:1025/,
+        );
         assert.match(
             checks['published ports']!.detail,
             /Ghost on 127\.0\.0\.1:2368, and Mailpit's inbox on 127\.0\.0\.1:8025/,
         );
     });
 
-    test('unhealthy, or not answering SMTP, it is an error', async () => {
+    test('unhealthy, it is an error', async () => {
         site.mailpit = 'unhealthy';
-        assert.match((await verify(MAILPIT)).mailpit!.detail, /not healthy \(running, unhealthy\)/);
-        site.mailpit = 'healthy';
-        site.smtp = 'connect ECONNREFUSED';
         const checks = await verify(MAILPIT);
         assert.equal(checks.mailpit!.status, 'error');
-        assert.match(checks.mailpit!.detail, /did not answer SMTP .*ECONNREFUSED/);
+        assert.match(checks.mailpit!.detail, /not healthy \(running, unhealthy\)/);
+        assert.ok(!h.network.probes.some((probe) => probe.includes('mailpit')));
     });
 });
 
-test('a site network the manager cannot join makes each check an error, never a pass', async () => {
+test('a site network the manager cannot join makes HTTPS an error, never a pass', async () => {
     h.daemon.network = { refuse: 'the manager could not join the site network: permission denied' };
-    const checks = await verify({ ...PRODUCTION, COMPOSE_PROFILES: 'production' });
-    for (const label of ['ghost', 'caddy', 'https']) {
-        assert.equal(checks[label]!.status, 'error', label);
-        assert.match(
-            checks[label]!.detail,
-            /could not be asked on the site network: .*permission denied/,
-        );
-    }
+    const checks = await verify(PRODUCTION);
+    assert.equal(checks.https!.status, 'error');
+    assert.match(
+        checks.https!.detail,
+        /could not be asked on the site network: .*permission denied/,
+    );
+    assert.equal(checks.ghost!.status, 'ok');
+    assert.equal(checks.caddy!.status, 'ok');
     assert.deepEqual(h.network.probes, []);
 });

@@ -6,14 +6,14 @@
 # What the unit tests cannot fake honestly: how the daemon attaches a running
 # container to a network, what names resolve on it afterwards, whether the
 # network can be removed once the manager has left, and whether the clients
-# really talk to MySQL, Caddy and Mailpit. The manager joins its own
+# really talk to MySQL and Caddy. The manager joins its own
 # container to a site's network, so the tests run where it does: in a
 # container, the manager Dockerfile's `integration` stage (the pinned Node,
 # the production dependencies and Compose, with the source, the tests and the
 # stack files), with the Docker socket mounted. The image that ships is the
 # e2e scripts' to test; this tests the code against the real daemon.
 #
-# It pulls the MySQL, Caddy and Mailpit images compose.yml pins and binds no
+# It pulls the MySQL and Caddy images compose.yml pins and binds no
 # host port. It fails, rather than skipping, when no daemon answers.
 set -euo pipefail
 

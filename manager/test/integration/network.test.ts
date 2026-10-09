@@ -1,7 +1,7 @@
 // The manager on a site's network, against the real daemon and services.
 //
-// Three sites: `alpha` on the network Compose names for it, with Caddy and
-// Mailpit; `bravo` and `charlie` on one external network an override names,
+// Three sites: `alpha` on the network Compose names for it, with Caddy;
+// `bravo` and `charlie` on one external network an override names,
 // charlie without its per-site alias. Ghost itself is never started: its own
 // checks are tests/e2e/install.sh's, through a real installation.
 import assert from 'node:assert/strict';
@@ -53,10 +53,8 @@ before(
         });
         assert.equal(created.status, 201, created.body.toString());
         alpha = makeSite(io, 'alpha', {
-            profiles: 'production,mailpit',
+            profiles: 'production',
             url: 'https://example.test',
-            // A name Caddy has no site for.
-            adminUrl: 'https://pending.test',
             // A certificate from Caddy's own CA at once, rather than ACME's
             // once DNS points here.
             caddy: 'example.test {\n\ttls internal\n\trespond "alpha" 200\n}\n',
@@ -66,7 +64,7 @@ before(
             profiles: 'local',
             override: sharedNetwork(WITHOUT_ALIAS),
         });
-        await Promise.all([alpha.up('db', 'caddy', 'mailpit'), bravo.up('db'), charlie.up('db')]);
+        await Promise.all([alpha.up('db', 'caddy'), bravo.up('db'), charlie.up('db')]);
     },
     { timeout: 1_200_000 },
 );
@@ -116,7 +114,7 @@ test('a fresh site: the network Compose named, the per-site alias, and the site 
     );
 });
 
-test('verification asks the real Caddy and Mailpit, and leaves the network', async () => {
+test('verification asks the real Caddy, and leaves the network', async () => {
     const facts = alpha.facts();
     // Caddy issues its internal certificate in the background once it starts.
     let checks = await verifyIngress(io, facts);
@@ -132,26 +130,17 @@ test('verification asks the real Caddy and Mailpit, and leaves the network', asy
 
     assert.equal(by('ghost')[0]?.status, 'error', 'Ghost was never started');
     assert.match(by('ghost')[0]!.detail, /not healthy \(no container\)/);
-    const [served, unserved] = by('caddy');
-    assert.equal(served?.status, 'ok', served?.detail ?? '');
-    assert.match(served!.detail, /http:\/\/example\.test redirects to HTTPS through caddy:80/);
-    // Caddy has no site for pending.test and redirects it all the same: the
-    // redirect shows Caddy answers, not that it routes the name. Making the
-    // check prove routing is PLA-517's; this test changes when it does.
-    assert.equal(unserved?.status, 'ok', unserved?.detail ?? '');
+    // compose.yml's own health check: `up --wait` in before() waited for it.
+    assert.equal(by('caddy')[0]?.status, 'ok', by('caddy')[0]?.detail ?? '');
+    assert.match(by('caddy')[0]!.detail, /^healthy: its admin API answers/);
     assert.equal(by('https')[0]?.status, 'ok', by('https')[0]?.detail ?? '');
     assert.match(
         by('https')[0]!.detail,
         /presents a certificate for example\.test from Caddy Local Authority/,
     );
-    assert.equal(by('mailpit')[0]?.status, 'ok', by('mailpit')[0]?.detail ?? '');
-    assert.match(
-        by('mailpit')[0]!.detail,
-        new RegExp(`takes mail at mailpit-${alpha.project}:1025`),
-    );
     assert.ok(!(await managerNetworks(io)).includes(`${alpha.project}_ghost_network`));
 
-    // A name Caddy has no certificate for fails the handshake, which is
+    // A name Caddy has no site for fails the handshake, which is
     // what verification reports as pending.
     await onSiteNetwork(io, await alpha.services(), ['caddy'], async (site) => {
         await assert.rejects(

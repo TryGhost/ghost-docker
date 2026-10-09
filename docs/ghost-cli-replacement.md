@@ -671,20 +671,19 @@ is best effort and not claimed as supported; do not infer it from linger alone.
 
 **Reaching a site in order to verify it.** `127.0.0.1` inside the manager is the
 manager, not the host, so the first implementation's probes of host loopback
-cannot be ported as they were. The manager joins the site's own network for
-as long as it asks (§2.10, "Reaching a site's services") and asks each service
-directly, with Node's own clients. Direct checks and ingress checks are kept
-apart, and nothing is described as more than it is:
+cannot be ported as they were. Each service is judged by its own Compose
+health check, which `up --wait` already requires, and the manager repeats none
+of them. Only what no health check can answer is asked from the site's own
+network (§2.10, "Reaching a site's services"). Nothing is described as more
+than it is:
 
-- **Ghost**, directly: it passes its health check, which `up --wait` already
-  requires, and its Admin API answers at `ghost-${COMPOSE_PROJECT_NAME}:2368`
-  on the site's network.
-- **Caddy answering, over the site's own network.** In production, the
-  manager requests Caddy on port 80 with each domain's `Host` header and
-  expects a redirect to HTTPS for that domain. Caddy 2.10 issues that redirect
-  for any name, served or not (the integration tests pin this), so it shows
-  Caddy is up and answering on the network, not that the generated routes
-  serve the name. Proving routing is PLA-517's. It needs no certificate.
+- **Ghost**: its health check, in which the Admin API answers inside the
+  container.
+- **Caddy**: its health check, in which its admin API answers with its
+  configuration loaded. That says Caddy is up, not that the generated routes
+  serve each name: Caddy 2.10 redirects any name to HTTPS, served or not (the
+  integration tests found this), so a redirect from port 80 would prove no
+  more. Proving routing is PLA-517's.
 - **Published ports are reported, not verified.** A container cannot reach
   the host's loopback interface on every platform (Docker Desktop and OrbStack
   run the daemon in a VM, rootless Docker in a user namespace), and whether a
@@ -715,7 +714,7 @@ apart, and nothing is described as more than it is:
   private name put `tls internal` in `caddy/custom/`, as today.
 
 A production site before its DNS points at the host therefore has Caddy
-answering, its ports reported as published, and HTTPS shown as pending. That is the
+healthy, its ports reported as published, and HTTPS shown as pending. That is the
 expected state of a fresh production installation, and the output says so in
 those words.
 
@@ -906,8 +905,10 @@ Contract for every manager invocation:
 **Reaching a site's services.** The manager does not run programs inside a
 site's containers to ask it questions. It joins the site's network and speaks
 to each service itself: `mysql2` for the database (connectivity, table and row
-counts, migration history), and Node's HTTP, TLS and TCP clients for Ghost,
-Caddy and Mailpit (`src/network.ts`, `src/clients.ts`).
+counts, migration history), and a TLS handshake for the certificate Caddy
+presents (`src/network.ts`, `src/clients.ts`). Ghost, Caddy and Mailpit are
+otherwise judged by their own health checks; that Ghost's mail reaches
+Mailpit is the install e2e's to prove.
 
 - The network is discovered, never guessed: the one the running containers
   Compose lists for the site share, as the daemon reports them, so a network
@@ -928,7 +929,7 @@ Caddy and Mailpit (`src/network.ts`, `src/clients.ts`).
 
 What this rests on, that the daemon resolves the per-site aliases for a
 container attached after it started, the network comes down once the manager
-has left, and the clients really talk to the stack's MySQL, Caddy and Mailpit,
+has left, and the clients really talk to the stack's MySQL and Caddy,
 is what `manager/test/integration` tests, against the real daemon, from a
 container of the manager Dockerfile's `integration` stage.
 

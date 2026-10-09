@@ -9,7 +9,6 @@ import {
     ServiceUnreachable,
     type Certificate,
     type Clients,
-    type HttpAnswer,
     type SqlTarget,
     type Target,
 } from '../src/clients.ts';
@@ -70,14 +69,8 @@ export interface Daemon {
     network?: { refuse?: string };
     /** What the database answers, as rows of columns; an Error is MySQL refusing it. */
     sql?: (sql: string, target: SqlTarget) => unknown[][] | Error | undefined;
-    /** What an HTTP GET is answered with, or how it fails. */
-    http?: (
-        target: Target & { path: string; headers?: Record<string, string> },
-    ) => HttpAnswer | Error;
     /** The certificate a TLS server presents, or how the handshake fails. */
     certificate?: (target: Target & { servername: string }) => Certificate | Error;
-    /** A server's first line, or how connecting fails. */
-    greeting?: (target: Target) => string | Error;
 }
 
 /** What the manager did on the site network, so tests can see nothing leaks. */
@@ -571,25 +564,12 @@ function fakeClients(state: Harness): Clients {
         return value;
     };
     return {
-        http: async (target) => {
-            reach('http', target);
-            return answer(
-                state.daemon.http?.(target) ??
-                    (target.port === 2368
-                        ? { status: 200, location: '' }
-                        : new Error('connect ECONNREFUSED')),
-            );
-        },
         certificate: async (target) => {
             reach('tls', target);
             return answer(
                 state.daemon.certificate?.(target) ??
                     new ServiceUnreachable('tls', 'tlsv1 alert internal error'),
             );
-        },
-        greeting: async (target) => {
-            reach('greeting', target);
-            return answer(state.daemon.greeting?.(target) ?? '220 fake ESMTP');
         },
         mysql: async (target) => {
             reach('mysql', target);

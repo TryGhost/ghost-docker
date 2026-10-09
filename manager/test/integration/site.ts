@@ -47,8 +47,6 @@ export const NO_HOST_PORTS = `services:
     ports: !reset []
   caddy:
     ports: !reset []
-  mailpit:
-    ports: !reset []
 `;
 
 export interface TestSite {
@@ -66,7 +64,6 @@ export interface TestSite {
 export interface SiteOptions {
     readonly profiles: string;
     readonly url?: string;
-    readonly adminUrl?: string;
     /** compose.override.yml; NO_HOST_PORTS when absent. */
     readonly override?: string;
     /** caddy/sites/site.caddy. */
@@ -89,7 +86,6 @@ export function makeSite(io: Io, name: string, options: SiteOptions): TestSite {
             ['COMPOSE_PROFILES', options.profiles],
             ['SITE_MODE', options.profiles.includes('production') ? 'production' : 'local'],
             ['URL', options.url ?? 'http://localhost:2368'],
-            ['ADMIN_URL', options.adminUrl ?? ''],
             ['DATABASE_PASSWORD', secret()],
             ['DATABASE_ROOT_PASSWORD', secret()],
         ]),

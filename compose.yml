@@ -159,6 +159,16 @@ services:
       - ./caddy:/etc/caddy
       - caddy_data:/data
       - caddy_config:/config
+    # Caddy is up and has loaded its configuration: its admin API answers.
+    # 127.0.0.1, not localhost, which busybox resolves to ::1 first. The
+    # admin API is also what `caddy reload` uses, so it stays on.
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, "http://127.0.0.1:2019/config/"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      start_interval: 1s
+      retries: 5
     depends_on:
       ghost:
         condition: service_started

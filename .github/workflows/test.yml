@@ -57,7 +57,7 @@ jobs:
 
   # The manager's code against the real daemon: joining a site's network,
   # the names that resolve on it, leaving it so the network can come down, and
-  # the clients talking to the stack's MySQL, Caddy and Mailpit. Runs in a
+  # the clients talking to the stack's MySQL and Caddy. Runs in a
   # container of the manager Dockerfile's `integration` stage.
   integration-linux:
     name: Manager integration on Linux

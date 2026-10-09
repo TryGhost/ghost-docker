@@ -334,7 +334,7 @@ fi
 
 production_checks() {
     expect_output 'ok +ghost +healthy'
-    expect_output "ok +caddy +http://$DOMAIN redirects to HTTPS through caddy:80 on the site network"
+    expect_output 'ok +caddy +healthy: its admin API answers'
     expect_output "note +https +pending: there is no certificate for $DOMAIN yet"
     expect_output 'note +published ports +.*Caddy on .*:80'
     # And from the host itself, as an operator's own curl would see it.
@@ -352,7 +352,7 @@ if port_free 80 && port_free 443; then
     run install_alone "$S" --domain "$DOMAIN" --email ops@example.com
     expect_status 0
     production_checks
-    ok "Caddy serves the name on the site network and on the host's port 80; HTTPS pending"
+    ok "Caddy is healthy and redirects the name on the host's port 80; HTTPS pending"
     grep -q $'^\ttls ops@example.com$' "$S/caddy/sites/site.caddy" || fail "--email did not reach the routes" "$(cat "$S/caddy/sites/site.caddy")"
     [[ $(cat "$S/caddy/global/staging.caddy") == 'acme_ca https://acme-staging-v02.api.letsencrypt.org/directory' ]] ||
         fail "the operator's global options were changed"
@@ -390,7 +390,7 @@ new_site e2e-mailpit
 M=$SITE
 run install_alone "$M" --local --with mailpit
 expect_status 0
-expect_output 'ok +mailpit +healthy, and takes mail at mailpit-ghost-local-e2e-mailpit:1025'
+expect_output 'ok +mailpit +healthy: Ghost sends mail to mailpit-ghost-local-e2e-mailpit:1025'
 expect_output 'Mailpit +http://127\.0\.0\.1:[0-9]+'
 inbox=$(setting "$M" MAILPIT_PORT)
 [[ $(setting "$M" mail__options__host) == mailpit-ghost-local-e2e-mailpit ]] || fail "ghost.env does not send mail to Mailpit"
@@ -458,7 +458,7 @@ if port_free 80 && port_free 443; then
     expect_status 0
     production_checks
     [[ -z $(git -C "$C" status --porcelain) ]] || fail "installing changed the checkout" "$(git -C "$C" status --porcelain)"
-    ok "production: routing passes and HTTPS is pending"
+    ok "production: Caddy is healthy and HTTPS is pending"
     compose_in "$C" down --volumes >/dev/null 2>&1
 else
     skip "production from a clone: something on this host already holds 80 or 443"

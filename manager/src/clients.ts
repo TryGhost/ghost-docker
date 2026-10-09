@@ -4,8 +4,6 @@
 //
 // The dumps themselves stay with the version-matched mysqldump and mysql in
 // the db container: these clients ask questions, they do not move data.
-import { request } from 'node:http';
-import { connect as connectTcp } from 'node:net';
 import { checkServerIdentity, connect as connectTls } from 'node:tls';
 import { createConnection, type Connection } from 'mysql2/promise';
 
@@ -23,12 +21,6 @@ export interface Target {
     readonly host: string;
     readonly port: number;
     readonly timeoutMs?: number;
-}
-
-export interface HttpAnswer {
-    readonly status: number;
-    /** The Location header; empty when there is none. */
-    readonly location: string;
 }
 
 export interface Certificate {
@@ -52,14 +44,8 @@ export interface SqlTarget extends Target {
 }
 
 export interface Clients {
-    /** One GET, without following redirects, with the headers given (Host among them). */
-    http: (
-        target: Target & { path: string; headers?: Record<string, string> },
-    ) => Promise<HttpAnswer>;
     /** A TLS handshake with SNI `servername`, and the certificate the server presented. */
     certificate: (target: Target & { servername: string }) => Promise<Certificate>;
-    /** The first line a server sends once connected, such as an SMTP greeting. */
-    greeting: (target: Target) => Promise<string>;
     mysql: (target: SqlTarget) => Promise<SqlConnection>;
 }
 
@@ -75,38 +61,6 @@ const unreachable = (target: Target, error: unknown): ServiceUnreachable =>
               `${target.host}:${target.port}: ${error instanceof Error ? error.message : String(error)}`,
               { cause: error },
           );
-
-const http: Clients['http'] = (target) =>
-    new Promise((resolve, reject) => {
-        const timeoutMs = target.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-        // Plain node:http with no agent: no proxy settings apply, and the
-        // socket is closed once the answer has been read.
-        const asked = request(
-            {
-                host: target.host,
-                port: target.port,
-                path: target.path,
-                method: 'GET',
-                headers: target.headers,
-                agent: false,
-                timeout: timeoutMs,
-            },
-            (response) => {
-                response.resume();
-                resolve({
-                    status: response.statusCode ?? 0,
-                    location: String(response.headers.location ?? ''),
-                });
-            },
-        );
-        asked.on('timeout', () =>
-            asked.destroy(
-                new ServiceUnreachable('timeout', `no answer within ${seconds(timeoutMs)}`),
-            ),
-        );
-        asked.on('error', (error) => reject(unreachable(target, error)));
-        asked.end();
-    });
 
 const certificate: Clients['certificate'] = (target) =>
     new Promise((resolve, reject) => {
@@ -149,28 +103,6 @@ const certificate: Clients['certificate'] = (target) =>
                     ? new ServiceUnreachable('tls', error.message, { cause: error })
                     : unreachable(target, error),
             );
-        });
-    });
-
-const greeting: Clients['greeting'] = (target) =>
-    new Promise((resolve, reject) => {
-        const timeoutMs = target.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-        const socket = connectTcp({ host: target.host, port: target.port, timeout: timeoutMs });
-        socket.once('data', (data) => {
-            socket.destroy();
-            resolve(String(data).split('\r\n')[0] ?? '');
-        });
-        socket.once('end', () => {
-            socket.destroy();
-            reject(new ServiceUnreachable('connect', 'the connection closed without a greeting'));
-        });
-        socket.once('timeout', () => {
-            socket.destroy();
-            reject(new ServiceUnreachable('timeout', `no answer within ${seconds(timeoutMs)}`));
-        });
-        socket.once('error', (error) => {
-            socket.destroy();
-            reject(unreachable(target, error));
         });
     });
 
@@ -229,4 +161,4 @@ const mysql: Clients['mysql'] = async (target) => {
     };
 };
 
-export const nodeClients: Clients = { http, certificate, greeting, mysql };
+export const nodeClients: Clients = { certificate, mysql };
