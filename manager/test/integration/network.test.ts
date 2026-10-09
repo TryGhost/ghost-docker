@@ -243,6 +243,45 @@ test('phases repeated and run at once leave no attachment and no connection', as
     assert.equal(String(open[0]![0]), '1');
 });
 
+test('a query MySQL does not answer in time is closed at once, and the network left', async () => {
+    const network = `${alpha.project}_ghost_network`;
+    for (let round = 0; round < 3; round += 1) {
+        const start = performance.now();
+        await assert.rejects(
+            withSiteDatabase(io, alpha.dir, { failure: 'the database could not be asked' }, (sql) =>
+                sql.query('SELECT SLEEP(5)', 200),
+            ),
+            (error) =>
+                error instanceof CliError &&
+                /the database could not be asked: db-\S+:3306: no answer to a query within/.test(
+                    error.message,
+                ),
+        );
+        // The query's 200 ms, joining and leaving: not the 5 seconds MySQL
+        // takes to answer, which a graceful close would wait for.
+        const took = performance.now() - start;
+        assert.ok(took < 4_000, `the failure took ${Math.round(took)} ms`);
+        assert.ok(!(await managerNetworks(io)).includes(network));
+    }
+
+    // MySQL lets go of the connections once their sleeps end; then only
+    // the connection asking is left.
+    const others = () =>
+        withSiteDatabase(io, alpha.dir, { failure: 'the database could not be asked' }, (sql) =>
+            sql.query(
+                "SELECT COUNT(*) FROM information_schema.processlist WHERE user = 'ghost' " +
+                    "AND host NOT LIKE '127.0.0.1:%' AND host NOT LIKE 'localhost%'",
+            ),
+        );
+    let open = await others();
+    for (let tries = 0; tries < 20 && String(open[0]![0]) !== '1'; tries += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        open = await others();
+    }
+    assert.equal(String(open[0]![0]), '1');
+    assert.ok(!(await managerNetworks(io)).includes(network));
+});
+
 test('a phase that fails, or a connection refused, still leaves the network', async () => {
     const network = `${alpha.project}_ghost_network`;
     await assert.rejects(

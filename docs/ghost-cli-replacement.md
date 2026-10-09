@@ -1043,6 +1043,13 @@ Mailpit is the install e2e's to prove.
   it. Phases that overlap share one attachment, and the last to finish leaves;
   a network the manager was already on is not taken from it. The supervisor
   (§2.6) repeats these phases on the same code.
+- A connection is closed in a bounded time, so leaving the network and
+  releasing the site lock never wait on the database. Each query has the
+  client's own deadline; a connection whose query timed out, or is still
+  outstanding, is destroyed at once, since mysql2 would queue the goodbye
+  behind an answer that may never come. One with nothing outstanding says
+  goodbye, and is destroyed after a second whether the server has closed its
+  side or not.
 - Dumps are still made and loaded by the `mysqldump` and `mysql` of the db
   container's own version, through `compose exec`: the clients ask questions,
   they do not move data. A direct check proves a service answers on the
