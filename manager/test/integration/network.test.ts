@@ -59,7 +59,8 @@ before(
             // Certificates from Caddy's own CA at once, rather than ACME's
             // once DNS points here: the test CA, which no browser trusts.
             // Ghost is never started, so Caddy itself stands in for it on a
-            // port of its own; broken.test routes to nothing.
+            // port of its own; broken.test routes to nothing, and other.test
+            // to a Ghost that reports another site's URL.
             caddy: [
                 'example.test {',
                 '\ttls internal',
@@ -71,6 +72,10 @@ before(
                 'broken.test {',
                 '\ttls internal',
                 '\treverse_proxy 127.0.0.1:9',
+                '}',
+                'other.test {',
+                '\ttls internal',
+                '\trespond `{"site":{"title":"other","url":"https://other.test/"}}` 200',
                 '}',
                 '',
             ].join('\n'),
@@ -154,7 +159,7 @@ test('verification asks the real Caddy for Ghost, and leaves the network', async
     assert.equal(by('https')[0]?.status, 'warn', by('https')[0]?.detail ?? '');
     assert.match(
         by('https')[0]!.detail,
-        /^serving: Ghost answers through Caddy at https:\/\/example\.test, with a certificate from Caddy Local Authority[^,]* valid until \d{4}-\d\d-\d\d\. Its issuer is not a CA browsers trust/,
+        /^serving: Ghost for https:\/\/example\.test\/ answers through Caddy at https:\/\/example\.test, with a certificate from Caddy Local Authority[^,]* valid until \d{4}-\d\d-\d\d\. Its issuer is not a CA browsers trust/,
     );
     assert.ok(!(await managerNetworks(io)).includes(`${alpha.project}_ghost_network`));
 
@@ -173,6 +178,23 @@ test('verification asks the real Caddy for Ghost, and leaves the network', async
     assert.match(
         brokenHttps.detail,
         /Caddy serves broken\.test, but Ghost did not answer through it: \/ghost\/api\/admin\/site\/ gave HTTP 502/,
+    );
+
+    // Another site's Ghost answering through the route is an error too.
+    let other = await verifyIngress(io, { ...facts, domain: 'other.test' });
+    for (
+        let tries = 0;
+        tries < 20 && other.find((c) => c.label === 'https')?.status === 'note';
+        tries += 1
+    ) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        other = await verifyIngress(io, { ...facts, domain: 'other.test' });
+    }
+    const otherHttps = other.find((check) => check.label === 'https')!;
+    assert.equal(otherHttps.status, 'error', otherHttps.detail);
+    assert.match(
+        otherHttps.detail,
+        /Caddy serves other\.test, but another site's Ghost answered through it: it reports https:\/\/other\.test\/, and this site is https:\/\/example\.test\//,
     );
 
     // A name Caddy has no site for fails the handshake, which is

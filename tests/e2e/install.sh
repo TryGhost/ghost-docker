@@ -383,7 +383,7 @@ if port_free 80 && port_free 443; then
     # Serving only because Ghost answered through Caddy; Caddy's CA is not
     # one browsers trust, which the manager says.
     expect_output "warning +https +serving: Ghost answers through Caddy at https://$DOMAIN \\(sending its Admin API to admin\\.$DOMAIN\\), with a certificate from Caddy Local Authority"
-    expect_output "warning +admin https +serving: Ghost answers through Caddy at https://admin\\.$DOMAIN, with a certificate from Caddy Local Authority"
+    expect_output "warning +admin https +serving: Ghost for https://$DOMAIN/ answers through Caddy at https://admin\\.$DOMAIN, with a certificate from Caddy Local Authority"
     expect_output 'not a CA browsers trust'
     ok "verified through Caddy for both names, over TLS, with the untrusted test CA named"
 

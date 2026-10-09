@@ -9,7 +9,9 @@
 //   https           Ghost's answer through Caddy, for the domain and the admin
 //                   domain: an HTTPS request to Caddy, with that name as its
 //                   SNI and Host, for Ghost's Admin API site endpoint. Serving
-//                   only when Ghost answers it, and the certificate is judged
+//                   only when this site's Ghost answers it, by the canonical
+//                   URL it reports, which is the site's URL whichever of the
+//                   two names it was reached by; and the certificate is judged
 //                   (its name, its dates, its issuer). Pending while Caddy has
 //                   no certificate for the name, which it obtains once DNS
 //                   reaches this host: until then the route cannot be tried.
@@ -41,24 +43,59 @@ const healthy = (label: string, state: ServiceState | undefined, what: string): 
 const SITE_PATH = '/ghost/api/admin/site/';
 
 /**
- * Whether Ghost answered SITE_PATH: its site, with its URL. A site with an
- * admin domain of its own serves its Admin API only there, and Ghost answers
- * the path on the site's domain with a redirect to it, which no route of
- * Caddy's would make.
+ * A site URL as Ghost reports it: its origin and path, the path ending in a
+ * slash. Null when it is not a URL.
  */
-function ghostAnswered(answer: HttpsAnswer, adminElsewhere: string | null): boolean {
+function canonical(url: string): string | null {
+    try {
+        const parsed = new URL(url);
+        const path = parsed.pathname.endsWith('/') ? parsed.pathname : `${parsed.pathname}/`;
+        return `${parsed.origin}${path}`;
+    } catch {
+        return null;
+    }
+}
+
+/** What answered SITE_PATH. */
+type Answered =
+    /** This site's Ghost, by the URL it reports. */
+    | { kind: 'site'; url: string }
+    /** Ghost sending its Admin API to the site's admin domain. */
+    | { kind: 'redirect' }
+    /** A Ghost that reports another site's URL: a route to the wrong upstream. */
+    | { kind: 'other'; url: string }
+    | { kind: 'not ghost' };
+
+/**
+ * Who answered SITE_PATH: Ghost answers it with its site, whose URL is the
+ * canonical one, by whichever name it was reached. A site with an admin
+ * domain of its own serves its Admin API only there, and Ghost answers the
+ * path on the site's domain with a redirect to it, which no route of Caddy's
+ * would make; the admin domain's own answer is then the one that names the site.
+ */
+function ghostAnswered(
+    answer: HttpsAnswer,
+    expected: string,
+    adminElsewhere: string | null,
+): Answered {
     if (adminElsewhere !== null && answer.status >= 300 && answer.status < 400) {
-        return (answer.location ?? '').startsWith(`https://${adminElsewhere}${SITE_PATH}`);
+        return (answer.location ?? '').startsWith(`https://${adminElsewhere}${SITE_PATH}`)
+            ? { kind: 'redirect' }
+            : { kind: 'not ghost' };
     }
     if (answer.status !== 200) {
-        return false;
+        return { kind: 'not ghost' };
     }
+    let url: unknown;
     try {
-        const body = JSON.parse(answer.body) as { site?: { url?: unknown } };
-        return typeof body.site?.url === 'string';
+        url = (JSON.parse(answer.body) as { site?: { url?: unknown } } | null)?.site?.url;
     } catch {
-        return false;
+        return { kind: 'not ghost' };
     }
+    if (typeof url !== 'string') {
+        return { kind: 'not ghost' };
+    }
+    return canonical(url) === expected ? { kind: 'site', url } : { kind: 'other', url };
 }
 
 /** What answered instead of Ghost, in a few words. */
@@ -78,6 +115,7 @@ async function https(
     network: SiteNetwork,
     label: string,
     name: string,
+    expected: string,
     adminElsewhere: string | null,
 ): Promise<Check> {
     const address = network.address('caddy');
@@ -122,15 +160,24 @@ async function https(
             `Caddy presents a certificate for ${name} from ${certificate.issuer} that is out of date (valid until ${certificate.validTo}); docker compose logs caddy says why it was not renewed`,
         );
     }
-    if (!ghostAnswered(answer, adminElsewhere)) {
+    const answered = ghostAnswered(answer, expected, adminElsewhere);
+    if (answered.kind === 'not ghost') {
         return error(
             label,
             `Caddy serves ${name}, but Ghost did not answer through it: ${SITE_PATH} gave ${instead(answer)}. Check the routes in caddy/sites/`,
         );
     }
+    if (answered.kind === 'other') {
+        return error(
+            label,
+            `Caddy serves ${name}, but another site's Ghost answered through it: it reports ${answered.url}, and this site is ${expected}.\n` +
+                `Check that the routes in caddy/sites/ send ${name} to this site's Ghost`,
+        );
+    }
     const serving =
-        `serving: Ghost answers through Caddy at https://${name}` +
-        (adminElsewhere === null ? '' : ` (sending its Admin API to ${adminElsewhere})`) +
+        (answered.kind === 'site'
+            ? `serving: Ghost for ${expected} answers through Caddy at https://${name}`
+            : `serving: Ghost answers through Caddy at https://${name} (sending its Admin API to ${adminElsewhere})`) +
         `, with a certificate from ${certificate.issuer} valid until ${certificate.validTo.slice(0, 10)}`;
     return certificate.untrusted === null
         ? ok(label, serving)
@@ -187,24 +234,40 @@ export async function verifyIngress(
         if (adminElsewhere !== null) {
             names.push(['admin https', adminElsewhere, null]);
         }
-        try {
-            checks.push(
-                ...(await io.siteNetwork(services ?? [], ['caddy'], async (network) => {
-                    const answers: Check[] = [];
-                    for (const [label, name, elsewhere] of names) {
-                        answers.push(await https(io, network, label, name, elsewhere));
-                    }
-                    return answers;
-                })),
-            );
-        } catch (failure) {
-            if (!(failure instanceof NetworkUnavailable)) {
-                throw failure;
-            }
+        // Whichever name Ghost is reached by, it reports the site's own URL.
+        const url = site.settings.get('URL') ?? '';
+        const expected = canonical(url);
+        if (expected === null) {
             for (const [label] of names) {
                 checks.push(
-                    error(label, `could not be asked on the site network: ${failure.message}`),
+                    error(
+                        label,
+                        `URL in .env (${url || 'unset'}) is not a URL, so no answer can be told to be this site's`,
+                    ),
                 );
+            }
+        } else {
+            try {
+                checks.push(
+                    ...(await io.siteNetwork(services ?? [], ['caddy'], async (network) => {
+                        const answers: Check[] = [];
+                        for (const [label, name, elsewhere] of names) {
+                            answers.push(
+                                await https(io, network, label, name, expected, elsewhere),
+                            );
+                        }
+                        return answers;
+                    })),
+                );
+            } catch (failure) {
+                if (!(failure instanceof NetworkUnavailable)) {
+                    throw failure;
+                }
+                for (const [label] of names) {
+                    checks.push(
+                        error(label, `could not be asked on the site network: ${failure.message}`),
+                    );
+                }
             }
         }
     }
