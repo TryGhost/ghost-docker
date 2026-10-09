@@ -238,10 +238,15 @@ SLUG=$(jq -er '.posts[0].slug' <<<"$response" 2>/dev/null) || fail "creating a p
 # Content belongs to the `ghost` user Ghost-CLI made.
 sudo -u ghost mkdir -p "$SOURCE/content/images/2026/10"
 printf 'image of %s' "$TITLE" | sudo -u ghost tee "$SOURCE/content/images/2026/10/marker.png" >/dev/null
-# Written in place, keeping the file's owner and mode.
-jq --arg from "$MAIL_FROM" '.mail = ((.mail // {}) + {from: $from})' "$SOURCE/config.production.json" >"$WORK/config.json"
+# Written in place, keeping the file's owner and mode. In production Ghost
+# emails staff a code when they sign in from a new device, and nothing here
+# can deliver mail: without a mail service the sign-in fails with a 500. The
+# setting is carried like any other, so the Docker site has it too.
+jq --arg from "$MAIL_FROM" \
+    '.mail = ((.mail // {}) + {from: $from}) | .security = ((.security // {}) + {staffDeviceVerification: false})' \
+    "$SOURCE/config.production.json" >"$WORK/config.json"
 cat "$WORK/config.json" >"$SOURCE/config.production.json"
-ok "an owner, a post, an image and an awkward mail__from"
+ok "an owner, a post, an image, an awkward mail__from, and no device verification"
 
 # --- A forced failure --------------------------------------------------------
 
@@ -302,10 +307,15 @@ ok "the source's domains and exact Ghost version"
 
 # Staff sign in, through the host's port 443, with the source's password.
 jar=$WORK/moved.cookies
-status=$(site_https "https://$ADMIN_DOMAIN/ghost/api/admin/session/" --output /dev/null --write-out '%{http_code}' \
+[[ $(compose_in "$SITE" exec -T ghost printenv security__staffDeviceVerification) == false ]] ||
+    fail "the source's security settings did not reach Ghost"
+body=$(site_https "https://$ADMIN_DOMAIN/ghost/api/admin/session/" --write-out '\n%{http_code}' \
     --cookie-jar "$jar" --request POST --header 'Content-Type: application/json' --header "Origin: https://$ADMIN_DOMAIN" \
     --data "$(jq -cn --arg u "$OWNER_EMAIL" --arg p "$OWNER_PASSWORD" '{username: $u, password: $p}')")
-[[ $status == 201 ]] || fail "signing in at https://$ADMIN_DOMAIN answered $status"
+status=${body##*$'\n'}
+[[ $status == 201 ]] ||
+    fail "signing in at https://$ADMIN_DOMAIN answered $status" \
+        "${body%$'\n'*}"$'\n'"$(compose_in "$SITE" logs --no-color --tail 40 ghost 2>&1)"
 body=$(site_https "https://$ADMIN_DOMAIN/ghost/api/admin/posts/?filter=slug:$SLUG&fields=status" \
     --cookie "$jar" --header "Origin: https://$ADMIN_DOMAIN")
 [[ $(jq -r '.posts | map(.status) | join(",")' <<<"$body" 2>/dev/null) == published ]] ||

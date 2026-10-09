@@ -312,7 +312,9 @@ database, content and configuration.
   the imported site sends real mail through them. `--with mailpit` is for
   local sites only.
 - **Its staff.** The database arrives whole, so there is no owner to create:
-  sign in with the source's staff accounts.
+  sign in with the source's staff accounts. Ghost treats the new site as a new
+  device and emails a sign-in code, through the carried mail settings, so mail
+  has to work.
 - **Nothing is stopped.** Installation never stops anything already running
   (see [Ports](#ports-and-your-existing-proxy)). Where nginx or Apache still
   holds 80 and 443, as on the server Ghost-CLI ran on, Docker cannot start
