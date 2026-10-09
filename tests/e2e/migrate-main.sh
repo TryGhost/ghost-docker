@@ -5,8 +5,9 @@
 #   tests/e2e/migrate-main.sh
 #
 # The installation is made as main's README made one: a git clone of the
-# stack (tests/fixtures/released-main, committed, untagged, with a remote-
-# tracking branch), `.env` and `caddy/Caddyfile` copied from the examples and
+# repository at GD_RELEASED_MAIN (origin/main until next-docker is merged
+# into it; then main's last commit before that merge, S12 in
+# docs/ghost-cli-replacement.md), `.env` and `caddy/Caddyfile` copied from the examples and
 # edited, ActivityPub enabled, a custom route, a global options block, and a
 # compose.override.yml. It runs the official `ghost:6-alpine` image, whose
 # layout this release does not run. Then:
@@ -33,6 +34,8 @@ IMAGE=$REGISTRY:$RELEASE
 DOMAIN=ghost-e2e.test
 HTTP_PORT=18080
 HTTPS_PORT=18443
+MAIN_REPOSITORY=${GD_MAIN_REPOSITORY:-https://github.com/TryGhost/ghost-docker.git}
+RELEASED_MAIN=${GD_RELEASED_MAIN:-origin/main}
 
 # shellcheck source=/dev/null
 source "$ROOT/tests/e2e/skip.sh"
@@ -121,16 +124,11 @@ expect_status 0
 ok "$IMAGE"
 
 step "An installation of the released main layout, as its README made one"
-mkdir -p "$S"
-cp -R "$ROOT/tests/fixtures/released-main/." "$S/"
-rm "$S/README.md"
-cp -R "$ROOT/tinybird" "$S/tinybird"
-printf '.env\ndata\n' >"$S/.gitignore"
-git -C "$S" init --quiet
-git -C "$S" add -A
-git -C "$S" -c user.name=e2e -c user.email=e2e@example.com commit --quiet -m 'main'
-# As a clone has it: the commit is on a remote-tracking branch, and untagged.
-git -C "$S" update-ref refs/remotes/origin/main HEAD
+mkdir -p "$WORK/sites"
+run git clone --quiet "$MAIN_REPOSITORY" "$S"
+expect_status 0
+run git -C "$S" checkout --quiet --detach "$RELEASED_MAIN"
+expect_status 0
 cp "$S/.env.example" "$S/.env"
 sed -i.bak \
     -e "s/^# COMPOSE_PROFILES=.*/COMPOSE_PROFILES=activitypub/" \
@@ -165,7 +163,7 @@ root_sql 'CREATE TABLE e2e_marker (note varchar(64)); INSERT INTO e2e_marker VAL
 compose_in exec -T ghost sh -c 'printf kept >/var/lib/ghost/content/images/e2e-marker.txt'
 [[ $(https /e2e-custom) == 'custom route kept' ]] || fail "main's custom route does not answer" "$(https /e2e-custom)"
 docker volume inspect "${project}_caddy_data" >/dev/null || fail "no ${project}_caddy_data volume"
-ok "project $project, Ghost $version on ghost:6-alpine, with ActivityPub, a custom route and an override"
+ok "$(git -C "$S" rev-parse --short HEAD) of main: project $project, Ghost $version on ghost:6-alpine, with ActivityPub, a custom route and an override"
 
 # --- Refused before anything changes ------------------------------------------------
 

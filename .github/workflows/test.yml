@@ -23,6 +23,9 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      # The released main layout the migration tests read (GD_RELEASED_MAIN).
+      - run: git fetch --no-tags --depth=1 origin main:refs/remotes/origin/main
+
       - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
         with:
           node-version: "26"

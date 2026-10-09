@@ -7,9 +7,9 @@ import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import { carryCaddyfile, fillEnvironment, type LegacyCaddyValues } from '../src/legacy/caddy.ts';
 import { readLegacyEnv, refuseInterpolated, splitLegacyEnv } from '../src/legacy/config.ts';
-import { REPO } from './site.ts';
+import { releasedMain } from './site.ts';
 
-const MAIN = join(REPO, 'tests', 'fixtures', 'released-main');
+const MAIN = releasedMain();
 const EXAMPLE = readFileSync(join(MAIN, 'caddy', 'Caddyfile.example'), 'utf8');
 
 const VALUES: LegacyCaddyValues = {

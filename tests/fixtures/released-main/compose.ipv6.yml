@@ -1,6 +1,0 @@
-networks:
-  ghost_network:
-    enable_ipv6: true
-    ipam:
-      config:
-        - subnet: fdc1:f5e4:6668::/64

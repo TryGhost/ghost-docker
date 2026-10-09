@@ -219,8 +219,9 @@ Gates the first stable tag and merging `next-docker` into `main`. Include the la
 on Linux, macOS and WSL2. Consolidate CI and qualify the actual minimum supported tools
 and image versions. Run fresh local/production install, optional-service variants, CLI
 migration, legacy stack update, Ghost upgrade/recovery, supervisor/Admin, and restore
-scenarios. Refresh `tests/fixtures/released-main` from `main`'s final commit and rerun
-`tests/e2e/migrate-main.sh` against it before merging. Include Linux runtime tests and macOS-compatible shell/configuration checks.
+scenarios. Before merging, pin the migration tests' `GD_RELEASED_MAIN`
+(default `origin/main`, in `manager/test/site.ts`, `tests/e2e/migrate-main.sh` and
+the manager CI job) to `main`'s last commit, and rerun them. Include Linux runtime tests and macOS-compatible shell/configuration checks.
 Record the [compatibility baseline](architecture.md#compatibility): the exact metadata
 schema, backup format, launcher contract and bundle versions the stable release
 supports, and the obligations that hold for them from then on.

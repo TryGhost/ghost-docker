@@ -11,6 +11,7 @@ import {
     imageApi,
     imageStack,
     REFERENCE,
+    releasedMain,
     REPO,
     resolvedProject,
     scriptSite,
@@ -18,7 +19,7 @@ import {
     type ScriptedSite,
 } from './site.ts';
 
-const MAIN = join(REPO, 'tests', 'fixtures', 'released-main');
+const MAIN = releasedMain();
 /** The Ghost-CLI-layout image main's site runs. */
 const OLD_GHOST = `sha256:${'5'.repeat(64)}`;
 const CADDY = `caddy:2.10.2-alpine@sha256:${'6'.repeat(64)}`;
