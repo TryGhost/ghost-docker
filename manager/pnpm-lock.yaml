@@ -190,6 +190,9 @@ importers:
       undici:
         specifier: ^8.11.2
         version: 8.11.2
+      unique-names-generator:
+        specifier: 4.7.1
+        version: 4.7.1
       yauzl:
         specifier: 3.4.0
         version: 3.4.0
@@ -827,6 +830,10 @@ packages:
     resolution: {integrity: sha512-+QBBXBCvifc56fsbuxZQ6Sic3wqqc3WWaqxs58gvJrcOuN83HGTCwz3oS5phzU9LthRNE9VrJCFCLUgHeeFnfA==}
     engines: {node: '>=18'}
 
+  unique-names-generator@4.7.1:
+    resolution: {integrity: sha512-lMx9dX+KRmG8sq6gulYYpKWZc9RlGsgBR6aoO8Qsm3qvkSJ+3rAymr+TnV8EDMrIrwuFJ4kruzMWM/OpYzPoow==}
+    engines: {node: '>=8'}
+
   which-command@0.1.0:
     resolution: {integrity: sha512-XZyoF5/5hZtXitIwzrU4NKK+Wtbb9aB9CezUEw2Q0wlYK8NUYQxC1rRXgNueYLtBAJwXIb+/tFVk4dozciNJMA==}
     engines: {node: '>=22'}
@@ -1273,6 +1280,8 @@ snapshots:
   undici@8.11.2: {}
 
   unicorn-magic@0.3.0: {}
+
+  unique-names-generator@4.7.1: {}
 
   which-command@0.1.0: {}
 

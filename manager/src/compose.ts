@@ -69,6 +69,11 @@ export type Compose = (
  * one, then each override GD_COMPOSE_OVERRIDES names, relative to the site.
  */
 export function composeFiles(dir: string, overrides = ''): string[] {
+    return composeFileList(dir, overrides).flatMap((file) => ['-f', file]);
+}
+
+/** The Compose files a site runs with, in the order Compose merges them. */
+export function composeFileList(dir: string, overrides = ''): string[] {
     const files = [join(dir, COMPOSE_FILE)];
     if (existsSync(join(dir, COMPOSE_OVERRIDE_FILE))) {
         files.push(join(dir, COMPOSE_OVERRIDE_FILE));
@@ -79,7 +84,7 @@ export function composeFiles(dir: string, overrides = ''): string[] {
             files.push(file);
         }
     }
-    return files.flatMap((file) => ['-f', file]);
+    return files;
 }
 
 /**
@@ -232,13 +237,26 @@ export const composeError = (result: ComposeResult, lines = 6): string =>
 
 // --- `docker compose config` --------------------------------------------------
 
+const resolvedMount = z.looseObject({
+    type: z.string(),
+    source: z.string().default(''),
+    target: z.string(),
+});
+
 const resolvedService = z.looseObject({
     image: z.string().optional(),
+    restart: z.string().optional(),
     environment: z.record(z.string(), z.union([z.string(), z.null()])).optional(),
+    volumes: z.array(resolvedMount).default([]),
+    networks: z.record(z.string(), z.unknown()).default({}),
 });
 
 const resolvedProject = z.looseObject({
+    name: z.string().default(''),
     services: z.record(z.string(), resolvedService).default({}),
+    networks: z
+        .record(z.string(), z.looseObject({ name: z.string().optional() }).nullable())
+        .default({}),
 });
 
 export type ResolvedProject = z.infer<typeof resolvedProject>;

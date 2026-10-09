@@ -11,7 +11,9 @@ import { withSiteDatabase } from '../import/database.ts';
 import type { Io } from '../io.ts';
 import { describeLock, readLock } from '../lock.ts';
 import { describeMetadata, readMetadata } from '../meta.ts';
+import { foreignProject } from '../project.ts';
 import { failed, printChecks, type Check } from '../report.ts';
+import { imageDrift, observeSite, resolveSite, type ResolvedSite } from '../resolved.ts';
 import { hasProfile, readSettings, RESTORE_DIR } from '../site.ts';
 import { verifyIngress } from '../verify.ts';
 import { installedSite } from './common.ts';
@@ -92,6 +94,15 @@ export async function check(io: Io): Promise<number> {
         return EXIT.failure;
     }
 
+    // Compose would report another directory's containers as this site's.
+    const project = site.settings.get('COMPOSE_PROJECT_NAME') || '';
+    const foreign = await foreignProject(io, project, site.dir);
+    if (foreign !== null) {
+        section('Services', [{ status: 'error', label: 'project', detail: foreign }]);
+        io.stderr('\nProblems were reported above.\n');
+        return EXIT.failure;
+    }
+
     const services = await io.busy('Reading the services', () => composePs(io, site.dir));
     // Every container the project has, judged by its own state: a service is
     // running and healthy (or has no health check), a one-shot job exited 0.
@@ -130,6 +141,9 @@ export async function check(io: Io): Promise<number> {
     serviceChecks.push(
         await io.busy('Connecting to the database', () => database(io, site.dir, services)),
     );
+    serviceChecks.push(
+        ...(await io.busy('Comparing the images', () => unappliedImages(io, site.dir))),
+    );
     section('Services', serviceChecks);
 
     const running = serviceChecks.find((entry) => entry.label === 'ghost')?.status === 'ok';
@@ -148,6 +162,29 @@ export async function check(io: Io): Promise<number> {
     }
     io.stdout('\nThis site looks healthy.\n');
     return EXIT.ok;
+}
+
+/**
+ * Running containers whose image is not the one Compose now resolves: a
+ * change to the configuration that `up` has not applied. Nothing to say when
+ * Compose cannot resolve the project, which the configuration's checks report.
+ */
+async function unappliedImages(io: Io, dir: string): Promise<Check[]> {
+    let resolved: ResolvedSite;
+    try {
+        resolved = await resolveSite(io, dir);
+    } catch (error) {
+        if (error instanceof CliError) {
+            return [];
+        }
+        throw error;
+    }
+    const drift = await imageDrift(io, resolved, await observeSite(io, resolved));
+    return drift.map((detail) => ({
+        status: 'warn',
+        label: 'images',
+        detail: `${detail}; docker compose up -d applies the configuration`,
+    }));
 }
 
 /**

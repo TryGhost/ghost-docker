@@ -187,7 +187,20 @@ Each service has a unique alias suffixed with the project name:
 
 Generated proxy routes and helper clients use these, never the bare service
 name. `COMPOSE_PROJECT_NAME` is the site's stable identity and is kept
-independent of the directory name.
+independent of the directory name. `install` chooses it once: the domain's in
+production, and locally the directory's name and a random pair
+(`ghost-local-blog-secondary-roadrunner`) that no project on the daemon has,
+so two local sites in directories of the same name never share one.
+
+Compose finds a project's containers by its name alone, so two directories
+with one name would each act on the other's containers. Before `install`,
+`self-update`, `backup` and `restore` change anything, and before `check`
+reads the services, the manager asks the daemon which directory the
+project's containers were made in (Compose's
+`com.docker.compose.project.working_dir` label), and refuses a project whose
+containers another directory made. A site moved to a new directory is one of
+these until its old containers are removed: `docker compose down` in the new
+directory, then start it again.
 
 The manager uses them too. `check`, `install`, `self-update`, `backup`, `restore`
 and an import join the site's network while they ask its services
