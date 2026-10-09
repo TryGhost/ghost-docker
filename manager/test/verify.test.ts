@@ -1,27 +1,52 @@
 // Verification: what each container's answer means.
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, test } from 'node:test';
-import { ServiceUnreachable } from '../src/clients.ts';
+import { ServiceUnreachable, type HttpsAnswer } from '../src/clients.ts';
 import { readSettings, siteFacts } from '../src/site.ts';
 import { verifyIngress } from '../src/verify.ts';
 import { harness, ok, type Harness } from './helpers.ts';
 import { LOCAL, makeSite, PRODUCTION } from './site.ts';
 
+/** Ghost's answer for its site, as the Admin API gives it. */
+const GHOST = JSON.stringify({ site: { title: 'A site', url: 'https://example.com/' } });
+
+/** Ghost answering through Caddy, with a valid certificate; `changes` alter it. */
+const serving = (
+    changes: Partial<Omit<HttpsAnswer, 'certificate'>> & {
+        certificate?: Partial<HttpsAnswer['certificate']>;
+    } = {},
+): HttpsAnswer => ({
+    status: 200,
+    body: GHOST,
+    ...changes,
+    location: changes.location ?? null,
+    certificate: {
+        issuer: "Let's Encrypt",
+        covers: true,
+        validTo: '2027-01-07T12:00:00.000Z',
+        expired: false,
+        untrusted: null,
+        ...changes.certificate,
+    },
+});
+
 let h: Harness;
-let site: { ghost: string; caddy: string; certificate: boolean; mailpit: string };
+let site: { ghost: string; caddy: string; mailpit: string };
+/** What Caddy answers for each name; unset, it has no certificate for it. */
+let caddy: Record<string, HttpsAnswer | Error>;
 beforeEach(() => {
     h = harness();
     site = {
         ghost: 'healthy',
         caddy: 'healthy',
-        certificate: false,
         mailpit: 'healthy',
     };
+    caddy = {};
     // The one question asked directly, from the manager on the site network.
-    h.daemon.certificate = () =>
-        site.certificate
-            ? { issuer: "Let's Encrypt", covers: true }
-            : new ServiceUnreachable('tls', 'tlsv1 alert internal error');
+    h.daemon.https = ({ servername, path }) => {
+        assert.equal(path, '/ghost/api/admin/site/');
+        return caddy[servername] ?? new ServiceUnreachable('tls', 'tlsv1 alert internal error');
+    };
     h.daemon.composeRun = (args) => {
         if (args[0] === 'ps') {
             return ok(
@@ -68,22 +93,128 @@ describe('a production site', () => {
         assert.equal(checks.https!.status, 'note');
         assert.match(
             checks.https!.detail,
-            /^pending: there is no certificate for example\.com yet/,
+            /^pending: Caddy has no certificate for example\.com yet \(the TLS handshake fails\), so Ghost could not be asked through it yet/,
         );
         assert.match(
             checks['published ports']!.detail,
             /Ghost on 127\.0\.0\.1:2368 and Caddy on 0\.0\.0\.0:80/,
         );
+        assert.deepEqual(h.network.probes, ['https example.com caddy-ghost-example-com:443']);
     });
 
-    test('with a certificate, HTTPS is serving and names the issuer', async () => {
-        site.certificate = true;
+    test('serving only when Ghost answers through Caddy, naming the issuer and expiry', async () => {
+        caddy['example.com'] = serving();
         const checks = await verify(PRODUCTION);
         assert.equal(checks.https!.status, 'ok');
         assert.match(
             checks.https!.detail,
-            /presents a certificate for example\.com from Let's Encrypt/,
+            /^serving: Ghost answers through Caddy at https:\/\/example\.com, with a certificate from Let's Encrypt valid until 2027-01-07$/,
         );
+    });
+
+    test('a broken route from Caddy to Ghost is an error, whatever the certificate', async () => {
+        caddy['example.com'] = serving({ status: 502, body: '' });
+        const checks = await verify(PRODUCTION);
+        assert.equal(checks.https!.status, 'error');
+        assert.match(
+            checks.https!.detail,
+            /Caddy serves example\.com, but Ghost did not answer through it: \/ghost\/api\/admin\/site\/ gave HTTP 502/,
+        );
+    });
+
+    test('a 200 that is not Ghost is an error, not serving', async () => {
+        caddy['example.com'] = serving({ body: 'alpha' });
+        const checks = await verify(PRODUCTION);
+        assert.equal(checks.https!.status, 'error');
+        assert.match(checks.https!.detail, /gave HTTP 200: alpha/);
+    });
+
+    test('a certificate browsers do not trust is serving, with a warning', async () => {
+        caddy['example.com'] = serving({
+            certificate: {
+                issuer: "(STAGING) Let's Encrypt",
+                untrusted: 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
+            },
+        });
+        const checks = await verify(PRODUCTION);
+        assert.equal(checks.https!.status, 'warn');
+        assert.match(
+            checks.https!.detail,
+            /^serving: .*not a CA browsers trust \(UNABLE_TO_GET_ISSUER_CERT_LOCALLY\)/,
+        );
+    });
+
+    test('an out-of-date certificate is an error', async () => {
+        caddy['example.com'] = serving({
+            certificate: { expired: true, validTo: '2026-01-01T00:00:00.000Z' },
+        });
+        const checks = await verify(PRODUCTION);
+        assert.equal(checks.https!.status, 'error');
+        assert.match(checks.https!.detail, /out of date \(valid until 2026-01-01/);
+    });
+
+    test('a certificate for another name is still pending', async () => {
+        caddy['example.com'] = serving({
+            certificate: { covers: false, issuer: 'Caddy Local Authority' },
+        });
+        const checks = await verify(PRODUCTION);
+        assert.equal(checks.https!.status, 'note');
+        assert.match(
+            checks.https!.detail,
+            /^pending: Caddy presents a certificate from Caddy Local Authority that does not name example\.com/,
+        );
+    });
+
+    test('Caddy not answering at all is an error', async () => {
+        caddy['example.com'] = new ServiceUnreachable('connect', 'connect ECONNREFUSED');
+        const checks = await verify(PRODUCTION);
+        assert.equal(checks.https!.status, 'error');
+        assert.match(checks.https!.detail, /Caddy did not answer for example\.com .*ECONNREFUSED/);
+    });
+
+    test("with an admin domain, the site's domain passes on Ghost's redirect of its Admin API there", async () => {
+        caddy['example.com'] = serving({
+            status: 301,
+            location: 'https://admin.example.com/ghost/api/admin/site/',
+            body: '',
+        });
+        caddy['admin.example.com'] = serving();
+        const checks = await verify({ ...PRODUCTION, ADMIN_URL: 'https://admin.example.com' });
+        assert.equal(checks.https!.status, 'ok', checks.https!.detail);
+        assert.match(checks.https!.detail, /\(sending its Admin API to admin\.example\.com\)/);
+        assert.equal(checks['admin https']!.status, 'ok');
+    });
+
+    test('a redirect anywhere else is not Ghost answering', async () => {
+        caddy['example.com'] = serving({
+            status: 308,
+            location: 'https://example.com/ghost/api/admin/site/',
+            body: '',
+        });
+        assert.equal((await verify(PRODUCTION)).https!.status, 'error');
+        caddy['example.com'] = serving({
+            status: 301,
+            location: 'https://elsewhere.example/ghost/api/admin/site/',
+            body: '',
+        });
+        const elsewhere = await verify({ ...PRODUCTION, ADMIN_URL: 'https://admin.example.com' });
+        assert.equal(elsewhere.https!.status, 'error');
+    });
+
+    test('an admin domain of its own is asked for separately, by its own name', async () => {
+        caddy['example.com'] = serving();
+        caddy['admin.example.com'] = serving({ status: 404, body: 'Not Found' });
+        const checks = await verify({ ...PRODUCTION, ADMIN_URL: 'https://admin.example.com' });
+        assert.equal(checks.https!.status, 'ok');
+        assert.equal(checks['admin https']!.status, 'error');
+        assert.match(
+            checks['admin https']!.detail,
+            /Caddy serves admin\.example\.com, but Ghost did not answer/,
+        );
+        assert.deepEqual(h.network.probes, [
+            'https example.com caddy-ghost-example-com:443',
+            'https admin.example.com caddy-ghost-example-com:443',
+        ]);
     });
 
     test('an unhealthy Ghost or Caddy is an error', async () => {

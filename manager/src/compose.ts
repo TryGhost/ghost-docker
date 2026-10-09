@@ -249,6 +249,7 @@ const resolvedService = z.looseObject({
     environment: z.record(z.string(), z.union([z.string(), z.null()])).optional(),
     volumes: z.array(resolvedMount).default([]),
     networks: z.record(z.string(), z.unknown()).default({}),
+    labels: z.record(z.string(), z.string()).default({}),
 });
 
 const resolvedProject = z.looseObject({

@@ -364,18 +364,28 @@ updates may touch `compose.yml`; see
 ## How a site is verified
 
 Each service is judged by its own health check, which `up --wait` already
-required. `127.0.0.1` inside the manager is the manager, so for the one
-question no health check answers, the certificate, the manager joins the
-site's own Docker network, asks Caddy, and leaves again. Each answer is
-reported for what it is:
+required. `127.0.0.1` inside the manager is the manager, so for the question
+no health check answers, whether Caddy serves the site, the manager joins the
+site's own Docker network, asks Caddy for Ghost over HTTPS, and leaves again.
+Each answer is reported for what it is:
 
 | Check | How | Reported as |
 | --- | --- | --- |
 | ghost | Its health check: the Admin API answers inside the container. | `ok` or `ERROR` |
 | caddy | Its health check: its admin API answers, with its configuration loaded. That says Caddy is up, not that it serves each name; **https** shows that once there is a certificate. | `ok` or `ERROR` |
-| https | Whether Caddy presents a certificate that names the domain. **serving** names the issuer. **pending** means there is none yet: Caddy obtains one once the domain's DNS reaches this host, `./ghost-docker check` reports the change, and `docker compose logs caddy` shows each attempt and why it failed. | `ok` or `note` |
+| https | An HTTPS request to Caddy's container for Ghost's `/ghost/api/admin/site/`, with the domain as its server name and Host, as a browser asks. **serving** means Ghost answered through Caddy, and names the certificate's issuer and expiry; a certificate from a CA browsers do not trust (staging, or Caddy's internal CA) is a `warning`. **pending** means Caddy has no certificate for the name yet, so Ghost could not be asked through it: Caddy obtains one once the domain's DNS reaches this host, `./ghost-docker check` reports the change, and `docker compose logs caddy` shows each attempt. Caddy answering with something other than Ghost (a broken route, a 502), or an out-of-date certificate, is an `ERROR`. | `ok`, `warning`, `note` or `ERROR` |
+| admin https | With an admin domain of its own: the same, for that name. On the site's domain, Ghost answering the Admin API path with a redirect to the admin domain counts as Ghost answering. | `ok`, `warning`, `note` or `ERROR` |
 | mailpit | With `--with mailpit`: its health check. The check names `mailpit-${COMPOSE_PROJECT_NAME}:1025`, where Ghost sends mail. | `ok` or `ERROR` |
-| published ports | The ports Docker says it published. A container cannot reach the host's own loopback interface, so they are not checked from there: opening the URL is that check. | `note` |
+| published ports | The ports Docker says it published. A container cannot reach the host's own loopback interface, so they are not checked from there (the **https** request goes to Caddy's container, not to the host's ports): opening the URL is that check. | `note` |
+
+`check` also judges every service the configuration runs by how compose.yml
+says it runs (the `org.ghost.docker.lifecycle` label). A long-running service,
+ActivityPub included, must have a container that is running, and healthy where
+it has a health check: one that is missing or has stopped is an `ERROR`, even
+one that exited 0. A one-shot job (`activitypub-migrate` and the Tinybird jobs)
+passes once it has exited 0, is a `note` before it has run, and is an `ERROR`
+when it failed. A container of a service the configuration no longer runs is
+a `warning`.
 
 A production site installed before its DNS points at the host therefore passes
 and reports HTTPS as pending. That is the expected state of a fresh

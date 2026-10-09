@@ -56,9 +56,24 @@ before(
         alpha = makeSite(io, 'alpha', {
             profiles: 'production',
             url: 'https://example.test',
-            // A certificate from Caddy's own CA at once, rather than ACME's
-            // once DNS points here.
-            caddy: 'example.test {\n\ttls internal\n\trespond "alpha" 200\n}\n',
+            // Certificates from Caddy's own CA at once, rather than ACME's
+            // once DNS points here: the test CA, which no browser trusts.
+            // Ghost is never started, so Caddy itself stands in for it on a
+            // port of its own; broken.test routes to nothing.
+            caddy: [
+                'example.test {',
+                '\ttls internal',
+                '\treverse_proxy 127.0.0.1:2368',
+                '}',
+                'http://:2368 {',
+                '\trespond `{"site":{"title":"alpha","url":"https://example.test/"}}` 200',
+                '}',
+                'broken.test {',
+                '\ttls internal',
+                '\treverse_proxy 127.0.0.1:9',
+                '}',
+                '',
+            ].join('\n'),
         });
         bravo = makeSite(io, 'bravo', { profiles: 'local', override: sharedNetwork() });
         charlie = makeSite(io, 'charlie', {
@@ -115,13 +130,13 @@ test('a fresh site: the network Compose named, the per-site alias, and the site 
     );
 });
 
-test('verification asks the real Caddy, and leaves the network', async () => {
+test('verification asks the real Caddy for Ghost, and leaves the network', async () => {
     const facts = alpha.facts();
-    // Caddy issues its internal certificate in the background once it starts.
+    // Caddy issues its internal certificates in the background once it starts.
     let checks = await verifyIngress(io, facts);
     for (
         let tries = 0;
-        tries < 20 && checks.find((c) => c.label === 'https')?.status !== 'ok';
+        tries < 20 && checks.find((c) => c.label === 'https')?.status === 'note';
         tries += 1
     ) {
         await new Promise((resolve) => setTimeout(resolve, 1000));
@@ -134,21 +149,41 @@ test('verification asks the real Caddy, and leaves the network', async () => {
     // compose.yml's own health check: `up --wait` in before() waited for it.
     assert.equal(by('caddy')[0]?.status, 'ok', by('caddy')[0]?.detail ?? '');
     assert.match(by('caddy')[0]!.detail, /^healthy: its admin API answers/);
-    assert.equal(by('https')[0]?.status, 'ok', by('https')[0]?.detail ?? '');
+    // Through Caddy over TLS to what answers as Ghost; Caddy's CA is not one
+    // browsers trust, which is a warning, not a pass.
+    assert.equal(by('https')[0]?.status, 'warn', by('https')[0]?.detail ?? '');
     assert.match(
         by('https')[0]!.detail,
-        /presents a certificate for example\.test from Caddy Local Authority/,
+        /^serving: Ghost answers through Caddy at https:\/\/example\.test, with a certificate from Caddy Local Authority[^,]* valid until \d{4}-\d\d-\d\d\. Its issuer is not a CA browsers trust/,
     );
     assert.ok(!(await managerNetworks(io)).includes(`${alpha.project}_ghost_network`));
+
+    // A route to nothing is an error, though Caddy has a certificate for it.
+    let broken = await verifyIngress(io, { ...facts, domain: 'broken.test' });
+    for (
+        let tries = 0;
+        tries < 20 && broken.find((c) => c.label === 'https')?.status === 'note';
+        tries += 1
+    ) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        broken = await verifyIngress(io, { ...facts, domain: 'broken.test' });
+    }
+    const brokenHttps = broken.find((check) => check.label === 'https')!;
+    assert.equal(brokenHttps.status, 'error', brokenHttps.detail);
+    assert.match(
+        brokenHttps.detail,
+        /Caddy serves broken\.test, but Ghost did not answer through it: \/ghost\/api\/admin\/site\/ gave HTTP 502/,
+    );
 
     // A name Caddy has no site for fails the handshake, which is
     // what verification reports as pending.
     await onSiteNetwork(io, await alpha.services(), ['caddy'], async (site) => {
         await assert.rejects(
-            io.clients.certificate({
+            io.clients.https({
                 host: site.address('caddy')!.host,
                 port: 443,
                 servername: 'pending.test',
+                path: '/',
             }),
             (error) => error instanceof ServiceUnreachable && error.stage === 'tls',
         );

@@ -17,6 +17,16 @@ import { COMPOSE_FILE, COMPOSE_OVERRIDE_FILE } from './site.ts';
 /** The label Compose gives every container with the service it is of. */
 const SERVICE_LABEL = 'com.docker.compose.service';
 
+/**
+ * The label compose.yml gives each service saying how it runs: `one-shot`
+ * for a job that runs to completion (a migration, the Tinybird jobs), and
+ * `long-running` for the rest. A service without it is long-running: an
+ * operator's own service is held to the stricter rule.
+ */
+export const LIFECYCLE_LABEL = 'org.ghost.docker.lifecycle';
+
+export type Lifecycle = 'long-running' | 'one-shot';
+
 export interface Mount {
     /** `bind`, `volume` or `tmpfs`. */
     readonly type: string;
@@ -33,6 +43,7 @@ export interface ResolvedService {
     readonly mounts: readonly Mount[];
     /** The networks it joins, by the names Docker knows them by. */
     readonly networks: readonly string[];
+    readonly lifecycle: Lifecycle;
 }
 
 export interface ResolvedSite {
@@ -69,6 +80,8 @@ export async function resolveSite(io: Io, dir: string): Promise<ResolvedSite> {
                 target,
             })),
             networks: Object.keys(definition.networks).map(name),
+            lifecycle:
+                definition.labels[LIFECYCLE_LABEL] === 'one-shot' ? 'one-shot' : 'long-running',
         };
     }
     const files = composeFileList(dir, io.env.GD_COMPOSE_OVERRIDES);
