@@ -187,7 +187,7 @@ npm install -g ghost-cli@latest
 ghost update
 ```
 
-Then export it with Ghost-CLI 1.33.3 or later:
+Then export it with Ghost-CLI 1.33.4 or later:
 
 ```bash
 ghost migrate-export --output ~/my-site-bundle --archive tgz
@@ -364,7 +364,7 @@ curl -fsSL https://docker.ghost.org/install.sh | bash -s -- install --import ../
   with a `compose.override.yml`; see [Your own Compose
   overrides](configuration.md#your-own-compose-overrides).
 
-Exporting needs Ghost-CLI 1.33.3 or later (`ghost --version`) and a source
+Exporting needs Ghost-CLI 1.33.4 or later (`ghost --version`) and a source
 on Ghost 6.61.0 or later; on anything older, run `ghost update` there and check
 the site works before exporting. When the exporter
 refuses a SQLite site because some values would not load into MySQL, it lists
@@ -382,7 +382,7 @@ back, until you remove it. Nothing here is automated: there is no maintenance
 page, and the site is down from `ghost stop` until the Docker site serves it.
 
 First, in either case, bring the source up to date and check it, as above:
-Ghost-CLI 1.33.3 or later, and the site on a Ghost release with a `next`
+Ghost-CLI 1.33.4 or later, and the site on a Ghost release with a `next`
 image. The import runs exactly that release; upgrade afterwards. Run the
 export and the import as the same user, who can read the bundle the exporter
 made private to them.

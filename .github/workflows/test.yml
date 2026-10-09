@@ -167,7 +167,7 @@ jobs:
       # `ghost` user, which cannot reach npx's cache in the runner's home.
       - name: Ghost-CLI, nginx and MySQL for the source
         run: |
-          npm install --global ghost-cli@1.33.3
+          npm install --global ghost-cli@1.33.4
           sudo apt-get update
           sudo apt-get install --yes nginx
           sudo systemctl start nginx mysql
