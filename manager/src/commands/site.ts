@@ -104,46 +104,25 @@ export async function check(io: Io): Promise<number> {
     }
 
     const services = await io.busy('Reading the services', () => composePs(io, site.dir));
-    // Every container the project has, judged by its own state: a service is
-    // running and healthy (or has no health check), a one-shot job exited 0.
-    const serviceChecks: Check[] = (services ?? []).map((state) => {
-        const done = state.State === 'exited' && state.ExitCode === 0;
-        const healthy =
-            state.State === 'running' && (state.Health === '' || state.Health === 'healthy');
-        return {
-            status: done || healthy ? 'ok' : 'error',
-            label: state.Service,
-            detail: done
-                ? 'completed'
-                : [
-                      state.State,
-                      state.Health,
-                      state.State === 'exited' ? `exit ${state.ExitCode}` : '',
-                  ]
-                      .filter(Boolean)
-                      .join(', '),
-        };
-    });
-    if (services?.length === 0) {
-        serviceChecks.push({
-            status: 'error',
-            label: 'services',
-            detail: 'no containers. Start the site with: docker compose up -d',
-        });
+    let resolved: ResolvedSite | null = null;
+    try {
+        resolved = await io.busy('Resolving the Compose project', () => resolveSite(io, site.dir));
+    } catch (error) {
+        // The configuration's checks above say why.
+        if (!(error instanceof CliError)) {
+            throw error;
+        }
     }
-    if (services === null) {
-        serviceChecks.unshift({
-            status: 'error',
-            label: 'services',
-            detail: 'docker compose ps failed',
-        });
-    }
+    const serviceChecks = judgeServices(services, resolved);
     serviceChecks.push(
         await io.busy('Connecting to the database', () => database(io, site.dir, services)),
     );
-    serviceChecks.push(
-        ...(await io.busy('Comparing the images', () => unappliedImages(io, site.dir))),
-    );
+    if (resolved !== null) {
+        const site = resolved;
+        serviceChecks.push(
+            ...(await io.busy('Comparing the images', () => unappliedImages(io, site))),
+        );
+    }
     section('Services', serviceChecks);
 
     const running = serviceChecks.find((entry) => entry.label === 'ghost')?.status === 'ok';
@@ -165,20 +144,94 @@ export async function check(io: Io): Promise<number> {
 }
 
 /**
- * Running containers whose image is not the one Compose now resolves: a
- * change to the configuration that `up` has not applied. Nothing to say when
- * Compose cannot resolve the project, which the configuration's checks report.
+ * Every service the configuration runs, judged by how it runs: a long-running
+ * service must have a container that is running, and healthy when it has a
+ * health check; a one-shot job must not have failed. A container of a service
+ * the configuration no longer runs is reported too. Without the resolved
+ * configuration, nothing says which services should exist, or which are jobs,
+ * so every container is held to the long-running rule.
  */
-async function unappliedImages(io: Io, dir: string): Promise<Check[]> {
-    let resolved: ResolvedSite;
-    try {
-        resolved = await resolveSite(io, dir);
-    } catch (error) {
-        if (error instanceof CliError) {
-            return [];
-        }
-        throw error;
+export function judgeServices(
+    services: readonly ServiceState[] | null,
+    resolved: ResolvedSite | null,
+): Check[] {
+    if (services === null) {
+        return [{ status: 'error', label: 'services', detail: 'docker compose ps failed' }];
     }
+    const describe = (state: ServiceState) =>
+        [state.State, state.Health, state.State === 'exited' ? `exit ${state.ExitCode}` : '']
+            .filter(Boolean)
+            .join(', ');
+    const longRunning = (label: string, state: ServiceState | undefined): Check => {
+        if (state === undefined) {
+            return {
+                status: 'error',
+                label,
+                detail: 'no container, though the configuration runs it. Start it with: docker compose up -d',
+            };
+        }
+        const up = state.State === 'running' && (state.Health === '' || state.Health === 'healthy');
+        return {
+            status: up ? 'ok' : 'error',
+            label,
+            detail: up ? describe(state) : `${describe(state)}: it should be running`,
+        };
+    };
+    const oneShot = (label: string, state: ServiceState | undefined): Check => {
+        if (state === undefined) {
+            return { status: 'note', label, detail: 'not run yet: a job that runs to completion' };
+        }
+        if (state.State === 'exited' && state.ExitCode === 0) {
+            return { status: 'ok', label, detail: 'completed' };
+        }
+        if (state.State === 'running' || state.State === 'created') {
+            return {
+                status: 'ok',
+                label,
+                detail: `${describe(state)}: a job that runs to completion`,
+            };
+        }
+        return {
+            status: 'error',
+            label,
+            detail: `${describe(state)}: the job failed; docker compose logs ${label} says why`,
+        };
+    };
+
+    // The newest container of each service is the one that counts.
+    const observed = new Map(services.map((state) => [state.Service, state]));
+    if (resolved === null) {
+        return [
+            {
+                status: 'error',
+                label: 'services',
+                detail: 'Compose cannot resolve the project, so which services should run is unknown',
+            },
+            ...[...observed].map(([service, state]) => longRunning(service, state)),
+        ];
+    }
+    const checks: Check[] = Object.entries(resolved.services).map(([service, definition]) =>
+        definition.lifecycle === 'one-shot'
+            ? oneShot(service, observed.get(service))
+            : longRunning(service, observed.get(service)),
+    );
+    for (const [service, state] of observed) {
+        if (!(service in resolved.services)) {
+            checks.push({
+                status: 'warn',
+                label: service,
+                detail: `${describe(state)}, but the configuration no longer runs it; docker compose up -d --remove-orphans removes it`,
+            });
+        }
+    }
+    return checks;
+}
+
+/**
+ * Running containers whose image is not the one Compose now resolves: a
+ * change to the configuration that `up` has not applied.
+ */
+async function unappliedImages(io: Io, resolved: ResolvedSite): Promise<Check[]> {
     const drift = await imageDrift(io, resolved, await observeSite(io, resolved));
     return drift.map((detail) => ({
         status: 'warn',

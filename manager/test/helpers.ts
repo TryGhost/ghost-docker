@@ -8,7 +8,7 @@ import { Readable } from 'node:stream';
 import { run } from '../src/cli.ts';
 import {
     ServiceUnreachable,
-    type Certificate,
+    type HttpsAnswer,
     type Clients,
     type SqlTarget,
     type Target,
@@ -73,8 +73,12 @@ export interface Daemon {
     network?: { refuse?: string };
     /** What the database answers, as rows of columns; an Error is MySQL refusing it. */
     sql?: (sql: string, target: SqlTarget) => unknown[][] | Error | undefined;
-    /** The certificate a TLS server presents, or how the handshake fails. */
-    certificate?: (target: Target & { servername: string }) => Certificate | Error;
+    /**
+     * An HTTPS request's answer, with the certificate presented for its
+     * server name, or how it fails. Unset: the handshake fails, as Caddy's
+     * does for a name it has no certificate for.
+     */
+    https?: (target: Target & { servername: string; path: string }) => HttpsAnswer | Error;
 }
 
 /** What the manager did on the site network, so tests can see nothing leaks. */
@@ -622,10 +626,10 @@ function fakeClients(state: Harness): Clients {
         return value;
     };
     return {
-        certificate: async (target) => {
-            reach('tls', target);
+        https: async (target) => {
+            reach(`https ${target.servername}`, target);
             return answer(
-                state.daemon.certificate?.(target) ??
+                state.daemon.https?.(target) ??
                     new ServiceUnreachable('tls', 'tlsv1 alert internal error'),
             );
         },

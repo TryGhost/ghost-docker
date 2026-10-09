@@ -769,17 +769,24 @@ than it is:
   checked from the host; the installer prints the URL, and opening it is that
   check. An earlier revision of N3 probed them from the host's namespace on
   Linux with Docker Engine; it was dropped as not worth its code.
-- **HTTPS, as an issuance state, not a probe result.** Caddy obtains a public
+- **HTTPS, as Ghost's answer through Caddy.** Caddy obtains a public
   certificate for a public domain name in the background, retrying with
   backoff for up to thirty days, and keeps it in its data volume; it does not
   substitute its internal CA when issuance fails. So before DNS points at the
   host there is no certificate, and no probe can show more. The manager makes
-  a TLS handshake with Caddy for the domain and reports *serving* (Caddy
-  presents a certificate that names it, with its issuer) or *pending* (the
-  handshake fails, or the certificate does not name it; the message names the domain, says
-  that Caddy obtains one once the domain's DNS reaches this host, that
+  an HTTPS request to Caddy's container on the site network, with the domain
+  (and the admin domain, separately) as SNI and Host, for Ghost's
+  `/ghost/api/admin/site/`, and reports *serving* only when Ghost answered
+  through Caddy, naming the certificate's issuer and expiry; a certificate
+  browsers would not trust is a warning, and an out-of-date one or an answer
+  that is not Ghost's (a broken route) an error. It reports *pending* when
+  the handshake fails or the certificate does not name the domain: Ghost
+  could not be asked through Caddy yet, and the message says so, that Caddy
+  obtains a certificate once the domain's DNS reaches this host, that
   `./ghost-docker check` reports the change, and that `docker compose logs
-  caddy` shows each attempt). Telling an issuance error that DNS will not cure
+  caddy` shows each attempt (PLA-517). Caddy's internal CA, through
+  `local_certs` in `caddy/global/`, is how the tests exercise the whole
+  route; it is a test fixture, not a fallback. Telling an issuance error that DNS will not cure
   (a CAA record, a rejected ACME account, a rate limit) apart from the errors
   expected before DNS exists was built and dropped: Caddy's log already says
   which, and the operator is pointed at it. *Pending* is not a failure of

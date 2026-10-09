@@ -337,7 +337,7 @@ fi
 production_checks() {
     expect_output 'ok +ghost +healthy'
     expect_output 'ok +caddy +healthy: its admin API answers'
-    expect_output "note +https +pending: there is no certificate for $DOMAIN yet"
+    expect_output "note +https +pending: Caddy has no certificate for $DOMAIN yet"
     expect_output 'note +published ports +.*Caddy on .*:80'
     # And from the host itself, as an operator's own curl would see it.
     location=$(curl --silent --noproxy '*' --max-time 20 --output /dev/null --write-out '%{redirect_url}' \
@@ -366,6 +366,46 @@ if port_free 80 && port_free 443; then
     expect_output 'note +https +pending'
     ok "check passes and reports HTTPS as pending"
     compose_in "$S" down --volumes >/dev/null 2>&1
+else
+    skip "something on this host already holds 80 or 443"
+fi
+
+step "HTTPS through Caddy to Ghost, with a local test CA and an admin domain"
+if port_free 80 && port_free 443; then
+    new_site e2e-production-tls
+    T=$SITE
+    mkdir -p "$T/caddy/global"
+    # Caddy's own CA for every name, at once: a test fixture standing in for
+    # the CA a real domain gets, never something a site runs.
+    printf 'local_certs\n' >"$T/caddy/global/test-ca.caddy"
+    run install_alone "$T" --domain "$DOMAIN" --admin-domain "admin.$DOMAIN"
+    expect_status 0
+    # Serving only because Ghost answered through Caddy; Caddy's CA is not
+    # one browsers trust, which the manager says.
+    expect_output "warning +https +serving: Ghost answers through Caddy at https://$DOMAIN \\(sending its Admin API to admin\\.$DOMAIN\\), with a certificate from Caddy Local Authority"
+    expect_output "warning +admin https +serving: Ghost answers through Caddy at https://admin\\.$DOMAIN, with a certificate from Caddy Local Authority"
+    expect_output 'not a CA browsers trust'
+    ok "verified through Caddy for both names, over TLS, with the untrusted test CA named"
+
+    # And from the host, through the published port 443, as a browser asks:
+    # what the manager's check from the site network cannot see.
+    body=$(curl --silent --insecure --noproxy '*' --max-time 20 --resolve "admin.$DOMAIN:443:127.0.0.1" \
+        "https://admin.$DOMAIN/ghost/api/admin/site/" || true)
+    [[ $(jq -r .site.url <<<"$body" 2>/dev/null) == "https://$DOMAIN/" ]] ||
+        fail "Ghost did not answer on https://admin.$DOMAIN through the host's port 443" "$body"
+    ok "Ghost answers on https://admin.$DOMAIN through the host's port 443 too"
+
+    # A route to nothing: Caddy still presents its certificate, and check fails.
+    sed -i.bak 's/reverse_proxy ghost-[^ ]*:2368/reverse_proxy ghost-nowhere:2368/' "$T/caddy/sites/site.caddy"
+    rm -f "$T/caddy/sites/site.caddy.bak"
+    grep -q 'reverse_proxy ghost-nowhere:2368' "$T/caddy/sites/site.caddy" || fail "the routes were not broken" "$(cat "$T/caddy/sites/site.caddy")"
+    compose_in "$T" exec -T caddy caddy reload --config /etc/caddy/Caddyfile >/dev/null 2>&1 ||
+        fail "Caddy did not reload the broken routes"
+    run "$T/ghost-docker" --dir "$T" check
+    expect_status 1
+    expect_output "ERROR +https +Caddy serves $DOMAIN, but Ghost did not answer through it"
+    ok "check fails when Caddy's route to Ghost is broken, though Caddy is healthy"
+    compose_in "$T" down --volumes >/dev/null 2>&1
 else
     skip "something on this host already holds 80 or 443"
 fi

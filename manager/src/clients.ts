@@ -4,14 +4,17 @@
 //
 // The dumps themselves stay with the version-matched mysqldump and mysql in
 // the db container: these clients ask questions, they do not move data.
-import { once } from 'node:events';
-import { checkServerIdentity, connect as connectTls } from 'node:tls';
+import { request } from 'node:https';
+import { checkServerIdentity, type TLSSocket } from 'node:tls';
 import { createConnection, type Connection } from 'mysql2/promise';
 
 /** The service could not be reached, or did not answer in time. */
 export class ServiceUnreachable extends Error {
-    /** `tls`: something answered, but no TLS session could be set up with it. */
-    readonly stage: 'connect' | 'timeout' | 'tls' | 'query';
+    /**
+     * `tls`: something answered, but no TLS session could be set up with it.
+     * `http`: a session was set up, and no HTTP answer came back over it.
+     */
+    readonly stage: 'connect' | 'timeout' | 'tls' | 'http' | 'query';
     constructor(stage: ServiceUnreachable['stage'], message: string, options?: ErrorOptions) {
         super(message, options);
         this.stage = stage;
@@ -29,6 +32,26 @@ export interface Certificate {
     readonly issuer: string;
     /** Whether it names the server name that was asked for. */
     readonly covers: boolean;
+    /** When it expires, as an ISO date and time. */
+    readonly validTo: string;
+    /** Whether it is out of its validity period now. */
+    readonly expired: boolean;
+    /**
+     * Why it does not chain to a CA in Node's trust store, which is close to
+     * what browsers trust; null when it does. A staging or internal CA's never
+     * does.
+     */
+    readonly untrusted: string | null;
+}
+
+/** An HTTPS request's answer, and the certificate the server presented for it. */
+export interface HttpsAnswer {
+    readonly certificate: Certificate;
+    readonly status: number;
+    /** Where a redirect points, as the server wrote it; null for any other answer. */
+    readonly location: string | null;
+    /** The start of the body: enough to tell what answered. */
+    readonly body: string;
 }
 
 /** A connection to one database as one user. Rows come back as arrays. */
@@ -45,8 +68,11 @@ export interface SqlTarget extends Target {
 }
 
 export interface Clients {
-    /** A TLS handshake with SNI `servername`, and the certificate the server presented. */
-    certificate: (target: Target & { servername: string }) => Promise<Certificate>;
+    /**
+     * `GET path` over TLS with SNI and Host both `servername`, as a browser
+     * asking for that name would, at `host:port`, whatever `host` is.
+     */
+    https: (target: Target & { servername: string; path: string }) => Promise<HttpsAnswer>;
     mysql: (target: SqlTarget) => Promise<SqlConnection>;
 }
 
@@ -54,32 +80,77 @@ const DEFAULT_TIMEOUT_MS = 10_000;
 
 const seconds = (ms: number) => `${Math.round(ms / 1000)} seconds`;
 
-const certificate: Clients['certificate'] = async ({
+/** The longest body kept: an answer is identified by its start. */
+const BODY_BYTES = 64 * 1024;
+
+/** What the server presented, judged for `servername` now. */
+function assess(socket: TLSSocket, servername: string): Certificate {
+    const peer = socket.getPeerCertificate();
+    const validTo = new Date(peer.valid_to);
+    return {
+        issuer: [peer.issuer?.O, peer.issuer?.CN].flat().find(Boolean) ?? 'an unnamed issuer',
+        covers: checkServerIdentity(servername, peer) === undefined,
+        validTo: Number.isNaN(validTo.getTime()) ? peer.valid_to : validTo.toISOString(),
+        expired: Date.now() > validTo.getTime() || Date.now() < new Date(peer.valid_from).getTime(),
+        untrusted: socket.authorized ? null : String(socket.authorizationError ?? 'not trusted'),
+    };
+}
+
+const https: Clients['https'] = ({
     host,
     port,
     servername,
+    path,
     timeoutMs = DEFAULT_TIMEOUT_MS,
-}) => {
-    // Not verified against a trust store: the question is what the server
-    // presents for the name, which `covers` and `issuer` answer.
-    const socket = connectTls({ host, port, servername, rejectUnauthorized: false });
-    try {
-        await once(socket, 'secureConnect', { signal: AbortSignal.timeout(timeoutMs) });
-        const peer = socket.getPeerCertificate();
-        return {
-            issuer: [peer.issuer?.O, peer.issuer?.CN].flat().find(Boolean) ?? 'an unnamed issuer',
-            covers: checkServerIdentity(servername, peer) === undefined,
+}) =>
+    new Promise((resolve, reject) => {
+        let stage: ServiceUnreachable['stage'] = 'connect';
+        // Not refused for an untrusted certificate: what it presents is part of
+        // the answer, judged by assess().
+        const req = request({
+            host,
+            port,
+            servername,
+            path,
+            method: 'GET',
+            headers: { Host: servername, Accept: 'application/json' },
+            rejectUnauthorized: false,
+            agent: false,
+            timeout: timeoutMs,
+        });
+        const fail = (which: ServiceUnreachable['stage'], said: string, cause?: unknown) => {
+            req.destroy();
+            reject(new ServiceUnreachable(which, `${host}:${port}: ${said}`, { cause }));
         };
-    } catch (error) {
-        const timedOut = (error as Error).name === 'AbortError';
-        // Connected, then refused a session: TLS itself failed.
-        const stage = timedOut ? 'timeout' : socket.connecting ? 'connect' : 'tls';
-        const said = timedOut ? `no answer within ${seconds(timeoutMs)}` : (error as Error).message;
-        throw new ServiceUnreachable(stage, `${host}:${port}: ${said}`, { cause: error });
-    } finally {
-        socket.destroy();
-    }
-};
+        req.on('socket', (socket) => {
+            socket.on('connect', () => (stage = 'tls'));
+            socket.on('secureConnect', () => (stage = 'http'));
+        });
+        req.on('timeout', () => fail('timeout', `no answer within ${seconds(timeoutMs)}`));
+        req.on('error', (error) => fail(stage, error.message, error));
+        req.on('response', (response) => {
+            const certificate = assess(response.socket as TLSSocket, servername);
+            const chunks: Buffer[] = [];
+            let size = 0;
+            response.on('data', (chunk: Buffer) => {
+                if (size < BODY_BYTES) {
+                    chunks.push(chunk);
+                    size += chunk.length;
+                }
+            });
+            response.on('end', () => {
+                resolve({
+                    certificate,
+                    status: response.statusCode ?? 0,
+                    location: response.headers.location ?? null,
+                    body: Buffer.concat(chunks).subarray(0, BODY_BYTES).toString('utf8'),
+                });
+                req.destroy();
+            });
+            response.on('error', (error) => fail('http', error.message, error));
+        });
+        req.end();
+    });
 
 /** What a mysql2 error says, with MySQL's own code when there is one. */
 const sqlMessage = (error: unknown): string => {
@@ -121,7 +192,11 @@ const mysql: Clients['mysql'] = async (target) => {
             return;
         }
         closed = true;
-        await connection.end().catch(() => connection.destroy());
+        // end() asks the server to close; the socket is destroyed whatever
+        // it does, so a server that goes away first cannot leave it open
+        // and keep the process alive.
+        await connection.end().catch(() => undefined);
+        connection.destroy();
     };
     return {
         query: async (sql, queryTimeoutMs = 60_000) => {
@@ -136,4 +211,4 @@ const mysql: Clients['mysql'] = async (target) => {
     };
 };
 
-export const nodeClients: Clients = { certificate, mysql };
+export const nodeClients: Clients = { https, mysql };
