@@ -940,10 +940,15 @@ a remote daemon); about 16 MB and 53 packages with the optional native
 dependencies left out. Its answers are untyped, so every endpoint would still
 be wrapped in the zod schema this section requires, and its tests would need
 a fake HTTP server or mocks of its methods in place of the one transport
-function they fake now. What it would replace is about a hundred lines:
-scanning a pull's progress stream for an error, demultiplexing a one-shot
-container's log stream, and the create, start, wait and remove sequence,
-whose deadlines, kill and cleanup rules stay the manager's either way.
+function they fake now, which is no smaller. Of the client's 536 lines of
+code it would replace about 150: the socket transport, the request and
+error helpers, scanning a pull's progress stream, demultiplexing a
+one-shot container's log stream, and part of the create, start, wait and
+remove sequence. About 250 if the zod schemas went too, leaving the
+daemon's answers checked by nothing. The rest is the manager's own
+policy, which stays either way: rootless detection, the ports of stopped
+sites, label filters, a one-shot container's deadline, kill and cleanup,
+and joining and leaving networks.
 
 **The Docker CLI is not in the image.** The image carries Compose's
 standalone binary, not the `docker` CLI. Adding the CLI would let the manager
