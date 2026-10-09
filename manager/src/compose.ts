@@ -39,6 +39,11 @@ export interface ComposeResult {
 export interface ComposeOptions {
     /** The site: adds --project-directory and its -f files. Left out, the command is not about one site. */
     readonly dir?: string;
+    /**
+     * The site's compose.yml replaced by this one, its overrides kept: the
+     * site as a release that is not yet written would run it.
+     */
+    readonly composeFile?: string;
     /** COMPOSE_PROFILES for this run, over the site's `.env`; ALL_PROFILES is every one. */
     readonly profiles?: string;
     /** How long Compose may run before it is killed: two minutes unless set. */
@@ -67,9 +72,14 @@ export type Compose = (
 /**
  * The `-f` list: compose.yml, the site's compose.override.yml when there is
  * one, then each override GD_COMPOSE_OVERRIDES names, relative to the site.
+ * `composeFile` stands in for the site's compose.yml.
  */
-export function composeFiles(dir: string, overrides = ''): string[] {
-    return composeFileList(dir, overrides).flatMap((file) => ['-f', file]);
+export function composeFiles(dir: string, overrides = '', composeFile?: string): string[] {
+    const files = composeFileList(dir, overrides);
+    if (composeFile !== undefined) {
+        files[0] = composeFile;
+    }
+    return files.flatMap((file) => ['-f', file]);
 }
 
 /** The Compose files a site runs with, in the order Compose merges them. */
@@ -132,7 +142,7 @@ const prefixed = (parts: readonly string[]): string[] => [
  */
 export function compose(
     io: Io,
-    { dir, profiles, timeout = 120_000, input, output }: ComposeOptions = {},
+    { dir, composeFile, profiles, timeout = 120_000, input, output }: ComposeOptions = {},
 ): Compose {
     const run = io.exec({
         timeout,
@@ -144,7 +154,11 @@ export function compose(
     const project =
         dir === undefined
             ? []
-            : ['--project-directory', dir, ...composeFiles(dir, io.env.GD_COMPOSE_OVERRIDES)];
+            : [
+                  '--project-directory',
+                  dir,
+                  ...composeFiles(dir, io.env.GD_COMPOSE_OVERRIDES, composeFile),
+              ];
     return async (strings, ...values) => {
         const template = Object.assign(prefixed(strings), { raw: prefixed(strings.raw) });
         // Typed loosely: execa infers nothing useful from options built at runtime.

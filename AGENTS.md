@@ -97,10 +97,12 @@ delivers it. `docs/install.md` describes what exists.
   moving `beta`/`stable` tags (`image.yml`), and the launcher to GitHub Pages as
   `https://docker.ghost.org/install.sh` (`launcher.yml`). Every release is a
   beta until S6b.
-- `src/commands/self-update.ts` moves a site to the release it runs as: snapshot
-  in `.ghost-docker-update/`, managed files by checksum (an edited one is kept
-  beside `<file>.new`), validate, pull, `up --wait`, verify, and on failure
-  put back and report restored or needs-the-operator. It refuses a clone,
+- `src/commands/self-update.ts` moves a site to the release it runs as: the
+  release's images pulled while the site runs, a snapshot in
+  `.ghost-docker-update/`, the writers paused and a backup taken, managed
+  files by checksum (an edited one is kept beside `<file>.new`), validate,
+  pull, `up --wait`, verify, and on failure put back and report restored or
+  needs-the-operator. It refuses a clone,
   whose update is git's and Compose's. `src/lock.ts` is the site lock (§2.2).
 - Until the first stable release, `.ghost-docker.json`, the backup manifest and
   the launcher's `GD_*` contract are development formats (plan §2.7,
@@ -112,7 +114,10 @@ delivers it. `docs/install.md` describes what exists.
   `backup/manifest.ts` (images, row counts, checksums), written as
   `backups/.<id>.partial` and renamed only once every dump has loaded into a
   scratch MySQL (a `runOnce` of the site's db image) and the archive lists.
-  `src/restore.ts` restores one over its site (set aside in
+  `src/writers.ts` pauses Ghost and ActivityPub: a consistent backup for its
+  capture alone, an operation that may load its backup back (self-update,
+  later Ghost upgrades) from before the backup until its own services start
+  or the site is put back. `src/restore.ts` restores one over its site (set aside in
   `.ghost-docker-restore/` until verified) or into an empty directory, through
   a fresh MySQL and the import's client and DEFINER filter. Its outcome is
   done or needs the operator; it never puts the old site back by itself.
@@ -195,7 +200,7 @@ pnpm run test:integration     # real daemon and services, from a container; pull
 tests/e2e/launcher.sh         # stand-in docker, then the real image
 tests/e2e/install.sh          # real installs; binds 80/443, pulls images
 tests/e2e/import.sh           # Ghost-CLI sites exported and imported; needs Node
-tests/e2e/self-update.sh      # self-updates between locally built releases; a clone refused, backed up and restored at its commit
+tests/e2e/self-update.sh      # self-updates between locally built releases, writes kept through a failed one, its backup restored; a clone refused; needs jq
 tests/e2e/backup.sh           # a site with ActivityPub backed up, restored over itself and elsewhere; needs jq
 cd scripts && pnpm install && pnpm run typecheck && pnpm test   # the release tooling
 ```

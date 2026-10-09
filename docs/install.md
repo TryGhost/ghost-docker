@@ -458,29 +458,39 @@ In order:
    An update that is killed leaves it behind; `check` reports it, and it is
    removed by hand once the site is known to be right. Nothing removes it
    automatically.
-3. **A snapshot** of `.env`, `ghost.env`, the metadata, `compose.override.yml`,
+3. **The release's images** are pulled while the site keeps running, so the
+   slowest step is not part of the outage. An image that cannot be pulled
+   yet is pulled again in step 6.
+4. **A snapshot** of `.env`, `ghost.env`, the metadata, `compose.override.yml`,
    `caddy/sites/`, `caddy/custom/`, `caddy/global/` and every file the update
-   writes, in `.ghost-docker-update/`. Then **a backup**, as `backup` takes
-   one, in `backups/`: a release's services can migrate their databases
-   (ActivityPub's, for one) even though Ghost does not change. It is kept
-   until you remove it, and `self-update` names it.
-4. **The stack's files.** A file the manager wrote and nobody has edited is
+   writes, in `.ghost-docker-update/`.
+5. **Ghost and ActivityPub are stopped, and a backup taken**, a consistent one
+   as `backup --consistent` takes, in `backups/`: a release's services can
+   migrate their databases (ActivityPub's, for one) even though Ghost does
+   not change. It is kept until you remove it, and `self-update` names it.
+   Unlike `backup`, the update does not start them again after the capture:
+   they stay stopped until the release starts, or the site is put back, so
+   nothing they would accept can be lost by loading the backup back. The
+   site is unavailable from here until the release is healthy.
+6. **The stack's files.** A file the manager wrote and nobody has edited is
    replaced. An edited one (its checksum is not the one recorded when it was
    written) is kept, the release's version is written beside it as
    `<file>.new`, and `self-update` names both; compare them and merge what you
    need. It never asks. A file the release no longer has is removed when it
    is untouched, and kept when it was edited.
-5. **Validate, pull, start, verify.** Compose must resolve the project and the
+7. **Validate, pull, start, verify.** Compose must resolve the project and the
    configuration must validate; the release's images are pulled; `up --wait`
    brings the services up healthy; the site is verified through its ingress as
    `check` does.
-6. **The launcher** is replaced, pinned to the new release's digest. It is
+8. **The launcher** is replaced, pinned to the new release's digest. It is
    replaced even when it was edited, because it holds the pin: an edited copy
    is kept as `ghost-docker.edited`. The metadata records the release, the
    one before it, and the files' new checksums. The snapshot is removed.
 
 When a step after the snapshot fails, the snapshot is put back. When the
-services had been changed, they are stopped first; `data/ghost` and
+services had not been changed, Ghost and ActivityPub are then started again,
+the same containers, on the files as they were. When they had been, they are
+stopped first; `data/ghost` and
 `data/mysql` are moved aside into `.ghost-docker-update/data/`, the backup's
 content and databases are loaded as `restore` loads them, and the previous
 release is started again and must become healthy and verify. The update then
@@ -577,8 +587,10 @@ If they do not start again, `backup` fails and says so; start them with
 `docker compose up -d`. In either mode, if the database was not running, it
 is started for the dump and stopped again.
 
-`self-update` takes a consistent backup: it restarts the services anyway, and
-a failed update is put back from it.
+`self-update` takes a consistent backup, and a failed update is put back from
+it. It keeps the writers stopped from the backup until the release starts or
+the site is put back, rather than for the capture alone: see
+[self-update](#self-update).
 
 What the backup records is what Compose resolves from every file the site
 runs with, and what the daemon runs, not what `.env` alone says:

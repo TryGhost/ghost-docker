@@ -23,11 +23,13 @@
 // backup is live, as Ghost-CLI's was: the site keeps running, each dump is
 // one consistent snapshot of its database, but the databases and the content
 // are captured at different moments, and the manifest says so. A consistent
-// backup stops the services that write them (WRITERS) while they are
+// backup stops the services that write them (writers.ts) while they are
 // captured, so the dumps and the archive are one moment of the site, and
 // starts them again before the slower check: the site is down for the
 // capture alone. Writers that were not running are not started, and those
-// that were run again whether the backup succeeds or fails.
+// that were run again whether the backup succeeds or fails, unless the
+// caller owns the pause: an update keeps them stopped until the site it
+// leaves running is verified.
 import { createHash } from 'node:crypto';
 import {
     chmodSync,
@@ -55,9 +57,10 @@ import {
     SITE_FILES_DIR,
     type BackupManifest,
 } from './backup/manifest.ts';
-import { compose, composeError, composePs, composeUp, READY_SECONDS } from './compose.ts';
+import { compose, composeError, composePs, composeUp } from './compose.ts';
 import { runOnce } from './docker/client.ts';
 import { CliError } from './errors.ts';
+import { WriterPause } from './writers.ts';
 import { atomicWrite, copyPresent, PRIVATE } from './fs.ts';
 import { DATABASE_MS, tableCount, withSiteDatabase } from './import/database.ts';
 import type { Io } from './io.ts';
@@ -112,8 +115,6 @@ done
  * The services that write the site's databases and content: stopped while a
  * consistent backup captures them. Caddy and MySQL itself keep running.
  */
-export const WRITERS = ['ghost', 'activitypub'] as const;
-
 /** `2026-10-09T14-03-22Z`: sortable, and a valid file name everywhere. */
 export const backupId = (now: Date): string =>
     now
@@ -307,70 +308,13 @@ export interface BackupInput {
     readonly now?: Date;
     /** Stop the writers for the capture: one moment of the site, at the cost of a brief outage. */
     readonly consistent?: boolean;
-}
-
-/**
- * Writers stopped for the capture, then started again as they were: not
- * recreated, and their dependencies, which kept running, left alone.
- */
-class Quiesced {
-    private stopped: string[] = [];
-    private readonly io: Io;
-    private readonly dir: string;
-
-    constructor(io: Io, dir: string) {
-        this.io = io;
-        this.dir = dir;
-    }
-
-    async stop(running: readonly string[]): Promise<void> {
-        const writers = WRITERS.filter((service) => running.includes(service));
-        if (writers.length === 0) {
-            ok(this.io, 'writers', 'none running, so nothing writes during the capture');
-            return;
-        }
-        // Recorded first: a stop that fails part-way is started again too.
-        this.stopped = writers;
-        const stop = await this.io.busy(
-            `Stopping ${writers.join(' and ')} for the capture`,
-            () =>
-                compose(this.io, { dir: this.dir, timeout: 300_000 })`stop --timeout 20 ${writers}`,
-        );
-        if (stop.exitCode !== 0) {
-            throw new CliError(
-                `${writers.join(' and ')} could not be stopped for the capture: ${composeError(stop)}`,
-            );
-        }
-        ok(
-            this.io,
-            'writers',
-            `${writers.join(' and ')} stopped, so nothing writes during the capture`,
-        );
-    }
-
-    /** The writers stopped for the capture, running again; a no-op once done. */
-    async resume(): Promise<void> {
-        const writers = this.stopped;
-        if (writers.length === 0) {
-            return;
-        }
-        this.stopped = [];
-        const up = await this.io.busy(
-            `Starting ${writers.join(' and ')} again`,
-            () =>
-                compose(this.io, {
-                    dir: this.dir,
-                    timeout: (READY_SECONDS + 60) * 1000,
-                })`up --detach --wait --wait-timeout ${READY_SECONDS} --no-recreate --no-deps ${writers}`,
-        );
-        if (up.exitCode !== 0) {
-            throw new CliError(
-                `${writers.join(' and ')} did not start again after the capture: ${composeError(up)}\n` +
-                    '  Start them with: docker compose up -d',
-            );
-        }
-        ok(this.io, 'writers', `${writers.join(' and ')} running again, and healthy`);
-    }
+    /**
+     * For a consistent backup, a pause the caller owns (writers.ts): the
+     * writers are stopped through it and left stopped, whether the backup
+     * succeeds or fails, for the caller to resume. Without one, the backup
+     * resumes them as soon as the capture is done.
+     */
+    readonly pause?: WriterPause;
 }
 
 /** The manager taking the backup, as it was built. */
@@ -414,6 +358,7 @@ export async function takeBackup({
     metadata,
     now = new Date(),
     consistent = false,
+    pause,
 }: BackupInput): Promise<string> {
     const dir = site.dir;
     const databases = siteDatabases(site);
@@ -450,7 +395,9 @@ export async function takeBackup({
     mkdirSync(partial, { mode: 0o700 });
 
     let startedDb = false;
-    const quiesced = new Quiesced(io, dir);
+    const quiesced = pause ?? new WriterPause(io, dir);
+    // Resumed here only when the pause is the backup's own.
+    const resume = () => (pause === undefined ? quiesced.resume() : Promise.resolve());
     try {
         io.stdout(`Backing up ${site.dir} to ${final}\n`);
 
@@ -558,8 +505,9 @@ export async function takeBackup({
             `${copied} files and directories: configuration, metadata, Caddy${overrides.length > 0 ? `, ${overrides.join(', ')}` : ''}`,
         );
 
-        // Captured: the site runs again before the slower checks.
-        await quiesced.resume();
+        // Captured: the site runs again before the slower checks, unless the
+        // caller keeps it paused.
+        await resume();
 
         io.stdout('\nThe checks\n');
         // Checked means the dump loads: into a scratch server, never the site's.
@@ -658,7 +606,7 @@ export async function takeBackup({
     } finally {
         // A failure during the capture still leaves the writers as they were.
         try {
-            await quiesced.resume();
+            await resume();
         } catch (resumeError) {
             printChecks(io, [
                 { status: 'error', label: 'writers', detail: (resumeError as Error).message },

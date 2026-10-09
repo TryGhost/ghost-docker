@@ -439,6 +439,20 @@ them, while they are captured and starts them again before the check, so
 they are one moment of the site at the cost of a brief outage; stack updates
 take a consistent one. The manifest records which.
 
+**The writers' pause** (`manager/src/writers.ts`). An operation that may load
+its backup back over the site owns the pause of Ghost and ActivityPub, not the
+backup: they are stopped before the checkpoint is taken and stay stopped
+until the services the operation starts are its own, or the site is put
+back. A failure before any service changed puts the files back, then starts
+the same containers again; once the operation has started the services, a
+recovery stops them all, loads the checkpoint and starts the site again.
+Nothing a writer accepts after the checkpoint can be lost by loading it.
+Whatever can be done before the pause is: a stack update pulls the release's
+images while the site still runs. A standalone `backup --consistent` still
+resumes the writers as soon as the capture is done. Stack updates, Ghost
+upgrades and the supervisor's jobs share this primitive; it is not a
+framework for resuming an operation.
+
 **Restore** works over the backup's own site or into a new, empty directory.
 It reads the backup whole and checks every checksum first, then takes the lock
 and pulls the recorded images. Over a site it stops the site and sets its
@@ -462,7 +476,8 @@ resumes nothing.
 
 1. Take the lock. Resolve the target to one exact image of the same major and
    pull it before anything stops. Refuse other majors and downgrades.
-2. Back up.
+2. Pause the writers, and back up; they stay paused (above) until the
+   target starts or the site is put back.
 3. Change the pin (and its metadata) and `up --wait`. Ghost runs its own
    migrations at boot and rolls back one that fails.
 4. Verify as `check` does. On a failure, put the previous pin back and restore the
@@ -1043,6 +1058,13 @@ Mailpit is the install e2e's to prove.
   it. Phases that overlap share one attachment, and the last to finish leaves;
   a network the manager was already on is not taken from it. The supervisor
   (§2.6) repeats these phases on the same code.
+- A connection is closed in a bounded time, so leaving the network and
+  releasing the site lock never wait on the database. Each query has the
+  client's own deadline; a connection whose query timed out, or is still
+  outstanding, is destroyed at once, since mysql2 would queue the goodbye
+  behind an answer that may never come. One with nothing outstanding says
+  goodbye, and is destroyed after a second whether the server has closed its
+  side or not.
 - Dumps are still made and loaded by the `mysqldump` and `mysql` of the db
   container's own version, through `compose exec`: the clients ask questions,
   they do not move data. A direct check proves a service answers on the
@@ -1676,8 +1698,9 @@ Keep supported majors/downgrades constrained and feature compatibility explicit.
 
 Acceptance: upgrade across a real database migration, with the analytics sync
 and deploy run; a target that fails to start after migrating is restored from
-the backup and reported `restored`; a concurrent second request is refused by
-the lock; another major and a downgrade are refused.
+the backup and reported `restored`, with every write Ghost accepted during the
+upgrade still there (the writers' pause of §2.5); a concurrent second request
+is refused by the lock; another major and a downgrade are refused.
 
 ### S8 — Supervisor command, protocol, and installer integration
 

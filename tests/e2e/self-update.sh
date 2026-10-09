@@ -6,10 +6,14 @@
 # Four releases of the manager image are built from this checkout, tagged as
 # the launcher names releases but never pushed: the first, a second that
 # changes two stack files, a third whose compose.yml does not resolve, and a
-# fourth whose Ghost never becomes healthy. A local site installed from the
-# first is updated to the second with one of those files edited, then refused
-# a downgrade, then updated to the third and the fourth, each of which fails
-# and is put back.
+# fourth that migrates the database and the content, then never becomes
+# healthy. A local site installed from the first is updated to the second
+# with one of those files edited, then refused a downgrade, then updated to
+# the third and the fourth, each of which fails and is put back.
+#
+# Through the fourth, a client keeps writing posts: every post Ghost accepts
+# is still there once the site is put back. Then the backup that update took
+# is restored, with its records, content, configuration and images.
 #
 # A checkout: a copy of this checkout, as a git repository, is refused
 # self-update, which is git's and Compose's there. Its backup records the
@@ -31,6 +35,17 @@ R4=v0.0.1-beta.4
 # shellcheck source=/dev/null
 source "$ROOT/tests/e2e/skip.sh"
 require_docker
+for tool in jq curl; do
+    command -v "$tool" >/dev/null || {
+        printf 'self-update.sh needs %s\n' "$tool" >&2
+        exit 1
+    }
+done
+
+OWNER_EMAIL=owner@example.com
+OWNER_PASSWORD='Kept-through-an-update-2026!'
+SETTING_KEY=updateE2e__marker
+SETTING='kept through the update'
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/ghost-docker-update-e2e.XXXXXXXX")
 WORK=$(CDPATH='' cd -- "$WORK" && pwd -P)
@@ -38,10 +53,12 @@ CURRENT=setup
 OUT=""
 RC=0
 SITES=()
+WRITER=""
 
 cleanup() {
     local rc=$? site
     set +e
+    [[ -z $WRITER ]] || kill "$WRITER" 2>/dev/null
     for site in ${SITES[@]+"${SITES[@]}"}; do
         [[ -f $site/.env ]] && docker compose --project-directory "$site" -f "$site/compose.yml" \
             down --volumes --remove-orphans --timeout 5 >/dev/null 2>&1
@@ -90,6 +107,52 @@ image_id() {
     printf '%s\n' "${digest:-$(docker image inspect --format '{{.Id}}' "$1")}"
 }
 ghost_container() { compose_in "$1" ps -q ghost; }
+# root_sql SITE SQL -- as MySQL's root, in the site's database container.
+root_sql() {
+    local database
+    database=$(setting "$1" DATABASE_NAME || true)
+    compose_in "$1" exec -T -e MYSQL_PWD="$(setting "$1" DATABASE_ROOT_PASSWORD)" db \
+        mysql -uroot -N -B "${database:-ghost}" -e "$2"
+}
+base_of() { printf 'http://localhost:%s' "$(setting "$1" GHOST_PORT)"; }
+# api SITE METHOD PATH [curl options] -- the Admin API, signed in.
+api() {
+    local site=$1 method=$2 path=$3 base
+    shift 3
+    base=$(base_of "$site")
+    curl --disable --silent --noproxy '*' --max-time 30 --cookie "$site.cookies" \
+        --header "Origin: $base" --request "$method" "$@" "$base/ghost/api/admin/$path"
+}
+# sign_in SITE -- with the owner's password; the session goes in SITE.cookies.
+sign_in() {
+    local base status
+    base=$(base_of "$1")
+    status=$(curl --disable --silent --noproxy '*' --max-time 30 --output "$1.session" --write-out '%{http_code}' \
+        --cookie-jar "$1.cookies" --request POST --header 'Content-Type: application/json' \
+        --header "Origin: $base" \
+        --data "$(jq -cn --arg u "$OWNER_EMAIL" --arg p "$OWNER_PASSWORD" '{username: $u, password: $p}')" \
+        "$base/ghost/api/admin/session/")
+    [[ $status == 201 ]] || fail "signing in at $base answered $status" "$(cat "$1.session")"
+}
+# post_titles SITE -- every post's title, one per line, sorted.
+post_titles() {
+    api "$1" GET 'posts/?limit=all&fields=title' |
+        jq -r '.posts[].title' | sort
+}
+# write_posts SITE FILE -- a client posting until killed: each title Ghost
+# accepted (201) is appended to FILE.
+write_posts() {
+    local site=$1 accepted=$2 n=0 title status
+    while :; do
+        n=$((n + 1))
+        title="written during the update $n"
+        status=$(api "$site" POST posts/ --output /dev/null --write-out '%{http_code}' --max-time 5 \
+            --header 'Content-Type: application/json' \
+            --data "$(jq -cn --arg t "$title" '{posts: [{title: $t}]}')" 2>/dev/null || true)
+        [[ $status != 201 ]] || printf '%s\n' "$title" >>"$accepted"
+        sleep 0.5
+    done
+}
 http_status() {
     curl --silent --noproxy '*' --max-time 20 --output /dev/null --write-out '%{http_code}' \
         "http://127.0.0.1:$1/ghost/api/admin/site/" || true
@@ -142,9 +205,45 @@ cp "$WORK/r2/caddy/snippets/Logging" "$WORK/r4/caddy/snippets/Logging"
 cp "$WORK/r2/compose.ipv6.yml" "$WORK/r4/compose.ipv6.yml"
 # Ghost's health check fails at once, and gives up after one try.
 perl -0pi -e 's/process\.exit\(r\.statusCode < 400 \? 0 : 1\)/process.exit(1)/; s/interval: 30s\n      timeout: 10s\n      start_period: 180s\n      start_interval: 5s\n      retries: 5/interval: 2s\n      timeout: 10s\n      start_period: 0s\n      start_interval: 2s\n      retries: 1/' "$WORK/r4/compose.yml"
+# Before Ghost starts, a one-shot job migrates the database and the content,
+# as a release's own migrations would.
+db_image=$(sed -n '/^  db:$/,/^    image:/s/^    image: //p' "$ROOT/compose.yml")
+[[ -n $db_image ]] || fail "compose.yml names no db image"
+cat >"$WORK/r4-migrate.yml" <<EOF
+  e2e-migrate:
+    image: $db_image
+    restart: "no"
+    profiles: [local, production]
+    labels:
+      <<: *site-labels
+      org.ghost.docker.role: e2e-migrate
+      org.ghost.docker.lifecycle: one-shot
+    environment:
+      MYSQL_PWD: \${DATABASE_ROOT_PASSWORD:?DATABASE_ROOT_PASSWORD is required}
+    volumes:
+      - \${UPLOAD_LOCATION:-./data/ghost}:/content
+    entrypoint: [sh, -c]
+    command:
+      - >-
+        mysql -h db -uroot \${DATABASE_NAME:-ghost}
+        -e "UPDATE posts SET title = 'migrated by $R4'; CREATE TABLE e2e_migrated_by_r4 (id int)" &&
+        printf 'migrated by $R4' >/content/images/migrated-by-r4.txt
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - ghost_network
+
+EOF
+MIGRATE=$WORK/r4-migrate.yml perl -0pi -e '
+    s/(    depends_on:\n      db:\n        condition: service_healthy\n)/$1      e2e-migrate:\n        condition: service_completed_successfully\n/;
+    open my $f, "<", $ENV{MIGRATE} or die; my $job = do { local $/; <$f> };
+    s/(\n  db:\n)/\n$job  db:\n/;
+' "$WORK/r4/compose.yml"
+grep -q '^  e2e-migrate:$' "$WORK/r4/compose.yml" || fail "the migration job was not added for $R4"
 cmp -s "$ROOT/compose.yml" "$WORK/r4/compose.yml" && fail "compose.yml was not changed for $R4"
 build_release "$R4" "$WORK/r4"
-ok "$R1, $R2 (two stack files changed), $R3 (compose.yml does not resolve), $R4 (Ghost never healthy)"
+ok "$R1, $R2 (two stack files changed), $R3 (compose.yml does not resolve), $R4 (migrates, then Ghost never healthy)"
 
 # --- Image mode ------------------------------------------------------------------
 
@@ -206,17 +305,52 @@ ghost_before=$(ghost_container "$S")
 run "$S/ghost-docker" --dir "$S" self-update --to "$R3"
 expect_status 1
 expect_output 'Compose cannot resolve the project with this release'
-expect_output "Restored: the site is back on $R2, with its files as they were\\. Its services were not changed\\."
+expect_output "Restored: the site is back on $R2, with its files as they were\\. Its services were not changed; ghost, stopped for the update, is running again\\."
 [[ $(fingerprint "$S") == "$before" ]] || fail "the files were not put back" "$(diff <(printf '%s\n' "$before") <(fingerprint "$S"))"
 [[ $(ghost_container "$S") == "$ghost_before" ]] || fail "the Ghost container was replaced"
 [[ $(pinned "$S") == "$(image_id "$REGISTRY:$R2")" ]] || fail "the launcher was re-pinned by a failed update"
 [[ $(http_status "$port") == 200 ]] || fail "the site does not answer on 127.0.0.1:$port"
 ok "the previous files are back, and the same Ghost container still answers"
 
-step "A release whose Ghost never becomes healthy is put back from the backup"
+step "Give the site an owner, a post, an image and a setting"
+BASE=$(base_of "$S")
+body=$(curl --disable --silent --noproxy '*' --max-time 60 --request POST \
+    --header 'Content-Type: application/json' --header "Origin: $BASE" \
+    --data "$(jq -cn --arg e "$OWNER_EMAIL" --arg p "$OWNER_PASSWORD" \
+        '{setup: [{name: "Update Tester", email: $e, password: $p, blogTitle: "Update e2e"}]}')" \
+    "$BASE/ghost/api/admin/authentication/setup/")
+jq -e '.users[0].id' <<<"$body" >/dev/null 2>&1 || fail "setting up the owner failed" "$body"
+run "$S/ghost-docker" --dir "$S" config set ghost.env "$SETTING_KEY" "$SETTING"
+expect_status 0
+# Signing in from a new session would otherwise ask for a code by email.
+run "$S/ghost-docker" --dir "$S" config set ghost.env security__staffDeviceVerification false
+expect_status 0
+compose_in "$S" up --detach --wait ghost >/dev/null 2>&1 || fail "Ghost did not start again"
+sign_in "$S"
+body=$(api "$S" POST posts/ --header 'Content-Type: application/json' \
+    --data '{"posts": [{"title": "Kept through the update", "status": "published"}]}')
+jq -e '.posts[0].id' <<<"$body" >/dev/null 2>&1 || fail "creating a post failed" "$body"
+# shellcheck disable=SC2016 # expanded by the container's shell
+compose_in "$S" exec -T --user ghost ghost sh -c \
+    'mkdir -p "$GHOST_CONTENT/images/2026/10" && printf "kept image" >"$GHOST_CONTENT/images/2026/10/marker.png"' ||
+    fail "writing the image failed"
+seeded=$(post_titles "$S")
+grep -qx 'Kept through the update' <<<"$seeded" || fail "the post does not read back" "$seeded"
+ok "an owner, $(wc -l <<<"$seeded" | tr -d ' ') posts, images/2026/10/marker.png and $SETTING_KEY"
+
+step "A release that migrates, then never becomes healthy, is put back from the backup"
 before=$(fingerprint "$S")
+backups_before=$(find "$S/backups" -mindepth 1 -maxdepth 1 -type d -not -name '.*' | sort)
+accepted=$WORK/accepted
+: >"$accepted"
+write_posts "$S" "$accepted" &
+WRITER=$!
 run "$S/ghost-docker" --dir "$S" self-update --to "$R4"
+kill "$WRITER" 2>/dev/null
+wait "$WRITER" 2>/dev/null || true
+WRITER=""
 expect_status 1
+expect_output 'images +pulled, while the site kept running'
 expect_output 'did not start and become healthy'
 expect_output "Restored: the site is back on $R2, with its files as they were, its databases and content from the backup, and its services running and healthy\\."
 expect_output 'The backup taken before the update is kept in backups/'
@@ -225,7 +359,51 @@ expect_output 'The backup taken before the update is kept in backups/'
 records "$S" version "$R2" || fail "the metadata does not record $R2" "$(cat "$S/.ghost-docker.json")"
 [[ $(http_status "$port") == 200 ]] || fail "the site does not answer on 127.0.0.1:$port"
 [[ ! -e $S/.ghost-docker-update && ! -e $S/.ghost-docker.lock ]] || fail "the update left its snapshot or lock"
-ok "$R2 again, its databases loaded from the backup, and the site answers"
+ok "$R2 again, its databases and content loaded from the backup, and the site answers"
+
+sign_in "$S"
+titles=$(post_titles "$S")
+grep -q 'migrated by' <<<"$titles" && fail "the migration's change to the posts was kept" "$titles"
+[[ -z $(root_sql "$S" "SHOW TABLES LIKE 'e2e_migrated_by_r4'") ]] || fail "the migration's table was kept"
+[[ ! -e $S/data/ghost/images/migrated-by-r4.txt ]] || fail "the migration's content was kept"
+[[ $(curl --disable --silent --noproxy '*' --max-time 30 "$BASE/content/images/2026/10/marker.png") == 'kept image' ]] ||
+    fail "the image is not served as it was"
+ok "the migration's records, table and content are gone; the image is served"
+
+missing=$(comm -23 <(sort -u "$accepted") <(printf '%s\n' "$titles"))
+[[ -z $missing ]] || fail "posts Ghost accepted during the update were lost" "$missing"
+grep -qx 'Kept through the update' <<<"$titles" || fail "the seeded post was lost" "$titles"
+ok "every one of the $(wc -l <"$accepted" | tr -d ' ') posts Ghost accepted during the update is there"
+
+step "The backup that update took restores the site, its records, configuration and images"
+backup=$(comm -13 <(printf '%s\n' "$backups_before") \
+    <(find "$S/backups" -mindepth 1 -maxdepth 1 -type d -not -name '.*' | sort) | tail -1)
+[[ -n $backup ]] || fail "the update left no backup"
+# Changed after the backup, for the restore to put back.
+run "$S/ghost-docker" --dir "$S" config set ghost.env "$SETTING_KEY" 'changed after the backup'
+expect_status 0
+api "$S" POST posts/ --header 'Content-Type: application/json' \
+    --data '{"posts": [{"title": "Written after the backup"}]}' >/dev/null
+run "$S/ghost-docker" --dir "$S" restore --yes "$backup"
+expect_status 0
+[[ $(setting "$S" GHOST_IMAGE_REF) == "$ghost_pin" ]] || fail "the Ghost pin is not $ghost_pin"
+running=$(docker inspect -f '{{.Config.Image}}' "$(ghost_container "$S")")
+[[ $running == "$ghost_pin" ]] || fail "Ghost runs $running, not $ghost_pin"
+[[ $(pinned "$S") == "$(image_id "$REGISTRY:$R2")" ]] || fail "the launcher is not pinned to $R2"
+records "$S" version "$R2" || fail "the metadata does not record $R2" "$(cat "$S/.ghost-docker.json")"
+[[ $("$S/ghost-docker" --dir "$S" config get ghost.env "$SETTING_KEY" 2>/dev/null) == "$SETTING" ]] ||
+    fail "ghost.env does not hold $SETTING_KEY as backed up"
+[[ $(compose_in "$S" exec -T ghost printenv "$SETTING_KEY") == "$SETTING" ]] ||
+    fail "Ghost does not run with $SETTING_KEY as backed up"
+sign_in "$S"
+restored=$(post_titles "$S")
+grep -qx 'Kept through the update' <<<"$restored" || fail "the seeded post was not restored" "$restored"
+grep -q 'Written after the backup' <<<"$restored" && fail "a post written after the backup is there" "$restored"
+grep -q 'migrated by' <<<"$restored" && fail "the migration's change is there" "$restored"
+[[ $(curl --disable --silent --noproxy '*' --max-time 30 "$BASE/content/images/2026/10/marker.png") == 'kept image' ]] ||
+    fail "the image is not served as backed up"
+[[ $(http_status "$port") == 200 ]] || fail "the site does not answer on 127.0.0.1:$port"
+ok "Ghost $ghost_pin, the launcher on $R2, $SETTING_KEY and the posts and image as backed up"
 
 # --- A checkout ------------------------------------------------------------------
 
