@@ -45,15 +45,15 @@ dependencies and the contracts in §2 before implementing it.
 | Versions | Resolve and persist an exact Ghost image version on installation. Ghost upgrades and stack updates are separate operations. Record resolved image digests for recovery. |
 | Installation | Scriptable `install`, with a flag for every prompt. Local mode uses MySQL too. |
 | Migration | Ghost-CLI exports a bundle (`ghost migrate-export`, Ghost-CLI 1.33.0+); the manager imports it. Three kinds: `mysql-dump` (MySQL sources), `mysql-data` (default for local SQLite sources: data-only MySQL inserts loaded into a schema Ghost creates), and `portable` (an explicit SQLite fallback through the Admin API). For a `portable` bundle the manager installs the site and places its content; its content JSON and members CSV are imported through Ghost Admin on the new site, as anyone moving a Ghost site by hand does today. Moving a site is documented, not wrapped: `ghost stop`, `ghost migrate-export`, `install --import` on the source's port. The legacy `scripts/migrate.sh` stays on `main`, where it works, and is not carried onto this branch, whose layout it does not understand; it disappears from `main` when this branch merges, which S12 allows only after production import (S5e) has passed its tests. |
-| Upgrades | Optional supervisor using a file exchange and the Docker socket. Ship a tested host-driven upgrade first, then reuse its recovery contract in the supervisor. Both are commands of the manager. |
+| Upgrades | Optional supervisor using a file exchange and the Docker socket. Ship a tested host-driven upgrade first, then reuse its recovery contract in the supervisor. Both are commands of the manager. The supervisor runs one job at a time, publishes durable status, and marks work it finds interrupted as `interrupted` rather than resuming it (§2.6). |
 | UX | Standard Compose commands for daily operation; `./ghost-docker` for installation, diagnosis, configuration, migration, backup/restore, and upgrades. No wrapper binary named `ghost`. |
 | Configuration | `.env` contains Compose/operator settings; `ghost.env` contains only Ghost application settings. Do not pass the whole `.env` into Ghost. A mounted Ghost JSON config file was evaluated as a replacement for `ghost.env` and rejected; see §2.1. |
 | Recovery rigor | Ghost-CLI's level, made reliable: back up before changing, restore on failure, report truthfully, one operation at a time on a site (§2.5). No journals, maintenance ingress or crash-resume; more is built only when a real failure shows it is needed. |
 | Shared infrastructure | S13: one Caddy shared by several sites on a server, each site keeping its own MySQL. Not a dependency of local or single-site production installations. Scheduled after tagged single-site production and before Admin-driven upgrades, so the upgrade supervisor is built once against per-site projects. |
 | ActivityPub and analytics | Per-site, including for future members of shared infrastructure. Each site owns its ActivityPub database/storage and Tinybird configuration/deployment lifecycle. |
 | Ghost nightly channel | Future explicit opt-in via `--ghost-channel nightly`; published to GHCR, independently of the stack release channel. Stable remains the default. |
-| Service image registry | Future `--image-registry dockerhub|ghcr` selects dual-published traffic-analytics and ActivityPub images, including migrations. |
-| Redis | Default on new installations once S16 ships, with explicit `--without redis` opt-out. |
+| Service image registry | No registry selector. Each service's image is a full, registry-qualified reference the release pins and `.env` can override (S14); the manager records the exact digest it resolved. Decided 2026-10-09 (PLA-519). |
+| Redis | Opt-in (`--with redis`) once S16 ships. It becomes a default only if measurements show Ghost needs it, local installs included (§2.9). Decided 2026-10-09 (PLA-519). |
 | Tests | Unit tests for the CLI in TypeScript. End-to-end scenarios that only run the real commands and check outcomes are shell scripts in `tests/e2e/`, so they do not depend on how the commands are implemented. A scenario the host cannot run fails the script unless `GD_E2E_ALLOW_SKIP=1`, so a green run, in CI above all, ran everything. |
 
 Explicitly document initial limitations: no shared-infra provisioning, no automatic
@@ -413,7 +413,8 @@ Not built: journals that resume an operation killed at an arbitrary point,
 maintenance ingress, retention policies, and a fault-injection matrix. A crashed
 operation leaves its lock and its backup; `check` says so, and the operator
 restores or re-runs. Each is added only when a real failure shows it is needed,
-in the step that needs it.
+in the step that needs it. The supervisor (§2.6) follows the same rule: work it
+finds interrupted is reported, never resumed.
 
 **Backup** is a directory under `backups/` in the site: a `mysqldump` of each of
 the site's databases (Ghost's, and ActivityPub's when that profile is on) taken
@@ -482,6 +483,35 @@ daemons or unsupported rootless setups clearly. Avoid broad writable mounts beyo
 what execution requires. Supervisor behavior follows §2.5 rather than inventing a
 second upgrade/recovery algorithm.
 
+**Minimum scope** (decided 2026-10-09, PLA-519). The supervisor is the host
+command run on Ghost's behalf, not a job system: the same executor as
+`./ghost-docker update` (S7) and the recovery of §2.5, with a file exchange in
+front of it. So it has:
+
+- **One active job.** A request is claimed only when no job is active and the
+  site lock is free. A request that arrives while one is active, or while the
+  CLI holds the lock, is claimed and refused at once (`refused`, naming what
+  holds the site), as the CLI refuses a second operation. There is no queue:
+  Admin shows the active job and offers the request again when it ends.
+- **Durable status.** Every stage boundary of a job, and the supervisor's
+  heartbeat, is written atomically to its own file before the side effect
+  that follows it. That record is all the journal there is: it says where a
+  job stopped and which backup it took, and nothing replays it.
+- **An explicit interrupted state.** A job the supervisor finds unfinished when
+  it starts (it, Docker or the host was stopped mid-job) is marked
+  `interrupted`, with the stage it reached, the backup's path and the lock it
+  left. It is never resumed or retried: what the executor had done is exactly
+  what a crashed CLI operation leaves, and the operator resolves it the same
+  way, with `check` and then `restore` or the command again. The lock stays
+  held until then, so no new job starts over a half-changed site.
+- **Bounded history.** The active job and the 20 most recent finished ones are
+  kept, so Admin can show the last outcome after a restart; older job files
+  are removed when a new request is claimed. That is the whole retention rule.
+
+Later, and not needed for M4: queues, more than one job, resuming or retrying
+interrupted work, scheduled or unattended upgrades, and configurable
+retention. Each would need a requirement the above cannot meet.
+
 Write the protocol document before implementing either side. It must include:
 
 - Versioned JSON schemas for status, requests, and jobs; exact version/image fields;
@@ -495,14 +525,20 @@ Write the protocol document before implementing either side. It must include:
   replaces the supervisor's own image and can change `compose.yml`, so it stays
   a host command (`./ghost-docker self-update`). A Ghost upgrade the host's policy
   forbids, or one that needs a newer stack, is manual too and says why.
-- Request states including queued, backing-up, pulling, restarting, verifying, done,
-  failed, restoring, rolled-back, and recovery-required, plus legal transitions.
+- Job states and their legal transitions: the executor's stages (backing-up,
+  pulling, restarting, verifying, restoring), then one final state: `done`,
+  `restored`, `needs-operator` (recovery failed; the backup's path and what to
+  do), `refused` (policy, lock, another active job, or a malformed request) or
+  `interrupted` (found unfinished on start). No queued state.
 - UUID validation, bounded file sizes, no symlink following, exclusive request
-  claiming, deduplication, restart recovery, retention, and polling backoff.
+  claiming (an atomic rename, so one request is claimed once and a duplicate
+  ID is refused), the interrupted-on-start rule, the 20-job history bound, and
+  polling backoff.
 - Separate request-write and status/job-read permissions for Ghost. A shared writable
   parent directory must not let Ghost replace supervisor-owned status or job files.
   Define initialization/uid ownership and mount layout explicitly.
-- Atomic publication and durable journaling around side effects. A POST can return
+- Atomic publication of every status and job file, each stage recorded before its
+  side effect (the durable status above; no separate journal). A POST can return
   an accepted job ID before the supervisor claims it; distinguish pending, unknown,
   expired, stale supervisor, and protocol mismatch rather than treating all 404s as
   a restart indefinitely.
@@ -518,7 +554,7 @@ supported state, not a Ghost startup failure.
 Admin API: status, create request, and fetch job. Owner/admin only, rate-limited POST,
 with the normal Admin auth/permission conventions. Admin feature-detects both absent
 endpoints on older cores and `supported: false`. Polling survives restart with a
-bounded reconnect period and useful stalled/recovery-required states. UI backup
+bounded reconnect period and useful stalled, `needs-operator` and `interrupted` states. UI backup
 promises must match the actual enforced policy.
 
 Version discovery must handle registry pagination, rate limits, stale cache, semver
@@ -544,7 +580,7 @@ test resolves every bind mount and build context in the Compose file and fails
 when one is not in the image. A site installed from the image with no checkout
 must be able to start both optional profiles. Building the Tinybird helpers at
 install time is a cost of the current stack; publishing them as images instead
-belongs with service image distribution (S14). Tags:
+belongs with service images (S14). Tags:
 
 | Tag | Meaning |
 | --- | --- |
@@ -785,38 +821,42 @@ state.
 
 These extensions follow single-site qualification and do not block the initial
 release. Their numbering is a delivery sequence, not a requirement to ship shared
-infra before single-site registry selection or Redis. Each extends the acceptance
+infra before service image references or Redis. Each extends the acceptance
 matrix and operator documentation when it ships.
 
 Future installer interface (add only as the relevant steps land):
 
 ```text
---image-registry dockerhub|ghcr
 --ghost-channel stable|nightly
---without redis
+--with redis
 ```
 
 Keep `--channel stable|beta` for the ghost-docker stack release. Persist stack channel,
-Ghost channel, selected service registry, and resolved image identities separately.
-`--image-registry` applies to traffic-analytics, ActivityPub, and its migration image;
-it does not promise mirrors of MySQL, Caddy, Redis, stable Ghost, or every other
-third-party image. Ghost nightly is GHCR-only regardless of this registry selection.
-Help and installation summaries must make that scope clear.
+Ghost channel and resolved image identities separately.
 
-Dual publishing must use a single tested release build for both registries, include
-matching architecture manifests and version metadata, and define complete-publication
-checks before advertising a release. Verify registry-specific digests; do not assume
-references in two registries have interchangeable digests. Persist full resolved image
-references and provenance. Registry selection must survive stack updates, upgrades,
-backup/restore, and supervisor execution. Changing registries must preserve service
-versions and data, and must not silently run database migrations or newer code.
+**Service images are full references** (decided 2026-10-09, PLA-519). There is no
+`--image-registry` selector: one would cover only the images someone dual-publishes,
+need its own state, and still have to be resolved to exact references. Instead every
+service's image in `compose.yml` is a registry-qualified reference with its digest,
+pinned by the release (`ghcr.io/tryghost/activitypub:1.2.14@sha256:...`), behind a
+variable `.env` can set, as `GHOST_IMAGE_REF` already is for Ghost. An operator who
+needs another registry or a mirror sets that service's reference with
+`./ghost-docker config set`. The manager never rewrites a reference to another
+registry and never falls back to one: an unavailable registry or a missing
+architecture fails clearly, naming the reference.
 
-Before stable releases are dual-published, preserve the existing mixed registry
-locations. On new installs after S14, default eligible services to Docker Hub; existing
-installs keep their recorded locations until explicitly switched. Confirm actual
-repository ownership/names in each publishing repo rather than inventing GHCR or
-Docker Hub paths. Registry outages or missing architecture artifacts fail clearly;
-no silent cross-registry fallback. Public image pulls should work without credentials.
+Exact identity and provenance are kept as they are today: the backup manifest
+records the reference Compose resolved for every service, and the metadata records
+each image the manager pulled with the digest it resolved. A reference without a
+digest is resolved to one when it is pulled, and that digest is what is recorded.
+A different registry is a different reference whose digest is checked, never assumed
+equal to the first. Changing a service's reference is a configuration change, not
+an upgrade: `check` reports the version the image declares, and an override that
+moves a service to another version is the operator's choice, made visible, never
+the manager's. Stack updates keep a site's overrides (`.env` is the operator's), and
+backup, restore and the supervisor use whatever references the site resolves.
+Public pulls must work without credentials; dual publishing upstream is welcome but
+is not a ghost-docker requirement.
 
 Nightly is an explicitly selected Ghost channel, not a stack prerelease channel and
 not an automatic-update schedule. Publish to the agreed Ghost GHCR repository from
@@ -835,14 +875,20 @@ checkpoint because schema migrations cannot be undone by changing a tag. Retain 
 recovery images/build metadata even if registry retention removes old nightly tags.
 Show the channel and build identity in CLI/status/Admin where applicable.
 
-Redis becomes the default per-site service for fresh local and production installs
-when S16 lands. Add `redis` to the generated profiles by default and support
-`--without redis` to retain compatible in-memory Ghost caching. The original §2.1
-profile table describes the initial release; S16 extends it as follows:
+**Redis is opt-in** (decided 2026-10-09, PLA-519): `install --with redis`, or the
+`redis` profile added to an existing site, when S16 lands. Ghost's in-memory cache
+remains the default. A default service costs every site another long-running
+container, its memory and its failure modes; on a local install, a theme
+developer's laptop, that buys nothing, and on a single small production site the
+in-memory cache is adequate. Redis becomes a default only when measurements on
+supported Ghost versions show a real benefit for typical sites, and then for
+production first; local installs would still default to without it unless the
+measurements cover them too. The original §2.1 profile table describes the initial
+release; S16 extends it as follows:
 
 | Service | Profiles | Lifecycle | Installation default |
 | --- | --- | --- | --- |
-| `redis` | `redis` | Long-running, per-site | Enabled on new sites unless explicitly excluded |
+| `redis` | `redis` | Long-running, per-site | Off; `--with redis` or the profile enables it |
 
 Use a pinned supported Redis image, private site networking with no published host
 port, healthchecks, bounded memory, defined eviction/persistence settings, and
@@ -854,9 +900,9 @@ assume every older supported image accepts the same cache configuration. Incompa
 images must use a documented supported configuration or fail preflight with the opt-out
 path, rather than producing a broken default install.
 
-For existing sites, provide a documented enablement migration that preserves operator
-cache overrides and exact image pins. Routine stack updates must not unexpectedly
-switch an existing cache backend. Disabling Redis must also remove/revert generated
+For existing sites, document enabling it: add the profile, which the manager wires
+into Ghost's cache configuration, preserving operator cache overrides and exact image
+pins. Routine stack updates must not unexpectedly switch an existing cache backend. Disabling Redis must also remove/revert generated
 cache configuration; do not stop it while leaving Ghost pointed at it. Define/test
 startup ordering, runtime outage behavior, reconnects, cache invalidation after
 upgrade/restore, and the effect of opting out. Do not promise automatic runtime
@@ -1144,9 +1190,9 @@ S10 Admin UI                                   needs S9
 
 Later
 S11 file-based secrets                         needs S4-S8 credential consumers
-S14 service image registries                   needs S12
+S14 service images as full references         needs S12
 S15 Ghost nightly channel                      needs S14
-S16 default Redis                              needs S12
+S16 opt-in Redis                               needs S12
 ```
 
 S13 keeps MySQL per site, so a new member site needs only S4: backup, restore,
@@ -1317,9 +1363,9 @@ commands. Decisions made while building it, which later steps rely on:
   usage error naming its option. `--with analytics` is a usage error that says
   how to add analytics to the installed site: its `tinybird-login` job is an
   interactive browser login and Ghost waits for the Tinybird jobs, so `up
-  --wait` cannot succeed before it. The final-phase options (`--image-registry`,
-  `--ghost-channel`, `--without`) are not accepted at all until their steps
-  land; as unknown options they exit 2.
+  --wait` cannot succeed before it. The final-phase options (`--ghost-channel`,
+  and `redis` for `--with`) are not accepted until their steps land; as
+  unknown values they exit 2.
 - **The launcher passes `GD_COMPOSE_OVERRIDES`** into the manager when it is
   set, so the opt-in to an override file in docs/configuration.md reaches the
   manager's Compose runs. It is the one setting passed through, besides the
@@ -1580,15 +1626,19 @@ contract merged from Ghost PR #31277 rather than starting over. Write
 `docs/upgrade-supervisor.md` with the exact §2.6 schemas, transitions, ownership,
 policy, and recovery rules, then implement the supervisor as a long-running
 command of the manager image. Reuse S7 behavior. Wire `--with supervisor` and
-request submission/status tooling.
+request submission/status tooling. Scope is §2.6's minimum: one active job,
+durable status, `interrupted` for work found unfinished, a 20-job history; no
+queue and no resuming.
 
 The status lists available updates as one-click and manual (§2.6): Ghost
 upgrades the policy allows, and stack updates and Ghost upgrades it does not, the
 latter with the reason and the host command.
 
 Acceptance: handwritten requests work before Ghost gains an adapter; duplicate and
-malformed requests, permission violations, stale status, supervisor crashes, and
-host-operation conflicts behave correctly. Verify actual exchange permissions as
+malformed requests, permission violations, and stale status behave correctly; a
+request while a job is active, or while the CLI holds the lock, is refused; a
+supervisor killed mid-job reports that job `interrupted` on its next start, with
+its backup, and leaves the lock for the operator; history stays within its bound. Verify actual exchange permissions as
 Ghost's runtime uid. Installer must not enable an incompatible Ghost adapter.
 
 ### S9 — Ghost upgrade adapter and Admin API
@@ -1613,8 +1663,8 @@ manual ones as a notice with their reason and host steps, such as a stack update
 to run with `./ghost-docker self-update`.
 
 Acceptance: older backend, unsupported adapter, owner/admin permissions, successful
-restart/reconnect, queued job, stale supervisor, failed restore, and recovery-required
-states. Include an integration test with the real supervisor after mocked UI tests.
+restart/reconnect, a refused request while another job runs, stale supervisor,
+failed restore (`needs-operator`), and `interrupted` states. Include an integration test with the real supervisor after mocked UI tests.
 
 ### S11 — Optional file-based secrets
 
@@ -1672,28 +1722,33 @@ Acceptance: a shared Caddy with two members on different Ghost versions, each
 with its own optional services; upgrading, restoring or removing one leaves the
 other untouched; a duplicate domain is refused; a Caddy restart brings both back.
 
-### S14 — Dual-published service images and registry selection
+### S14 — Service images as full references
 
-Repos: ghost-docker plus the traffic-analytics and ActivityPub publishing repositories.
-Deps: S12; independent of S13. Follow §2.9. Publish traffic-analytics, ActivityPub, and
-ActivityPub migrations to both Docker Hub and GHCR, then add
-`install --image-registry dockerhub|ghcr` and a documented registry-switch operation.
-Persist full image identities and registry choice; apply it consistently to upgrade,
-stack update, recovery, and supervisor flows. Preserve historical mixed registry
-locations until a site explicitly switches. Do not broaden the flag to unmirrored
-third-party images.
+Repo: ghost-docker. Deps: S12; independent of S13. Follow §2.9. Give every service
+image in `compose.yml` an `.env` variable holding a full, registry-qualified
+reference, defaulting to the release's pinned reference with its digest, as
+`GHOST_IMAGE_REF` does for Ghost. Document overriding one with `config set` to use a
+mirror or another registry. Record each resolved reference and digest in the
+metadata as images are pulled; the backup manifest already records them. `check`
+names any overridden service and the version its image declares. No
+`--image-registry` flag and no registry state: the reference is the choice.
 
-Acceptance: both registries serve equivalent releases on supported architectures;
-partial publication is not advertised as complete; unauthenticated public pulls work;
-select/install/update/restore and same-version registry switches succeed. Exercise
-missing artifacts, unavailable registries, and ActivityPub app/migration version
-alignment. Confirm switches do not mutate application data or upgrade versions.
+Publishing the Tinybird helpers as images (§2.7) belongs here, as references like
+the rest.
+
+Acceptance: a site with ActivityPub and its migration image overridden to another
+registry installs, updates its stack (keeping the overrides), backs up and restores
+with the overridden references recorded exactly; an unreachable registry or a
+missing architecture fails naming the reference, with no fallback; a reference
+without a digest is recorded with the one it resolved to; and an override whose
+image declares another version is reported by `check`. ActivityPub's app and
+migration references stay aligned, or `check` says they are not.
 
 ### S15 — Opt-in Ghost nightly channel on GHCR
 
 Repos: Ghost/image publishing workflow and ghost-docker; Ghost Admin/API if channel
 or build metadata requires extending the existing upgrade interface. Deps: S14 image
-resolution and existing S7-S10 upgrade integration. Follow §2.9. Add
+references and existing S7-S10 upgrade integration. Follow §2.9. Add
 `--ghost-channel stable|nightly`, with stable as default and nightly explicitly opted
 in. Nightly images are published to GHCR with immutable source/build identities.
 Keep the stack `--channel` independent and do not equate nightly selection with
@@ -1706,23 +1761,30 @@ failure, missing images, host major-policy enforcement, backup/recovery, and exp
 channel transitions. Nightly-to-stable must refuse unsafe schema transitions rather
 than pretending that image selection rolls back the database.
 
-### S16 — Default per-site Redis caching with opt-out
+### S16 — Opt-in per-site Redis caching
 
 Repo: ghost-docker, verifying behavior against supported Ghost versions. Deps: S12
 and existing configuration, installer, backup, upgrade, and secret interfaces;
-independent of S13-S15. Follow §2.9. Make Redis the default for new local/production
-sites, with explicit `--without redis` opt-out and documented adoption for existing
-sites. Add the service/profile, version-aware Ghost cache wiring, private network,
-healthchecks, credentials, resource policy, diagnostics, and enable/disable migration.
-Keep Redis per-site even when shared infra exists.
+independent of S13-S15. Follow §2.9. Add `install --with redis` and the `redis`
+profile for existing sites, with the service, version-aware Ghost cache wiring,
+private network, healthchecks, credentials, resource policy, diagnostics, and
+enable/disable steps. Keep Redis per-site even when shared infra exists. Default
+installs are unchanged.
 
-Acceptance: new local/production installs use Redis by default; opt-out starts a
-working site without it; existing operator overrides survive migration. Verify real
-cache reads/writes and invalidation, resource limits, restart/outage/reconnect,
-upgrade/restore behavior, secret handling, and supported Ghost version coverage.
-If S13 has shipped, verify two sites do not share cache data or expose Redis through
-the shared ingress network. Specify cache rebuilding/persistence behavior explicitly.
-Do not wire speculative traffic-analytics/ActivityPub consumers until their released
+Measure before proposing a default: memory and start-up cost of the extra service,
+and Ghost's response times with and without it, on a local install and a small
+production site, on supported Ghost versions. Record the results in this plan; a
+default for production, and separately for local installs, is a later decision
+made from them.
+
+Acceptance: `--with redis` installs, local and production, use Redis; default
+installs start no Redis and behave as before; enabling and disabling it on an
+existing site keeps operator overrides. Verify real cache reads/writes and
+invalidation, resource limits, restart/outage/reconnect, upgrade/restore behavior,
+secret handling, and supported Ghost version coverage. If S13 has shipped, verify
+two sites do not share cache data or expose Redis through the shared ingress
+network. Specify cache rebuilding/persistence behavior explicitly. Do not wire
+speculative traffic-analytics/ActivityPub consumers until their released
 interfaces exist and their cache-versus-durable-state requirements are established.
 
 ## 4. Reference notes from review
