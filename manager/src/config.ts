@@ -14,15 +14,15 @@
 //
 // Two lists are derived rather than written down, so they cannot drift: the
 // keys the container owns (what `docker compose config` says Ghost receives)
-// and the operator settings (what compose.yml interpolates).
+// and the operator settings (what Compose interpolates).
 import { join } from 'node:path';
-import { composeConfig } from './compose.ts';
+import { composeConfig, composeVariables } from './compose.ts';
 import { inspectImage } from './docker/client.ts';
 import * as env from './env.ts';
+import { CliError } from './errors.ts';
 import { modeOf, readIfExists } from './fs.ts';
 import type { Io } from './io.ts';
 import {
-    COMPOSE_FILE,
     ENV_EXAMPLE_FILE,
     ENV_FILE,
     GHOST_ENV_FILE,
@@ -58,13 +58,6 @@ const PRIVATE_MODES = new Set([0o600, 0o400, 0o640]);
 
 const error = (file: string, message: string): Finding => ({ level: 'error', file, message });
 const warning = (file: string, message: string): Finding => ({ level: 'warning', file, message });
-
-/** The variables compose.yml interpolates, from compose.yml itself. */
-export function operatorVariables(composeText: string): Set<string> {
-    return new Set(
-        [...composeText.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)/g)].map((match) => match[1]!),
-    );
-}
 
 function privacy(file: string, path: string): Finding[] {
     const mode = modeOf(path);
@@ -228,7 +221,7 @@ export async function validateEnv(io: Io, dir: string): Promise<Finding[]> {
  *    setting it here looks effective and is silently ignored. Detected by
  *    asking Compose what the container actually receives.
  *  - an operator setting in the wrong file. Detected from the variables
- *    compose.yml interpolates, the settings .env.example documents,
+ *    Compose interpolates, the settings .env.example documents,
  *    COMPOSE_*, and whatever `.env` defines.
  */
 export async function validateGhostEnv(io: Io, dir: string): Promise<Finding[]> {
@@ -257,7 +250,8 @@ export async function validateGhostEnv(io: Io, dir: string): Promise<Finding[]> 
             ),
         );
     }
-    const isOperatorKey = operatorKeyTest(dir);
+    // Unresolved, the warning above already says so: no key is called misplaced.
+    const isOperatorKey = await operatorKeyTest(io, dir).catch(() => () => false);
 
     for (const [key, value] of Object.entries(values)) {
         // env_file is merged into the service environment, so every ghost.env
@@ -293,10 +287,20 @@ export function documentedVariables(exampleText: string): Set<string> {
     );
 }
 
-/** Does KEY belong in `.env`? */
-export function operatorKeyTest(dir: string): (key: string) => boolean {
+/**
+ * Does KEY belong in `.env`? Compose's variables are read from Compose itself;
+ * `.env.example` and `.env` also place the ones an override no longer uses.
+ */
+export async function operatorKeyTest(io: Io, dir: string): Promise<(key: string) => boolean> {
+    const interpolated = await composeVariables(io, dir);
+    if (interpolated === null) {
+        throw new CliError(
+            "Compose could not list the variables the site's Compose files use, so it is not known which\n" +
+                '  keys belong in .env. Check compose.yml with: docker compose config',
+        );
+    }
     const known = new Set([
-        ...operatorVariables(readIfExists(join(dir, COMPOSE_FILE)) ?? ''),
+        ...interpolated,
         ...documentedVariables(readIfExists(join(dir, ENV_EXAMPLE_FILE)) ?? ''),
         ...env.keys(readIfExists(join(dir, ENV_FILE)) ?? ''),
     ]);

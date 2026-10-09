@@ -26,8 +26,9 @@ needs no daemon) and reports any `ghost.env` key whose effective value differs.
 An entry added to `compose.yml` is therefore caught the moment it is added,
 with nothing to keep in sync. The same applies to operator settings in the
 wrong file: the set of keys that belong in `.env` is derived from the variables
-`compose.yml` interpolates, the settings `.env.example` documents (commented
-out or not), `COMPOSE_*`, and whatever `.env` already defines.
+Compose reports it interpolates (`docker compose config --variables`, which
+includes `compose.override.yml`), the settings `.env.example` documents
+(commented out or not), `COMPOSE_*`, and whatever `.env` already defines.
 
 A site's domain is not a setting of its own: it is the host of `URL`, and an
 admin domain the host of `ADMIN_URL`. A production `URL` must be `https://`.

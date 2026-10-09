@@ -373,7 +373,7 @@ offered; for a private name, put `tls internal` in a `caddy/custom/` file.
 ```bash
 ./ghost-docker check      # diagnose this site: host, configuration, services, database, ingress
 ./ghost-docker info       # the recorded installation metadata, and where Mailpit's inbox is
-./ghost-docker list       # every ghost-docker container on this host, stopped ones included
+./ghost-docker list       # every ghost-docker site on this host, stopped ones included, and its directory
 ./ghost-docker config get|set|validate
 ./ghost-docker update     # to a newer release of the stack; see below
 ./ghost-docker backup     # the databases, content and configuration, into backups/
@@ -383,7 +383,8 @@ offered; for a private name, put `tls internal` in a `caddy/custom/` file.
 The routes are a file you edit (`caddy/sites/site.caddy`), followed by
 `docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile`.
 
-`list` reads Docker's own labels. There is no registry of installations, so a
+`list` asks Compose for its projects and their directories, and Docker's labels
+for which of them are sites. There is no registry of installations, so a
 site whose containers have never been created cannot be found from outside its
 directory, and `list` says so.
 

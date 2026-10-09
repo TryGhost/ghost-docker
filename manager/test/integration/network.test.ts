@@ -6,6 +6,7 @@
 // checks are tests/e2e/install.sh's, through a real installation.
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
+import { run } from '../../src/cli.ts';
 import { ServiceUnreachable } from '../../src/clients.ts';
 import { connectNetwork, disconnectNetwork } from '../../src/docker/client.ts';
 import { CliError } from '../../src/errors.ts';
@@ -272,6 +273,26 @@ test('a network the manager was already on is not taken from it', async () => {
         assert.ok((await managerNetworks(io)).includes(network));
     } finally {
         await disconnectNetwork(io.docker, network, io.containerId()!);
+    }
+});
+
+test('list finds each running site, its mode and its directory, through Compose', async () => {
+    const out: string[] = [];
+    assert.equal(await run(['list'], realIo({ stdout: (text) => void out.push(text) })), 0);
+    const rows = out
+        .join('')
+        .split('\n')
+        .map((line) => line.split(/\s+/).filter(Boolean));
+    for (const [site, mode] of [
+        [alpha, 'production'],
+        [bravo, 'local'],
+        [charlie, 'local'],
+    ] as const) {
+        const row = rows.find((cells) => cells[0] === site.project);
+        assert.deepEqual(
+            [row?.[1], row?.[2]?.replace(/\(.*/, ''), row?.[3]],
+            [mode, 'running', site.dir],
+        );
     }
 });
 

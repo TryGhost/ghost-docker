@@ -32,7 +32,6 @@ import {
     pullImage,
     runOnce,
     splitReference,
-    stoppedSiteContainers,
 } from './docker/client.ts';
 import * as env from './env.ts';
 import { CliError, UsageError } from './errors.ts';
@@ -48,6 +47,7 @@ import type { Io } from './io.ts';
 import { acquireLock } from './lock.ts';
 import { readMetadata, writeMetadata } from './meta.ts';
 import { isCheckout, LAUNCHER } from './payload.ts';
+import { takenPorts } from './ports.ts';
 import { failed, printChecks } from './report.ts';
 import {
     DATA_DIRS,
@@ -253,16 +253,7 @@ async function refuseTaken(io: Io, root: string, manifest: BackupManifest): Prom
     const wanted = keys
         .map((key) => Number(settings[key]))
         .filter((port) => Number.isInteger(port) && port > 0);
-    const running = await listContainers(io.docker);
-    const stopped = await stoppedSiteContainers(io.docker);
-    const lines: string[] = [];
-    for (const container of [...running, ...stopped]) {
-        for (const port of container.publishedPorts.filter((each) => wanted.includes(each))) {
-            lines.push(
-                `port ${port} is already ${running.includes(container) ? 'in use by' : 'taken by the stopped'} Docker container ${container.name}`,
-            );
-        }
-    }
+    const lines = [...(await takenPorts(io)).holders(wanted).values()];
     const ghostPort = Number(settings.GHOST_PORT);
     if (lines.length === 0 && Number.isInteger(ghostPort) && (await io.hostListens(ghostPort))) {
         lines.push(`port ${ghostPort} is already in use on this host by something outside Docker`);

@@ -88,12 +88,14 @@ describe('the daemon', () => {
             h.daemon.info = { ...HEALTHY, ServerVersion: version };
             assert.equal((await check('docker engine'))!.status, 'ok', version);
         }
-        for (const compose of ['2.24.0', '2.100.0', 'v2.40.3-desktop.1', '5.1.2']) {
-            h.daemon.compose = compose;
-            assert.equal((await check('docker compose'))!.status, 'ok', compose);
-        }
-        h.daemon.compose = '2.9.0';
-        assert.equal((await check('docker compose'))!.status, 'error');
+    });
+
+    test("the image's own Compose is reported; its minimum is the image's to hold", async () => {
+        h.daemon.compose = '2.40.3';
+        assert.match(
+            (await check('docker compose'))!.detail,
+            /^2\.40\.3 \(the manager's own client\)/,
+        );
     });
 
     test('a Compose client that does not run is an error', async () => {
@@ -149,9 +151,9 @@ describe('the site directory', () => {
         assert.match(moved!.detail, /\/srv\/somewhere-else/);
     });
 
-    test('a PROJECT_DIR this reader cannot decode is left alone rather than guessed', async () => {
+    test('PROJECT_DIR is read by the one dotenv decoder, `$$` and all', async () => {
         writeFileSync(join(h.dir, '.env'), 'PROJECT_DIR="/srv/with$$dollar"\n');
-        assert.equal(await check('PROJECT_DIR'), undefined);
+        assert.match((await check('PROJECT_DIR'))!.detail, /^\.env says \/srv\/with\$dollar, but/);
     });
 });
 

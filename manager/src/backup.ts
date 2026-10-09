@@ -80,17 +80,13 @@ const DUMP =
  * Run in a throwaway container of the site's own MySQL image, with the
  * backup mounted read-only: a scratch server, each dump loaded into it, and
  * then every table's rows counted, as `== <database>` then `<table>\t<rows>`.
- * Nothing touches the site's own server.
+ * Nothing touches the site's own server. `mysqld --daemonize` returns once
+ * the server accepts connections, as MySQL's own entrypoint starts its
+ * temporary one, so nothing polls it.
  */
 const CHECK = `set -eu
 mysqld --initialize-insecure --user=mysql --datadir=/tmp/check >/tmp/init.log 2>&1 || { tail -n 20 /tmp/init.log >&2; exit 3; }
-mysqld --user=mysql --datadir=/tmp/check --socket=/tmp/check.sock --skip-networking --skip-log-bin >/tmp/mysqld.log 2>&1 &
-waited=0
-until mysqladmin --socket=/tmp/check.sock -uroot ping >/dev/null 2>&1; do
-  waited=$((waited + 1))
-  if [ "$waited" -ge 180 ]; then echo 'the scratch MySQL did not start' >&2; tail -n 20 /tmp/mysqld.log >&2; exit 3; fi
-  sleep 1
-done
+mysqld --daemonize --user=mysql --datadir=/tmp/check --socket=/tmp/check.sock --pid-file=/tmp/check.pid --log-error=/tmp/mysqld.log --skip-networking --skip-log-bin >/dev/null 2>&1 || { echo 'the scratch MySQL did not start' >&2; tail -n 20 /tmp/mysqld.log >&2; exit 3; }
 client() { mysql --socket=/tmp/check.sock -uroot --default-character-set=utf8mb4 "$@"; }
 for db in "$@"; do
   client -e "CREATE DATABASE \\\`$db\\\`"

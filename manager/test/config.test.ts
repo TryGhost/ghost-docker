@@ -4,9 +4,8 @@ import { chmodSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, test } from 'node:test';
 import { composeEnvironment } from '../src/compose.ts';
-import { operatorVariables } from '../src/config.ts';
 import { harness, type Harness } from './helpers.ts';
-import { LOCAL, makeSite, PRODUCTION, REPO } from './site.ts';
+import { LOCAL, makeSite, PRODUCTION } from './site.ts';
 
 let h: Harness;
 beforeEach(() => {
@@ -184,21 +183,6 @@ describe('ghost.env', () => {
         makeSite(h, LOCAL);
         assert.equal((await validate()).code, 0);
     });
-});
-
-test('the operator variables are read from compose.yml itself', () => {
-    const variables = operatorVariables(readFileSync(join(REPO, 'compose.yml'), 'utf8'));
-    for (const key of [
-        'URL',
-        'DATABASE_PASSWORD',
-        'GHOST_PORT',
-        'COMPOSE_PROJECT_NAME',
-        'RESTART_POLICY',
-    ]) {
-        assert.ok(variables.has(key), key);
-    }
-    // `$$MYSQL_USER` is a literal for the container's shell, not interpolation.
-    assert.ok(!variables.has('MYSQL_USER'));
 });
 
 describe('get, set and unset', () => {
