@@ -1,14 +1,15 @@
 // Importing a staged bundle into a new site: its configuration, its content
-// and its database. The order and the policy are install's; `Importing` is
+// and its database. A portable bundle has none to load: Ghost creates an empty
+// one, and its content JSON and members CSV are Ghost Admin's to import. The order and the policy are install's; `Importing` is
 // what install calls, at its points, when --import is given. The contract is
 // docs/bundle-v1.md and the sequence §2.4 of docs/ghost-cli-replacement.md.
 //
 // The pieces that print nothing and decide no order are in import/:
 // config.ts, what ghost.env receives; database.ts, the client, the dump
 // filter and the row counts.
-import { existsSync, readdirSync, renameSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
-import type { BundleManifest } from './bundle/manifest.ts';
+import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
+import { basename, join } from 'node:path';
+import { CONTENT_ROOT, type BundleManifest } from './bundle/manifest.ts';
 import { BundleRefused, removeStaging, stageBundle, type StagedBundle } from './bundle/stage.ts';
 import { ServiceUnreachable } from './clients.ts';
 import {
@@ -144,6 +145,29 @@ export class Importing {
         return `${this.manifest.kind} bundle of ${this.manifest.url}`;
     }
 
+    /**
+     * What is left to the operator. A database bundle brought the staff
+     * accounts with it; a portable one is imported through Ghost Admin.
+     */
+    get nextSteps(): string[] {
+        if (this.manifest.kind !== 'portable') {
+            return ["Sign in to Ghost Admin with the source site's staff accounts."];
+        }
+        const [content, members] = [
+            this.manifest.database.path,
+            this.manifest.database.members,
+        ].map(placedAt);
+        // A zero-byte members export means the source had no members.
+        const hasMembers = statSync(join(this.dir, members!), { throwIfNoEntry: false })?.size;
+        return [
+            'Open Ghost Admin, create the owner account, then import:',
+            `  ${content} in Settings, Import/Export`,
+            ...(hasMembers ? [`  ${members} in Members, Import`] : []),
+            'and activate the theme in Settings, Design. A portable export carries no',
+            'integrations, staff logins or Stripe connection; set those up again.',
+        ];
+    }
+
     /** Refused before anything was written: the directory is as it was. */
     abandon(): void {
         removeStaging(this.dir);
@@ -259,6 +283,31 @@ export function placeContent(root: string, target: string): void {
 }
 
 /**
+ * Where a file a portable bundle names ends up, relative to the site: under
+ * data/ghost, where the operator picks it up for Ghost Admin. One inside
+ * content/ travels with the content; one outside it goes into data/ghost/data.
+ */
+const placedAt = (file: string): string =>
+    file.startsWith(CONTENT_ROOT)
+        ? join(DATA_DIRS[0], file.slice(CONTENT_ROOT.length))
+        : join(DATA_DIRS[0], 'data', basename(file));
+
+/** Places a portable bundle's content JSON and members CSV; returns where they are. */
+export function placeAdminFiles(
+    root: string,
+    dir: string,
+    manifest: Extract<BundleManifest, { kind: 'portable' }>,
+): string[] {
+    return [manifest.database.path, manifest.database.members].map((file) => {
+        if (!file.startsWith(CONTENT_ROOT)) {
+            mkdirSync(join(dir, DATA_DIRS[0], 'data'), { recursive: true });
+            renameSync(join(root, file), join(dir, placedAt(file)));
+        }
+        return placedAt(file);
+    });
+}
+
+/**
  * Stages and validates the bundle, then applies this release's policy to it.
  * A refusal leaves the site directory as it was.
  */
@@ -286,19 +335,6 @@ export async function readBundle(
             throw new CliError(
                 `this bundle is of a ${manifest.sourceInstallType} site (${manifest.url}); this release imports local sites.\n` +
                     '  Production import and cutover come in a later release (plan step S5e). Nothing has been changed.',
-            );
-        }
-        if (manifest.kind === 'portable') {
-            throw new CliError(
-                `this is a portable bundle: Ghost's content export and a members CSV, which Ghost Admin\n` +
-                    '  imports, not this command. To move the site that way:\n' +
-                    '    1. ./ghost-docker install --local, and create the owner account;\n' +
-                    `    2. in Ghost Admin, import ${manifest.database.path} (Settings, Import/Export)\n` +
-                    `       and ${manifest.database.members} (Members, Import);\n` +
-                    '    3. copy the bundle’s content/images, content/media, content/files and\n' +
-                    '       content/themes into data/ghost.\n' +
-                    '  Or export the source site again without --sqlite-format portable, which makes a\n' +
-                    '  mysql-data bundle that this command imports completely. Nothing has been changed.',
             );
         }
         if (
@@ -352,6 +388,30 @@ export async function importSite(
     placeContent(root, join(dir, DATA_DIRS[0]));
     ok(io, 'content', `the bundle's content/ in ${DATA_DIRS[0]}`);
 
+    if (manifest.kind === 'portable') {
+        // Ghost creates its own, empty database when it first starts; the
+        // content JSON and members CSV are Ghost Admin's to import.
+        const files = placeAdminFiles(root, dir, manifest);
+        ok(io, 'database', `none to load: Ghost Admin imports ${files.join(' and ')}`);
+    } else {
+        await importDatabase(io, dir, root, manifest, profiles, version, started);
+    }
+
+    // Complete: `.env` selects the site's services again.
+    const path = join(dir, ENV_FILE);
+    atomicWrite(path, env.set(readIfExists(path) ?? '', 'COMPOSE_PROFILES', profiles));
+}
+
+/** A database bundle's database: loaded, then checked against what the bundle records. */
+async function importDatabase(
+    io: Io,
+    dir: string,
+    root: string,
+    manifest: Exclude<BundleManifest, { kind: 'portable' }>,
+    profiles: string,
+    version: string,
+    started: () => void,
+): Promise<void> {
     started();
     const db = await io.busy('Starting the database', () => composeUp(io, dir, ['db'], profiles));
     if (db.exitCode !== 0) {
@@ -406,7 +466,7 @@ export async function importSite(
                 (manifest.kind === 'mysql-data'
                     ? '\n  Text over 64KB in a column MySQL declares as text is one cause that only the load\n' +
                       '  can find. Such a site moves through Ghost Admin instead: export it with\n' +
-                      '  --sqlite-format portable and follow what this command says about that bundle.'
+                      '  --sqlite-format portable and import that bundle, then follow the steps it gives.'
                     : ''),
         );
     }
@@ -446,8 +506,4 @@ export async function importSite(
         }
         ok(io, 'migrations', 'the database has a Ghost migration history');
     }
-
-    // Complete: `.env` selects the site's services again.
-    const path = join(dir, ENV_FILE);
-    atomicWrite(path, env.set(readIfExists(path) ?? '', 'COMPOSE_PROFILES', profiles));
 }

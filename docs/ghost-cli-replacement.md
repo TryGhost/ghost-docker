@@ -44,7 +44,7 @@ dependencies and the contracts in §2 before implementing it.
 | Windows | Through WSL2 only, which is Linux: Docker Desktop's WSL2 backend puts `docker` and its socket inside the distro, and the launcher runs there unchanged. No native launcher; §2.10 records the design to use if one is ever wanted. |
 | Versions | Resolve and persist an exact Ghost image version on installation. Ghost upgrades and stack updates are separate operations. Record resolved image digests for recovery. |
 | Installation | Scriptable `install`, with a flag for every prompt. Local mode uses MySQL too. |
-| Migration | Ghost-CLI exports a bundle (`ghost migrate-export`, Ghost-CLI 1.33.0+); the manager imports it. Three kinds: `mysql-dump` (MySQL sources), `mysql-data` (default for local SQLite sources: data-only MySQL inserts loaded into a schema Ghost creates), and `portable` (an explicit SQLite fallback through the Admin API). The manager does not import `portable` bundles: their content JSON and members CSV are imported through Ghost Admin on the new site, as anyone moving a Ghost site by hand does today. Moving a site is documented, not wrapped: `ghost stop`, `ghost migrate-export`, `install --import` on the source's port. The legacy `scripts/migrate.sh` stays on `main`, where it works, and is not carried onto this branch, whose layout it does not understand; it disappears from `main` when this branch merges, which S12 allows only after production import (S5e) has passed its tests. |
+| Migration | Ghost-CLI exports a bundle (`ghost migrate-export`, Ghost-CLI 1.33.0+); the manager imports it. Three kinds: `mysql-dump` (MySQL sources), `mysql-data` (default for local SQLite sources: data-only MySQL inserts loaded into a schema Ghost creates), and `portable` (an explicit SQLite fallback through the Admin API). For a `portable` bundle the manager installs the site and places its content; its content JSON and members CSV are imported through Ghost Admin on the new site, as anyone moving a Ghost site by hand does today. Moving a site is documented, not wrapped: `ghost stop`, `ghost migrate-export`, `install --import` on the source's port. The legacy `scripts/migrate.sh` stays on `main`, where it works, and is not carried onto this branch, whose layout it does not understand; it disappears from `main` when this branch merges, which S12 allows only after production import (S5e) has passed its tests. |
 | Upgrades | Optional supervisor using a file exchange and the Docker socket. Ship a tested host-driven upgrade first, then reuse its recovery contract in the supervisor. Both are commands of the manager. |
 | UX | Standard Compose commands for daily operation; `./ghost-docker` for installation, diagnosis, configuration, migration, backup/restore, and upgrades. No wrapper binary named `ghost`. |
 | Configuration | `.env` contains Compose/operator settings; `ghost.env` contains only Ghost application settings. Do not pass the whole `.env` into Ghost. A mounted Ghost JSON config file was evaluated as a replacement for `ghost.env` and rejected; see §2.1. |
@@ -57,8 +57,8 @@ dependencies and the contracts in §2 before implementing it.
 | Tests | Unit tests for the CLI in TypeScript. End-to-end scenarios that only run the real commands and check outcomes are shell scripts in `tests/e2e/`, so they do not depend on how the commands are implemented. |
 
 Explicitly document initial limitations: no shared-infra provisioning, no automatic
-major Ghost/MySQL upgrades, no arbitrary downgrade support, and no import of
-`portable` bundles (they go through Ghost Admin).
+major Ghost/MySQL upgrades, no arbitrary downgrade support, and no import of a
+`portable` bundle's content JSON and members CSV (they go through Ghost Admin).
 
 ## 2. Architecture and contracts
 
@@ -278,15 +278,16 @@ Bundle kinds:
 | --- | --- | --- | --- |
 | `mysql-dump` | MySQL/mysql2 | Schema and data for the selected database | Provision, load, start Ghost |
 | `mysql-data` | Local SQLite; the exporter's default | Data-only MySQL `INSERT`s for every table, including migration history; `database.rows` holds per-table counts | Provision, boot Ghost once at the exact source version to create the schema, stop it, load, verify counts, start Ghost |
-| `portable` | Local SQLite with `--sqlite-format portable` | Content JSON and members CSV from the Admin API | Not imported by the manager; through Ghost Admin |
+| `portable` | Local SQLite with `--sqlite-format portable` | Content JSON and members CSV from the Admin API | Provision, place the content, start Ghost on an empty database; the JSON and CSV through Ghost Admin |
 
 `mysql-data` is the expected route for local SQLite sites and preserves IDs, staff
 credentials, members and settings. `portable` is the exporter's fallback for a
 source whose data it refuses to write as `mysql-data` (values MySQL would
-reject). The manager refuses such a bundle and says how to finish by hand:
-install an empty site, import the bundle's content JSON and members CSV in Ghost
-Admin, and copy its content directory. That is what Ghost-CLI users do today when
-they move a site, and its losses are those of Ghost's own import.
+reject). The manager installs the site and places its content, Ghost creates an
+empty database on first start, and the summary names what is left in Ghost
+Admin: the owner account, the content JSON, the members CSV and the theme. That
+is what Ghost-CLI users do today when they move a site, and its losses are those
+of Ghost's own import.
 
 Before freezing the contract:
 
@@ -1321,8 +1322,9 @@ acceptance test.
   dropped from mysqldump's version-comment lines so that is possible.
 - A failed import removes what it created; an interrupted one cannot be started
   and is cleared by the next import.
-- A `portable` bundle is refused, saying how to move the site through Ghost
-  Admin (§2.4); a `production` bundle is refused until S5e.
+- A `portable` bundle is installed with its content and no database load; the
+  summary names the Ghost Admin steps (§2.4). A `production` bundle is refused
+  until S5e.
 
 Reference: `scripts/lib/import.sh`, the import blocks of `install.sh`,
 `tests/import.test.mjs` and `tests/e2e/import.sh` on `next`. That e2e script is

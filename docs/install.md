@@ -251,12 +251,22 @@ instead, and the imported copy's mail, to real members included, goes to the
 inbox. `mail__from` is kept. `--with mailpit` is the only optional service an
 import takes; enable the others afterwards.
 
+A `portable` bundle (`--sqlite-format portable`) has no database to load.
+The import installs the site and places its content, and Ghost creates its own
+database when it starts. The bundle's content JSON and members CSV land in
+`data/ghost/data/`, and the summary says what is left to do in Ghost Admin:
+
+1. Create the owner account.
+2. Import the content JSON in Settings, Import/Export.
+3. Import the members CSV in Members, Import.
+4. Activate the theme in Settings, Design.
+
+A portable export carries no integrations, staff logins or Stripe connection,
+so set those up again. Export without `--sqlite-format portable` to get a
+`mysql-data` bundle, which the import loads completely.
+
 Refused, each with a message that says so:
 
-- A `portable` bundle (`--sqlite-format portable`): Ghost Admin imports its
-  content JSON and members CSV. The message gives the steps: install an empty
-  site, import both files in Ghost Admin, copy the content directory. Export
-  without `--sqlite-format portable` to get a `mysql-data` bundle instead.
 - A bundle from a production installation, and `--import` with `--domain`,
   until production import and cutover (S5e).
 - `--import` with `--with`: import the site first, then enable optional
@@ -307,7 +317,7 @@ on Ghost 6; on Ghost 5, run `ghost update` there first. When the exporter
 refuses a SQLite site because some values would not load into MySQL, it lists
 them: fix them in the source and export again, or move the site through Ghost
 Admin with `ghost migrate-export --sqlite-format portable` (see the
-`portable` refusal above). A Ghost-CLI site on native Windows is exported
+`portable` bundle above). A Ghost-CLI site on native Windows is exported
 there and imported from WSL2, with the bundle under `/mnt/c/`.
 
 ## Ports, and your existing proxy

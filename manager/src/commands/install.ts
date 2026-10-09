@@ -782,7 +782,10 @@ function printSummary(site: Site, importing: Importing | null) {
     const { io, flags, intent, url, production, ghost } = site;
     const admin = intent.adminDomain ? `https://${intent.adminDomain}` : url;
     const next = flags.noStart
-        ? ['Nothing is running. Start the site with: docker compose up -d']
+        ? [
+              'Nothing is running. Start the site with: docker compose up -d',
+              ...(importing?.manifest.kind === 'portable' ? importing.nextSteps : []),
+          ]
         : production
           ? [
                 "Point the domain's DNS at this host; Caddy then obtains a certificate, and",
@@ -790,7 +793,7 @@ function printSummary(site: Site, importing: Importing | null) {
                 'Ghost Admin and create the owner account.',
             ]
           : importing !== null
-            ? ["Sign in to Ghost Admin with the source site's staff accounts."]
+            ? importing.nextSteps
             : ['Open Ghost Admin and create the owner account.'];
     io.stdout(
         [
