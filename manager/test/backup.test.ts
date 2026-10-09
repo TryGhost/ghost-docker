@@ -38,12 +38,8 @@ const IMAGES = {
     db: `mysql:8.0.44@sha256:${'4'.repeat(64)}`,
     activitypub: `ghcr.io/tryghost/activitypub:1.2.14@sha256:${'5'.repeat(64)}`,
 };
-const HEALTHY = [
-    { Service: 'ghost', State: 'running', Health: 'healthy' },
-    { Service: 'db', State: 'running', Health: 'healthy' },
-]
-    .map((entry) => JSON.stringify(entry))
-    .join('\n');
+/** What `up` with no services named starts. */
+const SERVICES = ['ghost', 'db'];
 const DUMP = '-- MySQL dump\nCREATE TABLE `posts` (id int);\n-- Dump completed on 2026-10-09\n';
 /** The rows the scratch load reports, and the live database has. */
 const ROWS: Record<string, Record<string, number>> = {
@@ -59,6 +55,11 @@ let containers: CreatedContainer[];
 let dump: (database: string) => ProgramResult;
 let scratch: () => { status: number; stdout?: string; stderr?: string };
 let ups: ProgramResult[];
+/** What each `down` answers, in order; then success. */
+let downs: ProgramResult[];
+/** The services running, as the scripted Compose keeps them, and Ghost's health. */
+let running: Set<string>;
+let ghostHealth: string;
 let liveTables: (database: string) => number;
 let loaded: Record<string, Record<string, number>>;
 /** Mounts an override adds, by service. */
@@ -92,6 +93,9 @@ beforeEach(async () => {
     compose = [];
     containers = [];
     ups = [];
+    downs = [];
+    running = new Set();
+    ghostHealth = 'healthy';
     loaded = {};
     mounts = {};
     dump = () => ok(DUMP);
@@ -125,10 +129,40 @@ beforeEach(async () => {
         switch (args[0]) {
             case 'config':
                 return ok(resolvedProject(dir, IMAGES, mounts));
-            case 'up':
+            case 'up': {
+                // What `up --wait` starts stays running, healthy or not.
+                const named = args.slice(args.indexOf('--wait-timeout') + 2);
+                for (const service of named.length > 0 ? named : SERVICES) {
+                    running.add(service);
+                }
                 return ups.shift() ?? ok('');
+            }
+            case 'down': {
+                const answer = downs.shift() ?? ok('');
+                if (answer.exitCode === 0) {
+                    running.clear();
+                }
+                return answer;
+            }
+            case 'stop':
+                if (args.includes('db')) {
+                    running.delete('db');
+                } else {
+                    running.clear();
+                }
+                return ok('');
             case 'ps':
-                return ok(`${HEALTHY}\n`);
+                return ok(
+                    [...running]
+                        .map((service) =>
+                            JSON.stringify({
+                                Service: service,
+                                State: 'running',
+                                Health: service === 'ghost' ? ghostHealth : 'healthy',
+                            }),
+                        )
+                        .join('\n') + '\n',
+                );
             case 'exec': {
                 const database = args.find((arg) => arg.startsWith('DB='))?.slice(3) ?? 'ghost';
                 const script = args[args.indexOf('-c') + 1] ?? '';
@@ -150,6 +184,8 @@ beforeEach(async () => {
     mkdirSync(join(h.dir, 'data', 'ghost', 'themes', 'casper'), { recursive: true });
     writeFileSync(join(h.dir, 'data', 'ghost', 'themes', 'casper', 'package.json'), '{}');
     writeFileSync(join(h.dir, 'data', 'mysql', 'ibdata1'), 'the old database');
+    // The site is running.
+    running = new Set(SERVICES);
     compose = [];
     containers = [];
 });
@@ -231,17 +267,11 @@ describe('backup', () => {
     });
 
     test('a database that is not running is started for the dump, and stopped again', async () => {
-        const answer = h.daemon.composeRun!;
-        let started = false;
-        h.daemon.composeRun = (args, env, input) => {
-            started ||= args[0] === 'up';
-            return args[0] === 'ps' && !started
-                ? (compose.push(args), ok(''))
-                : answer(args, env, input);
-        };
+        running.clear();
         await backUp();
         assert.deepEqual(composed('up')[0]?.at(-1), 'db');
         assert.deepEqual(composed('stop'), [['stop', 'db']]);
+        assert.deepEqual([...running], []);
     });
 
     test('a dump that fails is an error, not a backup', async () => {
@@ -450,7 +480,7 @@ describe('restore over the site', () => {
 
         assert.deepEqual(
             compose.map((args) => args[0]),
-            ['down', 'config', 'up', 'exec', 'ps', 'exec', 'ps', 'up', 'ps'],
+            ['down', 'ps', 'config', 'up', 'exec', 'ps', 'exec', 'ps', 'up', 'ps'],
         );
         assert.equal(composed('up')[0]?.at(-1), 'db');
         // Loaded by the db container's client and counted over the site
@@ -465,10 +495,16 @@ describe('restore over the site', () => {
         );
         const project = JSON.parse(readSite('.ghost-docker.json')).site.project;
         assert.ok(h.network.queries.every(({ host }) => host === `db-${project}`));
+        // Each data directory moved aside on its own, then the copy removed.
         assert.deepEqual(
-            containers.map((spec) => spec.entrypoint[0]),
-            ['mv', 'rm'],
+            containers.map((spec) => [spec.entrypoint[0], spec.cmd[0]]),
+            [
+                ['mv', '/site/data/ghost'],
+                ['mv', '/site/data/mysql'],
+                ['rm', '/site/.ghost-docker-restore'],
+            ],
         );
+        assert.deepEqual([...running].sort(), ['db', 'ghost']);
         assert.match(result.stdout, /Restored http:\/\/localhost:\d+ from /);
     });
 
@@ -527,13 +563,108 @@ describe('restore over the site', () => {
         assert.match(again.stderr, /left from a restore that did not finish/);
     });
 
-    test('a site that fails to start needs the operator', async () => {
+    test('a site that cannot be stopped is left as it was, with nothing moved', async () => {
+        const root = await backUp();
+        containers = [];
+        downs = [failed(1, 'Error response from daemon: cannot stop container')];
+        const result = await h.run('restore', '--yes', root);
+        assert.equal(result.code, 1);
+        assert.match(result.stderr, /the site could not be stopped: .*cannot stop container/);
+        assert.match(result.stderr, /Nothing was moved or written/);
+        assert.match(result.stderr, /These of its services are still running: db, ghost\./);
+        assert.doesNotMatch(result.stderr, /rm -rf|sudo mv/);
+        assert.deepEqual([...running].sort(), ['db', 'ghost']);
+        assert.equal(readSite('data/mysql/ibdata1'), 'the old database');
+        assert.ok(!existsSync(join(h.dir, '.ghost-docker-restore')));
+        assert.deepEqual(containers, []);
+        assert.ok(!existsSync(join(h.dir, '.ghost-docker.lock')));
+    });
+
+    test('data that cannot all be moved aside is moved back, and nothing is written', async () => {
+        const root = await backUp();
+        const env = readSite('.env');
+        h.daemon.run = (spec) =>
+            spec.entrypoint[0] === 'mv' && spec.cmd[0] === '/site/data/mysql'
+                ? { status: 1, stderr: 'mv: cannot move: Device or resource busy' }
+                : rootContainer(spec);
+        const result = await h.run('restore', '--yes', root);
+        assert.equal(result.code, 1);
+        assert.match(result.stderr, /data\/mysql could not be moved aside: .*resource busy/);
+        assert.match(result.stderr, /What it had set aside is back in place/);
+        assert.match(result.stderr, /Its services are stopped\./);
+        assert.match(result.stderr, /the site’s files and data are as they were/);
+        assert.doesNotMatch(result.stderr, /rm -rf/);
+        assert.equal(readSite('data/ghost/images/2026/photo.jpg'), 'jpeg');
+        assert.equal(readSite('data/mysql/ibdata1'), 'the old database');
+        assert.equal(readSite('.env'), env);
+        assert.ok(!existsSync(join(h.dir, '.ghost-docker-restore')));
+        assert.deepEqual([...running], []);
+        assert.deepEqual(composed('up'), []);
+    });
+
+    test('data moved aside that cannot be moved back is named, and nothing is removed', async () => {
+        const root = await backUp();
+        h.daemon.run = (spec) =>
+            spec.entrypoint[0] === 'mv' && spec.cmd[0] !== '/site/data/ghost'
+                ? { status: 1, stderr: 'mv: Permission denied' }
+                : rootContainer(spec);
+        const result = await h.run('restore', '--yes', root);
+        assert.equal(result.code, 1);
+        assert.match(result.stderr, /could not all be moved back/);
+        assert.match(result.stderr, /data\/ghost could not be moved back: mv: Permission denied/);
+        assert.match(
+            result.stderr,
+            /\d\. sudo mv \.ghost-docker-restore\/data\/ghost data\/ghost\n/,
+        );
+        // data/mysql never moved, so nothing says to move or remove it.
+        assert.doesNotMatch(result.stderr, /rm -rf data|data\/mysql data/);
+        assert.equal(readSite('.ghost-docker-restore/data/ghost/images/2026/photo.jpg'), 'jpeg');
+        assert.equal(readSite('data/mysql/ibdata1'), 'the old database');
+        assert.match(result.stderr, /the restore failed, and the site needs the operator/);
+    });
+
+    test('a site that fails to start is stopped, and needs the operator', async () => {
         const root = await backUp();
         ups = [ok(''), failed(1, 'container ghost is unhealthy')];
         const result = await h.run('restore', '--yes', root);
         assert.equal(result.code, 1);
         assert.match(result.stderr, /container ghost is unhealthy/);
-        assert.match(result.stderr, /sudo mv \.ghost-docker-restore\/data\/\* data\//);
+        assert.match(
+            result.stderr,
+            /The restore did not complete, and the site needs you\.\nIts services are stopped\./,
+        );
+        assert.match(
+            result.stderr,
+            /sudo rm -rf data\/ghost && sudo mv \.ghost-docker-restore\/data\/ghost data\/ghost/,
+        );
+        assert.match(
+            result.stderr,
+            /sudo rm -rf data\/mysql && sudo mv \.ghost-docker-restore\/data\/mysql data\/mysql/,
+        );
+        assert.deepEqual([...running], []);
+        assert.equal(readSite('.ghost-docker-restore/data/mysql/ibdata1'), 'the old database');
+    });
+
+    test('a site that starts but does not verify is stopped, and needs the operator', async () => {
+        const root = await backUp();
+        ghostHealth = 'unhealthy';
+        const result = await h.run('restore', '--yes', root);
+        assert.equal(result.code, 1);
+        assert.match(result.stderr, /not reachable through its own ingress/);
+        assert.match(result.stderr, /Its services are stopped\./);
+        assert.deepEqual([...running], []);
+        assert.ok(existsSync(join(h.dir, '.ghost-docker-restore', 'files', '.env')));
+    });
+
+    test('restored services that cannot be stopped are named as running', async () => {
+        const root = await backUp();
+        ups = [ok(''), failed(1, 'container ghost is unhealthy')];
+        downs = [ok(''), failed(1, 'cannot stop container')];
+        const result = await h.run('restore', '--yes', root);
+        assert.equal(result.code, 1);
+        assert.match(result.stderr, /docker compose down failed: cannot stop container/);
+        assert.match(result.stderr, /These of its services are still running: db, ghost\./);
+        assert.deepEqual([...running].sort(), ['db', 'ghost']);
     });
 
     test('is refused while another operation holds the lock', async () => {
@@ -637,6 +768,7 @@ describe('restore into a new directory', () => {
         // Nothing to stop and nothing set aside.
         assert.deepEqual(composed('down'), []);
         assert.deepEqual(containers, []);
+        assert.deepEqual([...running].sort(), ['db', 'ghost']);
         assert.match(result.stdout, new RegExp(`into ${fresh}`));
     });
 

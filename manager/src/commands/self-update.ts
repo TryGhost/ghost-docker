@@ -13,19 +13,24 @@
 //      local changes, a downgrade, a Ghost older than this release runs.
 //      Then the lock.
 //   2. A snapshot of the operator's files, the metadata and, in image mode,
-//      every managed file this update writes, in UPDATE_DIR.
+//      every managed file this update writes, in UPDATE_DIR. Then a checked
+//      backup (backup.ts), because a release's services may migrate their
+//      databases, ActivityPub's among them, whether or not Ghost changes.
 //   3. In image mode, the managed files: an untouched one is replaced, an
 //      edited one is kept and the release's is written beside it as
 //      `<file>.new`. It never asks.
 //   4. Validate, pull, `up --wait`, verify as `check` does.
 //   5. On a failure, the snapshot is put back (in a checkout, the previous
-//      commit is checked out), the services are brought up again if they had
-//      been changed, and the outcome is reported as restored or as needing
-//      the operator. Never success because `up` returned zero.
+//      commit is checked out). Once the services had been changed, they are
+//      stopped first, the data they ran on is set aside, and the backup's
+//      databases and content are loaded (recovery.ts) before the previous
+//      release is started again. The outcome is reported as restored or as
+//      needing the operator. Never success because `up` returned zero.
 //   6. On success, the site's launcher is pinned to this image, the metadata
 //      records the release, and the snapshot is removed.
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
+import { readBackup, takeBackup } from '../backup.ts';
 import { compose, composeConfig, composeError, upAndWait } from '../compose.ts';
 import { git } from '../process.ts';
 import { z } from 'zod';
@@ -45,6 +50,13 @@ import {
     sha256,
     stackDir,
 } from '../payload.ts';
+import {
+    describeServices,
+    loadBackupData,
+    runningServices,
+    SetAside,
+    stopServices,
+} from '../recovery.ts';
 import { compareReleases, isRelease } from '../release.ts';
 import { refuseForeignProject } from '../project.ts';
 import { heading, ok, printChecks } from '../report.ts';
@@ -519,7 +531,7 @@ function report({ io, clone, from, to, payload, metadata }: Update, direction: D
 }
 
 /** The stage a failure happened in decides how much has to be put back. */
-type Stage = 'write' | 'validate' | 'pull' | 'start' | 'verify' | 'record';
+type Stage = 'backup' | 'write' | 'validate' | 'pull' | 'start' | 'verify' | 'record';
 
 async function apply(update: Update): Promise<number> {
     const { io, site, from, to, stack, payload } = update;
@@ -531,8 +543,14 @@ async function apply(update: Update): Promise<number> {
     snapshot.take();
     ok(io, UPDATE_DIR, 'the configuration, the metadata and the files this update writes');
 
-    let stage: Stage = 'write';
+    let stage: Stage = 'backup';
+    let backup: string | null = null;
     try {
+        heading(io, 'Backing up the site');
+        backup = await takeBackup({ io, site, metadata: update.metadata });
+        ok(io, 'backup', `${relative(dir, backup)}, checked`);
+
+        stage = 'write';
         heading(io, 'Writing the stack');
         if (payload === null) {
             ok(io, 'stack files', `the checkout's, at ${to.commit!.slice(0, 12)}`);
@@ -578,10 +596,10 @@ async function apply(update: Update): Promise<number> {
         stage = 'record';
         record(update);
     } catch (error) {
-        return recover(update, snapshot, stage, error);
+        return recover(update, snapshot, backup, stage, error);
     }
     snapshot.remove();
-    summarize(update);
+    summarize(update, backup);
     return EXIT.ok;
 }
 
@@ -629,19 +647,29 @@ function record({ io, site, metadata, clone, from, to, release, payload }: Updat
  * says which: restored, or needing the operator.
  */
 async function recover(
-    { io, site, clone, from, to }: Update,
+    { io, context, site, clone, from, to }: Update,
     snapshot: Snapshot,
+    backup: string | null,
     stage: Stage,
     error: unknown,
 ): Promise<number> {
     const dir = site.dir;
     io.stderr(`\n${describeError(error)}\n`);
+    // Once the release's services have started, they may have migrated the
+    // databases: those are put back from the backup, with nothing running.
     const servicesChanged = stage === 'start' || stage === 'verify' || stage === 'record';
     io.stderr(
         `\nThe update to ${describeStack(to)} did not complete. Putting ${describeStack(from)} back\n`,
     );
     const problems: string[] = [];
-    if (clone) {
+    const aside = new SetAside(io, context, dir, UPDATE_DIR);
+    if (servicesChanged) {
+        const stopped = await stopServices(io, dir, `Stopping ${describeStack(to)}`);
+        if (stopped.error !== null) {
+            problems.push(`the services could not be stopped: ${stopped.error}`);
+        }
+    }
+    if (problems.length === 0 && clone) {
         const checkout = await git(io, dir, ['checkout', '--quiet', '--detach', from.commit!]);
         if (!checkout.ok) {
             problems.push(
@@ -649,57 +677,85 @@ async function recover(
             );
         }
     }
-    try {
-        snapshot.restore();
-    } catch (restoreError) {
-        problems.push(`the files could not be put back: ${(restoreError as Error).message}`);
+    if (problems.length === 0) {
+        try {
+            snapshot.restore();
+        } catch (restoreError) {
+            problems.push(`the files could not be put back: ${(restoreError as Error).message}`);
+        }
     }
     if (problems.length === 0 && servicesChanged) {
         try {
+            const manifest = await readBackup(io, backup!);
+            await aside.moveData();
+            await loadBackupData(io, backup!, dir, manifest);
             await upAndWait(io, dir, `Starting ${describeStack(from)} again`);
+            await verifySite(io, dir);
         } catch (upError) {
             problems.push((upError as Error).message);
         }
     }
 
+    const kept =
+        backup === null
+            ? []
+            : [`The backup taken before the update is kept in ${relative(dir, backup)}.`];
     if (problems.length > 0) {
+        const running = await runningServices(io, dir);
         io.stderr(
             [
                 '',
                 'The site needs you. It could not be put back as it was:',
                 ...problems.map((problem) => `  ${problem}`),
+                describeServices(running),
                 '',
+                ...(backup !== null && servicesChanged
+                    ? [
+                          `Before the update, the site was backed up to ${backup}: its databases,`,
+                          'content and files. To put the site back from it, in the site directory:',
+                          ...(clone ? [`  git checkout ${from.commit}`] : []),
+                          `  ./ghost-docker restore --yes ${relative(dir, backup)}`,
+                          '',
+                      ]
+                    : kept),
                 `The files as they were before the update are in ${snapshot.root}/files.`,
+                ...(aside.data.length > 0
+                    ? [
+                          `The data the update's services ran on is in ${snapshot.root}/data, set aside.`,
+                      ]
+                    : []),
                 clone
                     ? `The checkout was at ${from.commit}; its manager image is ghost-docker:checkout-${from.commit!.slice(0, 12)}.`
                     : `The site ran the manager image ${from.image}; its launcher still runs it.`,
-                'Put them back, start the site with: docker compose up -d, and check it with ./ghost-docker check.',
-                `Then remove ${snapshot.root}.`,
+                `Once the site is as it should be (./ghost-docker check), remove ${snapshot.root}` +
+                    (aside.data.length > 0 ? ' (it needs sudo: MySQL owns part of it).' : '.'),
                 '',
             ].join('\n'),
         );
         throw new CliError('the update failed, and the site needs the operator.');
     }
-    snapshot.remove();
+    const left = await aside.remove();
     io.stderr(
         [
             '',
             `Restored: the site is back on ${describeStack(from)}, with its files as they were` +
                 (servicesChanged
-                    ? ', and its services running and healthy.'
+                    ? ', its databases and content from the backup, and its services running and healthy.'
                     : '. Its services were not changed.'),
             ...(clone
                 ? [
                       `The checkout is at ${from.commit!.slice(0, 12)} again, with a detached HEAD; the ref you checked out is unchanged.`,
                   ]
                 : []),
+            ...kept,
+            ...(left === null ? [] : [left]),
             '',
         ].join('\n'),
     );
     throw new CliError(`the update failed; ${describeStack(from)} was restored.`);
 }
 
-function summarize({ io, from, to, metadata, payload }: Update): void {
+function summarize({ io, site, from, to, metadata, payload }: Update, backup: string): void {
     const kept = (payload?.changes ?? []).filter((change) => change.action === 'keep');
     io.stdout(
         [
@@ -708,6 +764,7 @@ function summarize({ io, from, to, metadata, payload }: Update): void {
             '',
             `  Ghost        ${metadata.ghost.version}, ${metadata.ghost.image}@${metadata.ghost.digest}, unchanged`,
             ...(to.image ? [`  Manager      ${to.image}`] : []),
+            `  Backup       ${relative(site.dir, backup)}, of the site before the update; kept until you remove it`,
             ...(kept.length > 0
                 ? [
                       '',

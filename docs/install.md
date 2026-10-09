@@ -440,7 +440,10 @@ In order:
    automatically.
 3. **A snapshot** of `.env`, `ghost.env`, the metadata, `compose.override.yml`,
    `caddy/sites/`, `caddy/custom/`, `caddy/global/` and every file the update
-   writes, in `.ghost-docker-update/`.
+   writes, in `.ghost-docker-update/`. Then **a backup**, as `backup` takes
+   one, in `backups/`: a release's services can migrate their databases
+   (ActivityPub's, for one) even though Ghost does not change. It is kept
+   until you remove it, and `self-update` names it.
 4. **The stack's files.** A file the manager wrote and nobody has edited is
    replaced. An edited one (its checksum is not the one recorded when it was
    written) is kept, the release's version is written beside it as
@@ -457,12 +460,17 @@ In order:
    one before it, and the files' new checksums. The snapshot is removed.
 
 When a step after the snapshot fails, the snapshot is put back. When the
-services had been changed, the previous release is started again and must
-become healthy. The update then says either **restored** (the site is back on
-the release it ran, its files as they were) or that **the site needs you**,
-with what could not be put back. In that case the snapshot is left in
-`.ghost-docker-update/` and the site's launcher still runs the previous image.
-An update is never reported as done because `up` returned zero.
+services had been changed, they are stopped first; `data/ghost` and
+`data/mysql` are moved aside into `.ghost-docker-update/data/`, the backup's
+content and databases are loaded as `restore` loads them, and the previous
+release is started again and must become healthy and verify. The update then
+says either **restored** (the site is back on the release it ran, its files,
+databases and content as they were) or that **the site needs you**, with what
+could not be put back, which of its services are running, and the
+`./ghost-docker restore` command that puts the site back from the backup. In
+that case the snapshot is left in `.ghost-docker-update/` and the site's
+launcher still runs the previous image. An update is never reported as done
+because `up` returned zero.
 
 Exit statuses: `0` updated, or nothing to update; `1` refused or failed; `2` a
 usage error.
@@ -577,11 +585,15 @@ In order:
    ingress as `check` does. `.ghost-docker-restore/` is removed.
 
 The outcome is **restored**, or **the site needs you**, with what failed and
-what to do. A restore that fails part-way does not put the old site back by
-itself: over a site, the site as it was is in `.ghost-docker-restore/`
-(`files/` and `data/`), with the steps to put it back; `check` reports the
-directory until it is removed, and another restore is refused while it is
-there. Removing it needs `sudo`, because MySQL owns part of it.
+what to do. When the site cannot be stopped, nothing is moved, and the restore
+says which services are still running. When moving it aside fails, what had
+been moved is moved back before anything is written. Once the backup is being
+written, a restore that fails stops the services, so nothing writes to a site
+that was not verified, and it does not put the old site back by itself: over
+a site, the site as it was is in `.ghost-docker-restore/` (`files/` and
+`data/`), with the steps to put it back, naming only what is there; `check`
+reports the directory until it is removed, and another restore is refused
+while it is there. Removing it needs `sudo`, because MySQL owns part of it.
 
 Exit statuses, for both: `0` done; `1` refused or failed; `2` a usage error,
 or a restore over a site without `--yes` and no terminal to ask.

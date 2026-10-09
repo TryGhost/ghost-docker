@@ -8,31 +8,24 @@
 //      directory's; the overrides in effect are the ones the backup was
 //      taken with. Then the lock, and the
 //      recorded images are pulled before anything stops.
-//   2. Over the site itself: the site is stopped, and its files and data are
-//      moved aside into RESTORE_DIR, which is kept until the restore has
-//      been verified.
+//   2. Over the site itself: the site is stopped, and its data and files are
+//      moved aside into RESTORE_DIR, one at a time (recovery.ts), which is
+//      kept until the restore has been verified. A failure here, before
+//      anything is written, moves back what had been moved.
 //   3. The backup's files are written, with the site's own path, and Compose
 //      must resolve exactly the recorded images. The content is unpacked,
 //      a fresh MySQL is started, and each dump loaded as the site's user and
 //      its rows counted against the manifest.
 //   4. `up --wait`, then verify as `check` does.
 //
-// The outcome is done, or needs the operator with what to do: a restore
-// that fails part-way does not put the old site back by itself.
-import { cpSync, existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
+// The outcome is done, or needs the operator with what to do: a restore that
+// fails once it has written stops the services and does not put the old site
+// back by itself. What it says to do names only copies that exist.
+import { cpSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
-import * as tar from 'tar';
-import { asRoot, removeAsRoot } from './asroot.ts';
 import { backupSiteFiles, readBackup } from './backup.ts';
 import { SITE_FILES_DIR, type BackupManifest } from './backup/manifest.ts';
-import {
-    ALL_PROFILES,
-    composeDown,
-    composeError,
-    composeFileList,
-    composeUp,
-    upAndWait,
-} from './compose.ts';
+import { composeFileList, upAndWait } from './compose.ts';
 import type { Context } from './context.ts';
 import {
     DaemonError,
@@ -43,8 +36,7 @@ import {
 } from './docker/client.ts';
 import * as env from './env.ts';
 import { CliError, describeError, UsageError } from './errors.ts';
-import { atomicWrite, copyPresent, readIfExists } from './fs.ts';
-import { checkRows, loadFile } from './import/database.ts';
+import { atomicWrite, readIfExists } from './fs.ts';
 import type { Io } from './io.ts';
 import { acquireLock } from './lock.ts';
 import { readMetadata, siteFiles, writeMetadata } from './meta.ts';
@@ -52,6 +44,13 @@ import { isCheckout, LAUNCHER } from './payload.ts';
 import { git } from './process.ts';
 import { PROJECT_LABEL, refuseForeignProject } from './project.ts';
 import { takenPorts } from './ports.ts';
+import {
+    describeServices,
+    loadBackupData,
+    runningServices,
+    SetAside,
+    stopServices,
+} from './recovery.ts';
 import { heading, ok, printChecks } from './report.ts';
 import { insideSite, resolveSite } from './resolved.ts';
 import {
@@ -77,9 +76,6 @@ export interface RestoreInput {
     /** Restore over the site without asking. */
     readonly yes: boolean;
 }
-
-/** The part of a restore a failure happened in decides what the operator is told. */
-type Stage = 'prepare' | 'replace' | 'start';
 
 export async function restoreSite({ io, context, root, yes }: RestoreInput): Promise<void> {
     const dir = context.siteDir;
@@ -111,7 +107,9 @@ export async function restoreSite({ io, context, root, yes }: RestoreInput): Pro
     }
 
     const lock = acquireLock(dir, `restore from ${basename(root)}`);
-    let stage: Stage = 'prepare';
+    const aside = target === 'over' ? new SetAside(io, context, dir, RESTORE_DIR) : null;
+    // Set once the backup's files or data are being written into the site.
+    let writing = false;
     try {
         heading(io, 'Pulling the recorded images');
         for (const image of new Set(Object.values(manifest.images))) {
@@ -119,32 +117,36 @@ export async function restoreSite({ io, context, root, yes }: RestoreInput): Pro
         }
         ok(io, 'images', `${Object.keys(manifest.images).length} services, as the backup records`);
 
-        stage = 'replace';
-        if (target === 'over') {
-            await setAside(io, context, dir);
+        if (aside !== null) {
+            await setAside(io, dir, aside);
         }
+        writing = true;
         heading(io, 'Restoring the site');
         writeSiteFiles(io, root, dir, manifest);
         await checkImages(io, dir, manifest);
-        await restoreContent(io, root, dir, manifest);
-        await restoreDatabases(io, root, dir, manifest);
+        await loadBackupData(io, root, dir, manifest);
 
-        stage = 'start';
         heading(io, 'Starting the services');
         await upAndWait(io, dir, 'Starting the services and waiting for them to be healthy');
         ok(io, 'services', 'healthy, by their own health checks');
         await verifySite(io, dir);
     } catch (error) {
-        if (stage === 'prepare') {
-            throw error;
+        if (writing) {
+            await needsOperator(io, dir, aside, error);
         }
-        needsOperator(io, dir, target, error);
+        if (aside !== null && existsSync(aside.root)) {
+            await putBack(io, dir, aside, error);
+        }
+        throw error;
     } finally {
         lock.release();
     }
 
-    if (target === 'over') {
-        await removeAside(io, context, dir);
+    if (aside !== null) {
+        const left = await aside.remove();
+        if (left !== null) {
+            printChecks(io, [{ status: 'warn', label: RESTORE_DIR, detail: left }]);
+        }
     }
     summarize(io, dir, root, manifest, target);
 }
@@ -348,50 +350,29 @@ async function ensureImage(io: Io, reference: string): Promise<void> {
 // --- Replacing the site -----------------------------------------------------------
 
 /**
- * Stops the site, then moves its files and data aside. The data belongs to
- * the containers' users, so it is moved as root, in a short-lived container
- * that does only that.
+ * Stops the site, then moves its data and files aside, each recorded as it
+ * is done. Stopping that fails moves nothing.
  */
-async function setAside(io: Io, context: Context, dir: string): Promise<void> {
+async function setAside(io: Io, dir: string, aside: SetAside): Promise<void> {
     heading(io, 'Setting the current site aside');
-    const down = await io.busy('Stopping the site', () =>
-        composeDown(io, dir, { profiles: ALL_PROFILES }),
-    );
-    if (down.exitCode !== 0) {
-        throw new CliError(`the site could not be stopped: ${composeError(down, 2)}`);
+    const stopped = await stopServices(io, dir);
+    if (stopped.error !== null) {
+        throw new CliError(
+            `the site could not be stopped: ${stopped.error}\n` +
+                `  Nothing was moved or written. ${describeServices(stopped.running)}`,
+        );
     }
     ok(io, 'stopped', 'its containers removed; its volumes, such as Caddy’s certificates, kept');
 
-    const aside = join(dir, RESTORE_DIR);
-    mkdirSync(join(aside, 'files'), { recursive: true, mode: 0o700 });
-    mkdirSync(join(aside, 'data'), { mode: 0o700 });
-    const data = DATA_DIRS.filter((path) => existsSync(join(dir, path)));
-    if (data.length > 0) {
-        if (context.image === null) {
-            throw new CliError(
-                'the launcher did not say which image this is, so the data cannot be moved aside',
-            );
-        }
-        const moved = await io.busy('Moving the data aside', () =>
-            asRoot(io, context.image!, dir, ['mv', '--'], [...data, `${RESTORE_DIR}/data/`]),
-        );
-        if (moved.status !== 0) {
-            throw new CliError(
-                `the data could not be moved aside: ${(moved.stderr || moved.stdout).trim() || `mv exited ${moved.status}`}`,
-            );
-        }
-    }
+    await aside.moveData();
     const metadata = readMetadata(dir);
-    const kept = siteFiles(metadata.state === 'present' ? metadata.metadata : null);
     // The stack files of the release the site ran are replaced by the
     // backup's; the operator's directories are emptied, then refilled.
-    for (const path of copyPresent(dir, kept, join(aside, 'files'))) {
-        rmSync(join(dir, path), { recursive: true, force: true });
-    }
+    aside.keepFiles(siteFiles(metadata.state === 'present' ? metadata.metadata : null));
     ok(
         io,
         RESTORE_DIR,
-        `${data.join(' and ')} and the site's files, kept until the restore is verified`,
+        `${aside.data.length > 0 ? `${aside.data.join(' and ')} and ` : ''}the site's files, kept until the restore is verified`,
     );
 }
 
@@ -445,122 +426,77 @@ async function checkImages(io: Io, dir: string, manifest: BackupManifest): Promi
     ok(io, 'pinned', 'Compose resolves every image the backup records');
 }
 
-async function restoreContent(
-    io: Io,
-    root: string,
-    dir: string,
-    manifest: BackupManifest,
-): Promise<void> {
-    for (const data of DATA_DIRS) {
-        mkdirSync(join(dir, data), { recursive: true, mode: 0o755 });
+// --- The outcome ----------------------------------------------------------------
+
+/**
+ * A failure before anything was written: what had been set aside is moved
+ * back. The services stay stopped, and are reported as observed.
+ */
+async function putBack(io: Io, dir: string, aside: SetAside, error: unknown): Promise<never> {
+    io.stderr(`\n${describeError(error)}\n`);
+    const problems = await aside.putBack();
+    const running = await runningServices(io, dir);
+    if (problems.length === 0) {
+        io.stderr(
+            [
+                '',
+                'The restore did not write anything. What it had set aside is back in place.',
+                describeServices(running),
+                ...(running !== null && running.length === 0
+                    ? ['Start the site again with: docker compose up -d']
+                    : []),
+                '',
+            ].join('\n'),
+        );
+        throw new CliError('the restore failed; the site’s files and data are as they were.');
     }
-    const content = join(dir, DATA_DIRS[0]);
-    await io.busy(`Unpacking the content into ${DATA_DIRS[0]}`, () =>
-        tar.x({
-            file: join(root, manifest.content.file),
-            cwd: content,
-            strict: true,
-            preserveOwner: false,
-        }),
+    io.stderr(
+        [
+            '',
+            'The restore did not write anything, and the site needs you: what it had set aside',
+            'could not all be moved back.',
+            ...problems.map((problem) => `  ${problem}`),
+            describeServices(running),
+            `What is still set aside is in ${aside.root}:`,
+            ...aside.instructions(false),
+            '',
+        ].join('\n'),
     );
-    ok(io, 'content', `${manifest.content.entries} entries in ${DATA_DIRS[0]}`);
+    throw new CliError('the restore failed, and the site needs the operator.');
 }
 
 /**
- * A fresh MySQL, whose first start creates the site's databases and user,
- * then each dump loaded as that user and its rows counted.
+ * A failure once the backup was being written: the services are stopped, so
+ * nothing writes to a site that is not verified, and the operator is told
+ * what is where.
  */
-async function restoreDatabases(
+async function needsOperator(
     io: Io,
-    root: string,
     dir: string,
-    manifest: BackupManifest,
-): Promise<void> {
-    const db = await io.busy('Starting a new database', () => composeUp(io, dir, ['db']));
-    if (db.exitCode !== 0) {
-        throw new CliError(`the database did not become ready: ${composeError(db)}`);
-    }
-    const profiles = readSettings(dir)?.get('COMPOSE_PROFILES') ?? '';
-    for (const database of manifest.databases) {
-        const load = await loadFile(
-            io,
-            dir,
-            { profiles, database: database.name },
-            {
-                root,
-                file: database.file,
-                filter: true,
-                spinner: `Loading the ${database.name} database`,
-            },
-        );
-        if (load.exitCode !== 0) {
-            throw new CliError(
-                `the ${database.name} database could not be loaded. MySQL said:\n  ${composeError(load, 4).replaceAll('\n', '\n  ')}`,
-            );
-        }
-        const tables = Object.keys(database.tables);
-        if (tables.length > 0) {
-            await checkRows(
-                io,
-                dir,
-                {
-                    profiles,
-                    database: database.name,
-                    failure: `the ${database.name} database's tables could not be counted`,
-                },
-                database.tables,
-                'the backup',
-                `the loaded ${database.name} database does not match the backup`,
-            );
-        }
-        ok(
-            io,
-            database.name,
-            `loaded; every table's rows match the backup (${tables.length} tables)`,
-        );
-    }
-}
-
-// --- The outcome ----------------------------------------------------------------
-
-/** The site as it was is no longer needed once the restore is verified. */
-async function removeAside(io: Io, context: Context, dir: string): Promise<void> {
-    const aside = join(dir, RESTORE_DIR);
-    await removeAsRoot(io, context.image, dir, [RESTORE_DIR]);
-    if (existsSync(aside)) {
-        printChecks(io, [
-            {
-                status: 'warn',
-                label: RESTORE_DIR,
-                detail: `the site as it was before the restore could not be removed from ${aside}; remove it with sudo`,
-            },
-        ]);
-    }
-}
-
-function needsOperator(io: Io, dir: string, target: Target, error: unknown): never {
+    aside: SetAside | null,
+    error: unknown,
+): Promise<never> {
     io.stderr(`\n${describeError(error)}\n`);
-    const aside = join(dir, RESTORE_DIR);
+    const stopped = await stopServices(io, dir, 'Stopping the restored services');
+    const state = [
+        ...(stopped.error === null ? [] : [`docker compose down failed: ${stopped.error}`]),
+        describeServices(stopped.running),
+    ];
     io.stderr(
-        (target === 'over'
+        (aside !== null
             ? [
                   '',
-                  'The restore did not complete, and the site needs you. It is stopped.',
-                  `The site as it was before the restore is in ${aside}:`,
-                  '  files/   its configuration, metadata and stack files',
-                  '  data/    its data/ghost and data/mysql',
-                  'To put it back, in the site directory:',
-                  '  1. docker compose down',
-                  `  2. sudo rm -rf data/ghost data/mysql && sudo mv ${RESTORE_DIR}/data/* data/`,
-                  `  3. cp -a ${RESTORE_DIR}/files/. .`,
-                  '  4. docker compose up -d, then ./ghost-docker check',
-                  `  5. sudo rm -rf ${RESTORE_DIR}`,
+                  'The restore did not complete, and the site needs you.',
+                  ...state,
+                  `The site as it was before the restore is in ${aside.root}:`,
+                  ...aside.instructions(true),
                   `Or fix what failed, then remove ${RESTORE_DIR} only once you no longer need it, and restore again.`,
                   '',
               ]
             : [
                   '',
                   `The restore into ${dir} did not complete, and needs you. Nothing else was changed.`,
+                  ...state,
                   'To try again, restore into a new, empty directory, or empty this one first:',
                   '  docker compose down, then remove what the restore wrote (data/ needs sudo: MySQL owns part of it).',
                   '',
