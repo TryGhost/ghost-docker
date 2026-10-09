@@ -4,10 +4,10 @@ Configuration to run Ghost and its services with Docker Compose.
 
 > **This is the `next-docker` development branch.** It is being rebuilt around
 > a manager image: a small CLI in a container, started by a bash launcher that
-> uses Docker. It installs local and production sites, imports local Ghost-CLI
-> sites, backs up and restores them, and updates image installations between
-> beta releases. Production import and migration from the released `main` layout
-> remain on the [roadmap](docs/ghost-cli-replacement.md). For a supported setup
+> uses Docker. It installs local and production sites, imports local and production
+> Ghost-CLI sites, backs up and restores them, and updates image installations
+> between beta releases. Migration from the released `main` layout remains on
+> the [roadmap](docs/ghost-cli-replacement.md). For a supported setup
 > today, use the `main` branch.
 
 ## The launcher

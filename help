@@ -5,7 +5,7 @@ GHOST DOCKER
 
 MANAGER COMMANDS:
   ./ghost-docker help               # Supported commands and options
-  ./ghost-docker install --help     # Installation and local bundle import
+  ./ghost-docker install --help     # Installation and bundle import
   ./ghost-docker check              # Diagnose this site
 
 DAILY OPERATION (Docker Compose, from the site directory):

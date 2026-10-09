@@ -493,6 +493,141 @@ describe('importing a local site', () => {
     });
 });
 
+describe('importing a production site', () => {
+    const routes = () => readFileSync(join(h.dir, 'caddy', 'sites', 'site.caddy'), 'utf8');
+
+    test("it is served on the bundle's domains, with its configuration and its staff", async () => {
+        const result = await install('--import', bundle(fixture('mysql-dump')), '--no-start');
+        assert.equal(result.code, 0, result.stderr);
+        assert.match(
+            result.stdout,
+            /ok +mysql-dump +a production site, Ghost 6\.61\.0, https:\/\/example\.com/,
+        );
+        assert.equal(setting('COMPOSE_PROFILES'), 'production');
+        assert.equal(setting('SITE_MODE'), 'production');
+        assert.equal(setting('URL'), 'https://example.com');
+        assert.equal(setting('ADMIN_URL'), 'https://admin.example.com');
+        assert.equal(setting('COMPOSE_PROJECT_NAME'), 'ghost-example-com');
+        assert.equal(setting('GHOST_VERSION'), `${VERSION}-next-alpine`);
+        // Its real mail settings travel: this is the site, moved.
+        assert.equal(ghostSetting('mail__options__auth__pass'), 'pa$$word \\" #\n');
+        assert.match(routes(), /^example\.com, admin\.example\.com \{$/m);
+        const meta = JSON.parse(readFileSync(join(h.dir, '.ghost-docker.json'), 'utf8'));
+        assert.deepEqual(
+            [meta.mode, meta.site.domain, meta.site.adminDomain],
+            ['production', 'example.com', 'admin.example.com'],
+        );
+        // The database was loaded on the production profile.
+        const ups = calls.filter(({ args }) => args[0] === 'up');
+        assert.deepEqual(
+            ups.map(({ args, profiles }) => [args.at(-1), profiles]),
+            [['db', 'production']],
+        );
+        assert.deepEqual(loaded, [FILTERED_SQL]);
+        assert.match(result.stdout, /Ghost Admin +https:\/\/admin\.example\.com\/ghost\//);
+    });
+
+    test('started, the next steps are DNS and the staff accounts it brought', async () => {
+        const original = h.daemon.composeRun!;
+        h.daemon.composeRun = (args, environment, input) =>
+            args[0] === 'ps'
+                ? ok(
+                      ps(
+                          { Service: 'db', Health: 'healthy' },
+                          { Service: 'ghost', Health: 'healthy' },
+                          { Service: 'caddy', Health: 'healthy' },
+                      ),
+                  )
+                : original(args, environment, input);
+        const result = await install('--import', bundle(fixture('mysql-dump')));
+        assert.equal(result.code, 0, result.stderr);
+        assert.match(result.stdout, /Point the domain's DNS at this host/);
+        assert.match(result.stdout, /Sign in to Ghost Admin with the source site's staff accounts/);
+        assert.doesNotMatch(result.stdout, /create the owner account/);
+    });
+
+    test('options name other domains, and the ACME account', async () => {
+        const result = await install(
+            '--import',
+            bundle(fixture('mysql-dump')),
+            '--domain',
+            'Staging.example.com',
+            '--admin-domain',
+            'admin.staging.example.com',
+            '--email',
+            'ops@example.com',
+            '--no-start',
+        );
+        assert.equal(result.code, 0, result.stderr);
+        assert.equal(setting('URL'), 'https://staging.example.com');
+        assert.equal(setting('ADMIN_URL'), 'https://admin.staging.example.com');
+        assert.equal(setting('COMPOSE_PROJECT_NAME'), 'ghost-staging-example-com');
+        assert.match(routes(), /^staging\.example\.com, admin\.staging\.example\.com \{$/m);
+        assert.match(routes(), /^\ttls ops@example\.com$/m);
+    });
+
+    test("on another domain, the source's admin domain is dropped, with a warning", async () => {
+        const result = await install(
+            '--import',
+            bundle(fixture('mysql-dump')),
+            '--domain',
+            'staging.example.com',
+            '--no-start',
+        );
+        assert.equal(result.code, 0, result.stderr);
+        assert.equal(setting('ADMIN_URL'), undefined);
+        assert.match(
+            result.stderr,
+            /warning +admin domain +not carried: the source served Ghost Admin at https:\/\/admin\.example\.com/,
+        );
+        assert.match(routes(), /^staging\.example\.com \{$/m);
+        assert.match(result.stdout, /Ghost Admin +https:\/\/staging\.example\.com\/ghost\//);
+    });
+
+    test("on the source's own domain, named or not, its admin domain is kept", async () => {
+        const result = await install(
+            '--import',
+            bundle(fixture('mysql-dump')),
+            '--domain',
+            'Example.com',
+            '--no-start',
+        );
+        assert.equal(result.code, 0, result.stderr);
+        assert.equal(setting('ADMIN_URL'), 'https://admin.example.com');
+        assert.doesNotMatch(result.stderr, /admin domain/);
+    });
+
+    test('a source without an admin domain has none', async () => {
+        const result = await install(
+            '--import',
+            bundle({ ...fixture('mysql-dump'), adminUrl: null }),
+            '--no-start',
+        );
+        assert.equal(result.code, 0, result.stderr);
+        assert.equal(setting('ADMIN_URL'), undefined);
+        assert.match(result.stdout, /Ghost Admin +https:\/\/example\.com\/ghost\//);
+    });
+
+    test('a mysql-data bundle of a production site is imported too', async () => {
+        const result = await install(
+            '--import',
+            bundle({ ...fixture('mysql-data'), sourceInstallType: 'production' }),
+            '--no-start',
+        );
+        assert.equal(result.code, 0, result.stderr);
+        assert.equal(setting('COMPOSE_PROFILES'), 'production');
+        assert.match(result.stdout, /every count matches the bundle/);
+    });
+
+    test('a failure removes what it created, leaving the directory as it was', async () => {
+        load = () => failed(1, 'ERROR 1064 (42000) at line 1');
+        const result = await install('--import', bundle(fixture('mysql-dump')));
+        assert.equal(result.code, 1);
+        assert.match(result.stderr, /is as it was before the import/);
+        assert.deepEqual(siteFiles(), []);
+    });
+});
+
 describe('refusals that change nothing', () => {
     const refusedWith = async (args: string[], code: number, pattern: RegExp) => {
         const result = await install(...args);
@@ -504,10 +639,19 @@ describe('refusals that change nothing', () => {
 
     test('options that cannot be combined with an import are usage errors', async () => {
         const path = bundle(local('mysql-data'));
+        for (const option of ['--domain', '--admin-domain']) {
+            await refusedWith(
+                ['--import', path, option, 'example.com'],
+                2,
+                new RegExp(
+                    `${option} applies to production sites, and this bundle is of a local site`,
+                ),
+            );
+        }
         await refusedWith(
-            ['--import', path, '--domain', 'example.com'],
+            ['--import', path, '--email', 'ops@example.com'],
             2,
-            /--domain cannot be combined with --import.*\n.*S5e/,
+            /--email applies to production sites, and this bundle is of a local site/,
         );
         await refusedWith(
             ['--import', path, '--with', 'mailpit,activitypub'],
@@ -522,13 +666,74 @@ describe('refusals that change nothing', () => {
         );
     });
 
-    test('a production bundle is refused until production import exists', async () => {
+    test('a production bundle is not imported as a local site, or with Mailpit', async () => {
+        const path = bundle(fixture('mysql-dump'));
         await refusedWith(
-            ['--import', bundle(fixture('mysql-dump'))],
-            1,
-            /a production site .* this release imports local sites/,
+            ['--import', path, '--local'],
+            2,
+            /--local cannot be combined with this bundle: it is of a production site \(https:\/\/example\.com\)/,
+        );
+        await refusedWith(
+            ['--import', path, '--with', 'mailpit'],
+            2,
+            /--with mailpit is for local sites only/,
+        );
+        await refusedWith(
+            ['--import', path, '--admin-domain', 'example.com'],
+            2,
+            /--admin-domain must differ from --domain/,
         );
     });
+
+    test('a portable bundle of a production site is refused, naming the Ghost Admin route', async () => {
+        await refusedWith(
+            ['--import', bundle({ ...fixture('portable'), sourceInstallType: 'production' })],
+            1,
+            /a portable bundle of a production site \(https:\/\/example\.com\)[\s\S]*Settings,\n +Import\/Export[\s\S]*Nothing has been changed/,
+        );
+    });
+
+    for (const [field, url, why] of [
+        ['url', 'http://example.com', /it is plain http/],
+        ['url', 'https://example.com:2368', /it has a port, 2368/],
+        ['url', 'https://example.com/blog/', /it has a path, \/blog\//],
+        ['adminUrl', 'http://admin.example.com', /it is plain http/],
+    ] as const) {
+        test(`a production site at ${url} is refused, naming the option that serves it`, async () => {
+            const option = field === 'url' ? '--domain' : '--admin-domain';
+            const host = new URL(url).hostname;
+            await refusedWith(
+                ['--import', bundle({ ...fixture('mysql-dump'), [field]: url })],
+                1,
+                why,
+            );
+            const result = await install(
+                '--import',
+                bundle({ ...fixture('mysql-dump'), [field]: url }, 'again'),
+            );
+            assert.match(
+                result.stderr,
+                new RegExp(
+                    `the bundle's ${field} is ${url.replaceAll('/', '\\/').replaceAll('.', '\\.')}, which this production site cannot be served at`,
+                ),
+            );
+            assert.match(
+                result.stderr,
+                new RegExp(`add ${option} ${host.replaceAll('.', '\\.')}\\.\\n`),
+            );
+            assert.ok(!existsSync(join(h.dir, '.import')), 'staging is left');
+
+            // Naming the domain serves it there instead.
+            const served = await install(
+                '--import',
+                bundle({ ...fixture('mysql-dump'), [field]: url }, 'served'),
+                option,
+                host,
+                '--no-start',
+            );
+            assert.equal(served.code, 0, served.stderr);
+        });
+    }
 
     test('a bundle that is refused names why', async () => {
         const path = bundle(local('mysql-data'));

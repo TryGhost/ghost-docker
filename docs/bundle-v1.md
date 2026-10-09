@@ -10,10 +10,14 @@ depends only on zod so the exporter can share it; importer policy stays outside
 it. Bundle v1 is not frozen: exporter, importer, documentation and fixtures
 change together, without draft-format adapters.
 
-Local `mysql-dump`, `mysql-data` and `portable` bundles are supported. For a
-portable bundle the manager installs the site and content; JSON and members CSV
-are imported through Ghost Admin. Production import remains [S5e roadmap
-work](ghost-cli-replacement.md#s5e--production-import-and-cutover).
+Local `mysql-dump`, `mysql-data` and `portable` bundles are supported, and
+production `mysql-dump` and `mysql-data` ones. For a portable bundle the manager
+installs the site and content; JSON and members CSV are imported through Ghost
+Admin. A portable bundle of a production site is refused. `sourceInstallType`
+selects the site mode; a production site is served on the hosts of `url` and
+`adminUrl` unless the operator names others (on another domain, `adminUrl` is
+not carried), and a URL with plain `http`, a
+port or a path is refused rather than served at another address.
 
 ## Bundle kinds
 
