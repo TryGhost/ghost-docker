@@ -12,9 +12,10 @@
 #
 # It pulls images, starts containers, and binds host ports, including 80 and
 # 443 (the checks that need those fail when something else holds them, or
-# are skipped with GD_E2E_ALLOW_SKIP=1). Production sites use the name ghost-e2e.test, which no CA will issue
-# for, so HTTPS is pending exactly as it is before a real domain's DNS exists;
-# their ACME requests go to Let's Encrypt's staging service.
+# are skipped with GD_E2E_ALLOW_SKIP=1). Production sites use the name
+# ghost-e2e.test, which no CA will issue for, so HTTPS is pending exactly as
+# it is before a real domain's DNS exists; their ACME requests go to Let's
+# Encrypt's staging service.
 #
 # Exits non-zero at the first check that fails, naming it.
 set -euo pipefail
