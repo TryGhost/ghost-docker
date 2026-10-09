@@ -114,6 +114,8 @@ const PULL_MS = 30 * 60 * 1000;
 /** The optional profiles `main` had. */
 const MAIN_PROFILES = ['analytics', 'activitypub'];
 const HOSTED_ACTIVITYPUB = 'https://ap.ghost.org';
+/** Where main's Ghost-CLI-layout image is installed, its content included. */
+const MAIN_GHOST_INSTALL = '/var/lib/ghost';
 /** Where preflight stages the new `.env` and Caddy files, inside the site so the daemon sees them. */
 const STAGED = 'staged';
 
@@ -183,26 +185,25 @@ export async function migrateReleasedMain(
                 '    curl -fsSL https://docker.ghost.org/install.sh | bash -s -- self-update',
         );
     }
-    if (existsSync(join(dir, UPDATE_DIR))) {
-        refuse(
-            `${join(dir, UPDATE_DIR)} is left from a migration or update that did not finish, and holds\n` +
-                '  the files it would have put back. Once the site is as it should be, remove it and run this again.',
-        );
-    }
-
-    const staged = join(dir, UPDATE_DIR, STAGED);
-    let plan: Plan;
-    try {
-        plan = await prepare(io, context, site, requested, staged);
-    } finally {
-        rmSync(join(dir, UPDATE_DIR), { recursive: true, force: true });
-    }
-    if (check) {
-        return report(plan);
-    }
+    // Held from before anything is staged, --check included: the staging
+    // directory is the one the snapshot is kept in, and a second run must
+    // never remove another's.
     const lock = acquireLock(dir, `migration ${MIGRATION} from ${FROM}`);
     try {
-        return await apply(plan);
+        if (existsSync(join(dir, UPDATE_DIR))) {
+            refuse(
+                `${join(dir, UPDATE_DIR)} is left from a migration or update that did not finish, and holds\n` +
+                    '  the files it would have put back. Once the site is as it should be, remove it and run this again.',
+            );
+        }
+        const staged = join(dir, UPDATE_DIR, STAGED);
+        let plan: Plan;
+        try {
+            plan = await prepare(io, context, site, requested, staged);
+        } finally {
+            rmSync(join(dir, UPDATE_DIR), { recursive: true, force: true });
+        }
+        return check ? report(plan) : await apply(plan);
     } finally {
         lock.release();
     }
@@ -361,7 +362,19 @@ async function prepare(
         files: [join(stack, COMPOSE_FILE), ...before.files.slice(1)],
         envFile: join(staged, ENV_FILE),
     };
-    atomicWrite(inputs.envFile, env.serializeAll(generated), PRIVATE);
+    // With every setting .env had, so an override requiring one of them
+    // (`${SMTP_HOST:?...}`) resolves as it does now.
+    const generatedKeys = new Set(generated.map(([key]) => key));
+    atomicWrite(
+        inputs.envFile,
+        env.serializeAll([
+            ...generated,
+            ...legacy.keys
+                .filter((key) => !generatedKeys.has(key))
+                .map((key): [string, string] => [key, old[key]!]),
+        ]),
+        PRIVATE,
+    );
     const draft = await composeConfig(io, dir, inputs);
     const newVariables = await composeVariables(io, dir, inputs);
     if (!draft.ok || newVariables === null) {
@@ -381,7 +394,7 @@ async function prepare(
     refuseInterpolated(text, new Set(legacy.keys.filter(isOperatorKey)));
     const split = splitLegacyEnv({
         legacy,
-        generated: new Set(generated.map(([key]) => key)),
+        generated: generatedKeys,
         isOperatorKey,
         isInterpolated: (key) => newVariables.has(key),
         container: new Set(Object.keys(draft.project.services.ghost?.environment ?? {})),
@@ -406,6 +419,22 @@ async function prepare(
         refuse(
             `with the site's overrides, the ghost service would run ${after.services.ghost?.image ?? 'nothing'}, not\n` +
                 `  ${ghost.reference}. Remove the override that sets its image, then run this again.`,
+        );
+    }
+    // Where main's Ghost image was installed. This layout's image never looks
+    // there, so whatever an override mounts there would silently be lost to
+    // Ghost, and to the backup.
+    const stranded = (after.services.ghost?.mounts ?? []).filter(
+        (mount) =>
+            mount.target === MAIN_GHOST_INSTALL ||
+            mount.target.startsWith(`${MAIN_GHOST_INSTALL}/`),
+    );
+    if (stranded.length > 0) {
+        refuse(
+            `the site's overrides mount ${stranded.map((mount) => `${mount.source} at ${mount.target}`).join(', ')} in the\n` +
+                `  ghost service. That is where main's Ghost image kept its files; this layout's keeps them in\n` +
+                `  ${ghost.contentPath}, and a backup holds content only in ./data/ghost. Move what the mount holds\n` +
+                '  into data/ghost (or remove it), remove the mount from the override, then run this again.',
         );
     }
     const draftSite = siteFacts(dir, {

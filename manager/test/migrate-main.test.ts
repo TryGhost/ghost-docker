@@ -2,10 +2,11 @@
 // 0001-compose-profiles, against a scripted daemon, Compose and git. What it
 // does on a real host is tests/e2e/migrate-main.sh; this is what it decides.
 import assert from 'node:assert/strict';
-import { cpSync, existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { afterEach, beforeEach, describe, test } from 'node:test';
 import * as env from '../src/env.ts';
+import { acquireLock } from '../src/lock.ts';
 import { failed, harness, json, ok, type Harness, type ProgramResult } from './helpers.ts';
 import {
     imageApi,
@@ -53,6 +54,8 @@ let committed: string[];
 /** What `caddy validate` answers. */
 let caddyValidates: { status: number; stderr?: string };
 const validated: string[] = [];
+/** A mount the operator's override adds to the ghost service, in either layout. */
+let overrideMount: { type: string; source: string; target: string } | null;
 
 const readSite = (file: string) => readFileSync(join(h.dir, file), 'utf8');
 const envOf = (file: string) => env.toRecord(readSite(file));
@@ -79,6 +82,15 @@ function files(dir = h.dir, prefix = ''): Record<string, string> {
 function config(_args: string[], envFile?: string): ProgramResult {
     const values = env.toRecord(readFileSync(envFile ?? join(h.dir, '.env'), 'utf8'));
     const legacy = values.URL === undefined;
+    // What the override requires, as Compose interpolates `${NAME:?...}`.
+    const override = existsSync(join(h.dir, 'compose.override.yml'))
+        ? readSite('compose.override.yml')
+        : '';
+    for (const [, name] of override.matchAll(/\$\{([A-Za-z_]\w*):\?/g)) {
+        if (!values[name!]) {
+            return failed(1, `required variable ${name} is missing a value`);
+        }
+    }
     const environment: Record<string, string> = legacy
         ? // main's env_file is the whole of .env.
           { ...values, url: `https://${values.DOMAIN}`, NODE_ENV: 'production' }
@@ -106,6 +118,9 @@ function config(_args: string[], envFile?: string): ProgramResult {
     if (legacy) {
         resolved.services.ghost.volumes[0].target = '/var/lib/ghost/content';
     }
+    if (overrideMount !== null) {
+        resolved.services.ghost.volumes.push(overrideMount);
+    }
     return ok(JSON.stringify(resolved));
 }
 
@@ -128,6 +143,7 @@ beforeEach(() => {
     edited = [];
     committed = [];
     caddyValidates = { status: 0 };
+    overrideMount = null;
     validated.length = 0;
 
     const images = imageApi({ ghost: { '6.67.0-next-alpine': '6.67.0' } });
@@ -377,6 +393,64 @@ describe('migrating the released main layout', () => {
             readFileSync(join(h.dir, 'data', 'ghost', 'images', 'photo.jpg'), 'utf8'),
             'jpeg',
         );
+    });
+
+    test('a second run waits for no one: another holding the lock is refused, its snapshot kept', async () => {
+        // Another migration, part-way through: its lock and its snapshot.
+        const other = acquireLock(
+            h.dir,
+            'migration 0001-compose-profiles from the released main layout',
+        );
+        mkdirSync(join(h.dir, '.ghost-docker-update', 'files'), { recursive: true });
+        writeFileSync(join(h.dir, '.ghost-docker-update', 'files', '.env'), OLD_ENV);
+        try {
+            for (const args of [[], ['--check']]) {
+                const result = await migrate(...args);
+                assert.equal(result.code, 1);
+                // Refused by the lock, before it looks at, stages or removes anything.
+                assert.match(
+                    result.stderr,
+                    /\.ghost-docker\.lock is held by migration 0001-compose-profiles/,
+                );
+                assert.ok(!h.calls.some((call) => call[0] === 'git'), 'it began preparing');
+                assert.equal(
+                    readSite('.ghost-docker-update/files/.env'),
+                    OLD_ENV,
+                    'the other run’s snapshot was touched',
+                );
+            }
+        } finally {
+            other.release();
+        }
+    });
+
+    test("an override mounting into main's Ghost install is refused: this layout's Ghost never looks there", async () => {
+        overrideMount = {
+            type: 'bind',
+            source: join(h.dir, 'images'),
+            target: '/var/lib/ghost/content/images',
+        };
+        const before = files();
+        const result = await migrate();
+        assert.equal(result.code, 1);
+        assert.match(
+            result.stderr,
+            /at \/var\/lib\/ghost\/content\/images in the\n\s+ghost service/,
+        );
+        assert.match(result.stderr, /Nothing has been changed/);
+        assert.deepEqual(files(), before);
+    });
+
+    test('an override requiring a setting .env has resolves with the new layout too', async () => {
+        writeFileSync(
+            join(h.dir, 'compose.override.yml'),
+            'services:\n  ghost:\n    environment:\n      mail__options__host: ${SMTP_HOST:?SMTP_HOST is required}\n',
+        );
+        writeFileSync(join(h.dir, '.env'), `${OLD_ENV}SMTP_HOST=smtp.example.com\n`);
+        const result = await migrate();
+        assert.equal(result.code, 0, result.stderr);
+        assert.equal(envOf('.env').SMTP_HOST, 'smtp.example.com');
+        assert.equal(envOf('ghost.env').SMTP_HOST, undefined);
     });
 
     test('a site that is not running is refused: its Ghost version is unknown', async () => {
