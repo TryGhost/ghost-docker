@@ -22,6 +22,7 @@ import * as env from './env.ts';
 import { CliError } from './errors.ts';
 import { modeOf, readIfExists } from './fs.ts';
 import type { Io } from './io.ts';
+import type { Check } from './report.ts';
 import {
     ENV_EXAMPLE_FILE,
     ENV_FILE,
@@ -306,6 +307,21 @@ export async function operatorKeyTest(io: Io, dir: string): Promise<(key: string
     ]);
     return (key) => key.startsWith('COMPOSE_') || known.has(key);
 }
+
+/** Findings as report lines: errors as errors, the rest as warnings. */
+export const findingChecks = (findings: readonly Finding[]): Check[] =>
+    findings.map((finding) => ({
+        status: finding.level === 'error' ? 'error' : 'warn',
+        label: finding.file,
+        detail: finding.message,
+    }));
+
+/** The errors among `findings`, one indented line each; empty when there are none. */
+export const findingErrors = (findings: readonly Finding[]): string =>
+    findings
+        .filter((finding) => finding.level === 'error')
+        .map((finding) => `  ${finding.file}: ${finding.message}`)
+        .join('\n');
 
 export async function validate(io: Io, dir: string): Promise<Finding[]> {
     return [...(await validateEnv(io, dir)), ...(await validateGhostEnv(io, dir))];

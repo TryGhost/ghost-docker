@@ -11,26 +11,25 @@ import { join } from 'node:path';
 import type { BundleManifest } from './bundle/manifest.ts';
 import { BundleRefused, removeStaging, stageBundle, type StagedBundle } from './bundle/stage.ts';
 import { ServiceUnreachable } from './clients.ts';
-import { compose, composeError } from './compose.ts';
+import {
+    ALL_PROFILES,
+    compose,
+    composeDown,
+    composeError,
+    composeStop,
+    composeUp,
+} from './compose.ts';
 import type { Context } from './context.ts';
 import * as env from './env.ts';
 import { CliError, UsageError } from './errors.ts';
 import { atomicWrite, readIfExists } from './fs.ts';
 import { resolveExactGhost, type ResolvedGhost } from './ghost.ts';
 import { replaceMailTransport, sourceConfig, type CarriedConfig } from './import/config.ts';
-import {
-    countOf,
-    databaseInput,
-    loadDatabase,
-    rowCounts,
-    rowMismatches,
-    tableCount,
-    withSiteDatabase,
-} from './import/database.ts';
+import { checkRows, countOf, loadFile, tableCount, withSiteDatabase } from './import/database.ts';
 import type { Io } from './io.ts';
-import { printChecks } from './report.ts';
+import { ok } from './report.ts';
 import { DATA_DIRS, ENV_FILE } from './site.ts';
-import { ALL_PROFILES, Created } from './undo.ts';
+import { Created } from './undo.ts';
 
 /** Present from the first change an import makes until it has been verified. */
 export const MARKER = '.ghost-docker-import';
@@ -200,9 +199,7 @@ export class Importing {
      */
     async stop(): Promise<void> {
         const down = await this.io.busy('Stopping what the import started', () =>
-            compose(this.io, this.dir, ['down', '--remove-orphans', '--timeout', '20'], {
-                timeoutMs: 300_000,
-            }),
+            composeDown(this.io, this.dir),
         );
         if (down.exitCode !== 0) {
             throw new CliError(
@@ -234,10 +231,7 @@ export class Importing {
         }
         if (created.project) {
             await this.io.busy('Stopping what the import started', () =>
-                compose(this.io, this.dir, ['stop', '--timeout', '20'], {
-                    timeoutMs: 300_000,
-                    env: { COMPOSE_PROFILES: ALL_PROFILES },
-                }),
+                composeStop(this.io, this.dir, ALL_PROFILES),
             );
         }
         this.io.stderr(
@@ -250,9 +244,6 @@ export class Importing {
 }
 
 // --- The steps ------------------------------------------------------------------
-
-const say = (io: Io, label: string, detail: string) =>
-    printChecks(io, [{ status: 'ok', label, detail }]);
 
 /**
  * Moves the staged content tree into the site's content directory, which was
@@ -323,7 +314,7 @@ export async function readBundle(
         removeStaging(dir);
         throw error;
     }
-    say(
+    ok(
         io,
         manifest.kind,
         `a ${manifest.sourceInstallType} site, Ghost ${manifest.ghost.version}, ${manifest.url}`,
@@ -339,11 +330,6 @@ export function markIncomplete(dir: string): void {
         atomicWrite(path, env.set(text, 'COMPOSE_PROFILES', INCOMPLETE_PROFILE));
     }
 }
-
-/** How long the database and Ghost may take to become healthy. */
-const READY_SECONDS = 600;
-/** How long loading a database may take. */
-const LOAD_MS = 3 * 60 * 60 * 1000;
 
 /**
  * The site's content and database, from the staged bundle. Runs after `.env`
@@ -361,53 +347,34 @@ export async function importSite(
 ): Promise<void> {
     io.stdout('\nImporting the site\n');
     markIncomplete(dir);
-    const withProfiles = { env: { COMPOSE_PROFILES: profiles } };
 
     // Content first, while no container has mounted the directory.
     placeContent(root, join(dir, DATA_DIRS[0]));
-    say(io, 'content', `the bundle's content/ in ${DATA_DIRS[0]}`);
+    ok(io, 'content', `the bundle's content/ in ${DATA_DIRS[0]}`);
 
     started();
-    const db = await io.busy('Starting the database', () =>
-        compose(
-            io,
-            dir,
-            ['up', '--detach', '--wait', '--wait-timeout', String(READY_SECONDS), 'db'],
-            {
-                ...withProfiles,
-                timeoutMs: (READY_SECONDS + 900) * 1000,
-            },
-        ),
-    );
+    const db = await io.busy('Starting the database', () => composeUp(io, dir, ['db'], profiles));
     if (db.exitCode !== 0) {
         throw new CliError(`the database did not become ready: ${composeError(db)}`);
     }
-    say(io, 'database', 'ready');
+    ok(io, 'database', 'ready');
 
     if (manifest.kind === 'mysql-data') {
         // Rows only: Ghost creates the schema they are loaded into.
         await io.busy(`Starting Ghost ${version} once to create its schema`, async () => {
-            const up = await compose(
-                io,
-                dir,
-                ['up', '--detach', '--wait', '--wait-timeout', String(READY_SECONDS), 'ghost'],
-                { ...withProfiles, timeoutMs: (READY_SECONDS + 900) * 1000 },
-            );
+            const up = await composeUp(io, dir, ['ghost'], profiles);
             if (up.exitCode !== 0) {
                 throw new CliError(
                     `Ghost ${version} did not finish creating its database schema: ${composeError(up)}`,
                 );
             }
             // Removed rather than only stopped, so the next start is a clean one.
-            const stop = await compose(io, dir, ['rm', '--stop', '--force', 'ghost'], {
-                ...withProfiles,
-                timeoutMs: 120_000,
-            });
+            const stop = await compose(io, { dir, profiles })`rm --stop --force ghost`;
             if (stop.exitCode !== 0) {
                 throw new CliError(`Ghost could not be stopped: ${composeError(stop)}`);
             }
         });
-        say(io, 'schema', `created by Ghost ${version}`);
+        ok(io, 'schema', `created by Ghost ${version}`);
     } else {
         const tables = await withSiteDatabase(
             io,
@@ -422,21 +389,17 @@ export async function importSite(
         }
     }
 
-    // A file that cannot be read must fail the load, never feed it half a dump.
-    const input = databaseInput(root, manifest);
-    let unreadable: Error | null = null;
-    input.on('error', (error) => {
-        unreadable ??= error;
-    });
-    const load = await io.busy('Loading the database', () =>
-        loadDatabase(io, dir, { profiles }, input, LOAD_MS),
+    const load = await loadFile(
+        io,
+        dir,
+        { profiles },
+        {
+            root,
+            file: manifest.database.path,
+            filter: manifest.kind === 'mysql-dump',
+            spinner: 'Loading the database',
+        },
     );
-    input.destroy();
-    if (unreadable !== null) {
-        throw new CliError(
-            `${manifest.database.path} could not be read: ${(unreadable as Error).message}`,
-        );
-    }
     if (load.exitCode !== 0) {
         throw new CliError(
             `the bundle's database could not be loaded. MySQL said:\n  ${composeError(load, 4).replaceAll('\n', '\n  ')}` +
@@ -447,23 +410,19 @@ export async function importSite(
                     : ''),
         );
     }
-    say(io, 'database', `loaded ${manifest.database.path}`);
+    ok(io, 'database', `loaded ${manifest.database.path}`);
 
     if (manifest.kind === 'mysql-data') {
         const { rows } = manifest.database;
-        const counted = await withSiteDatabase(
+        await checkRows(
             io,
             dir,
             { profiles, failure: 'the loaded tables could not be counted' },
-            (sql) => rowCounts(sql, Object.keys(rows)),
+            rows,
+            'the bundle',
+            "the loaded database does not match the bundle's recorded row counts",
         );
-        const mismatches = rowMismatches(rows, counted);
-        if (mismatches.length > 0) {
-            throw new CliError(
-                `the loaded database does not match the bundle's recorded row counts:\n${mismatches.map((line) => `  ${line}`).join('\n')}`,
-            );
-        }
-        say(io, 'rows', `every count matches the bundle (${Object.keys(rows).length} tables)`);
+        ok(io, 'rows', `every count matches the bundle (${Object.keys(rows).length} tables)`);
     } else {
         // A dump has no counts to compare; it has to be a Ghost database at all.
         const history = await withSiteDatabase(
@@ -485,7 +444,7 @@ export async function importSite(
                 'the loaded database has no Ghost migration history; it does not look like a Ghost database',
             );
         }
-        say(io, 'migrations', 'the database has a Ghost migration history');
+        ok(io, 'migrations', 'the database has a Ghost migration history');
     }
 
     // Complete: `.env` selects the site's services again.

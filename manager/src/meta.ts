@@ -11,7 +11,8 @@
 import { join } from 'node:path';
 import { z } from 'zod';
 import { atomicWrite, PRIVATE, readIfExists } from './fs.ts';
-import { META_FILE, SITE_MODES } from './site.ts';
+import { META_FILE, OPERATOR_FILES, SITE_MODES } from './site.ts';
+import { CliError } from './errors.ts';
 
 export const SCHEMA_VERSION = 1;
 
@@ -69,6 +70,38 @@ export const metadataSchema = z.strictObject({
 export type Metadata = z.infer<typeof metadataSchema>;
 /** A document to write: fields with defaults may be left out. */
 export type MetadataInput = z.input<typeof metadataSchema>;
+
+/** A moment as metadata, locks and backups record it: ISO 8601 to the second. */
+export const isoSeconds = (date = new Date()): string =>
+    date.toISOString().replace(/\.\d{3}Z$/, 'Z');
+
+/**
+ * The metadata of a site ./ghost-docker install made, or a CliError saying
+ * why `command` needs it.
+ */
+export function requireMetadata(dir: string, why: string): Metadata {
+    const read = readMetadata(dir);
+    if (read.state === 'absent') {
+        throw new CliError(
+            `${dir} has no ${META_FILE}, so it was not installed by ./ghost-docker install, and ${why}.\n` +
+                '  Nothing has been changed.',
+        );
+    }
+    if (read.state === 'invalid') {
+        throw new CliError(`${read.reason}. Nothing has been changed.`);
+    }
+    return read.metadata;
+}
+
+/**
+ * The site's own files a backup keeps and a restore replaces: the
+ * operator's, and in image mode the stack files and launcher it runs, so a
+ * restore anywhere runs exactly the images this one did.
+ */
+export const siteFiles = (metadata: Metadata | null): string[] => [
+    ...OPERATOR_FILES,
+    ...(metadata?.source === 'image' ? Object.keys(metadata.payload) : []),
+];
 
 export type MetadataRead =
     | { state: 'absent' }

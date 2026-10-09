@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { defineCommand } from '../command.ts';
 import { composeProjects, composePs, type ServiceState } from '../compose.ts';
-import { validate } from '../config.ts';
+import { findingChecks, validate } from '../config.ts';
 import { loadContext } from '../context.ts';
 import { listContainers } from '../docker/client.ts';
 import { CliError, EXIT } from '../errors.ts';
@@ -83,11 +83,7 @@ export async function check(io: Io): Promise<number> {
                       detail: `.env and ghost.env are valid for a ${site.mode ?? 'mode-less'} site`,
                   },
               ]
-            : findings.map((finding) => ({
-                  status: finding.level === 'error' ? 'error' : 'warn',
-                  label: finding.file,
-                  detail: finding.message,
-              })),
+            : findingChecks(findings),
     );
 
     // doctor reports the daemon only when it cannot be reached.

@@ -7,6 +7,7 @@
 import { randomBytes } from 'node:crypto';
 import {
     closeSync,
+    cpSync,
     fchmodSync,
     existsSync,
     fsyncSync,
@@ -73,4 +74,20 @@ export function modeOf(path: string): number | undefined {
     } catch {
         return undefined;
     }
+}
+
+/**
+ * Copies each of `paths`, relative to `from`, that exists to the same place
+ * under `to`, keeping timestamps. Returns the paths it copied.
+ */
+export function copyPresent(from: string, paths: Iterable<string>, to: string): string[] {
+    const copied: string[] = [];
+    for (const path of new Set(paths)) {
+        const source = join(from, path);
+        if (existsSync(source)) {
+            cpSync(source, join(to, path), { recursive: true, preserveTimestamps: true });
+            copied.push(path);
+        }
+    }
+    return copied;
 }

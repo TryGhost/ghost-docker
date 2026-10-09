@@ -12,6 +12,7 @@ import { z } from 'zod';
 import { CliError } from './errors.ts';
 import { readIfExists } from './fs.ts';
 import { LOCK_FILE } from './site.ts';
+import { isoSeconds } from './meta.ts';
 
 const lockSchema = z.object({
     operation: z.string().min(1),
@@ -73,7 +74,7 @@ export function acquireLock(dir: string, operation: string, now = new Date()): L
     }
     const holder: LockHolder = {
         operation,
-        startedAt: now.toISOString().replace(/\.\d{3}Z$/, 'Z'),
+        startedAt: isoSeconds(now),
     };
     try {
         writeSync(fd, `${JSON.stringify(holder)}\n`);

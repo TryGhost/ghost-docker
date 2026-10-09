@@ -31,5 +31,12 @@ export function printChecks(io: Io, checks: readonly Check[], width = 18): void 
     }
 }
 
+/** One `ok` line. */
+export const ok = (io: Io, label: string, detail = ''): void =>
+    printChecks(io, [{ status: 'ok', label, detail }]);
+
+/** A section of a command's progress. */
+export const heading = (io: Io, title: string): void => io.stdout(`\n${title}\n`);
+
 export const failed = (checks: readonly Check[]): boolean =>
     checks.some((check) => check.status === 'error');

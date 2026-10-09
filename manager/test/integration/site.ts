@@ -108,23 +108,19 @@ export function makeSite(io: Io, name: string, options: SiteOptions): TestSite {
         },
         facts: () => siteFacts(dir, readSettings(dir)!),
         up: async (...services) => {
-            const result = await compose(
-                io,
+            const result = await compose(io, {
                 dir,
-                ['up', '--detach', '--wait', '--wait-timeout', '300', '--no-deps', ...services],
-                { timeoutMs: 1_200_000 },
-            );
+                timeout: 1_200_000,
+            })`up --detach --wait --wait-timeout 300 --no-deps ${services}`;
             if (result.exitCode !== 0) {
                 throw new Error(`${project} did not start: ${composeError(result)}`);
             }
         },
         down: async () => {
-            const result = await compose(
-                io,
+            const result = await compose(io, {
                 dir,
-                ['down', '--volumes', '--remove-orphans', '--timeout', '5'],
-                { timeoutMs: 300_000 },
-            );
+                timeout: 300_000,
+            })`down --volumes --remove-orphans --timeout 5`;
             return { ok: result.exitCode === 0, error: composeError(result) };
         },
     };

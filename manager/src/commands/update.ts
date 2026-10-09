@@ -26,16 +26,17 @@
 //      records the release, and the snapshot is removed.
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { compose, composeConfig, composeError } from '../compose.ts';
+import { compose, composeConfig, composeError, upAndWait } from '../compose.ts';
+import { git } from '../process.ts';
 import { z } from 'zod';
 import { defineCommand, flag } from '../command.ts';
-import { validate } from '../config.ts';
+import { findingErrors, validate } from '../config.ts';
 import type { Context } from '../context.ts';
-import { CliError, EXIT, UsageError } from '../errors.ts';
-import { atomicWrite } from '../fs.ts';
+import { CliError, describeError, EXIT, UsageError } from '../errors.ts';
+import { atomicWrite, copyPresent } from '../fs.ts';
 import type { Io } from '../io.ts';
 import { acquireLock } from '../lock.ts';
-import { readMetadata, writeMetadata, type Metadata } from '../meta.ts';
+import { isoSeconds, requireMetadata, writeMetadata, type Metadata } from '../meta.ts';
 import {
     LAUNCHER,
     launcherContent,
@@ -45,16 +46,9 @@ import {
     stackDir,
 } from '../payload.ts';
 import { compareReleases, isRelease } from '../release.ts';
-import { failed, printChecks } from '../report.ts';
-import {
-    META_FILE,
-    OPERATOR_FILES,
-    readSettings,
-    siteFacts,
-    UPDATE_DIR,
-    type SiteFacts,
-} from '../site.ts';
-import { verifyIngress } from '../verify.ts';
+import { heading, ok, printChecks } from '../report.ts';
+import { META_FILE, OPERATOR_FILES, UPDATE_DIR, type SiteFacts } from '../site.ts';
+import { verifySite } from '../verify.ts';
 import { atLeast, MINIMUM } from '../versions.ts';
 import {
     channelOption,
@@ -64,7 +58,9 @@ import {
     requestedRelease,
     type ManagerRelease,
 } from './common.ts';
-import { READY_TIMEOUT_SECONDS } from './install.ts';
+
+/** How long pulling a release's images may take. */
+const PULL_MS = 30 * 60 * 1000;
 
 const options = z
     .object({
@@ -80,10 +76,6 @@ const options = z
 
 /** Where the edited copy of a site's launcher is kept when the launcher is replaced. */
 export const EDITED_LAUNCHER = `${LAUNCHER}.edited`;
-
-const heading = (io: Io, title: string) => io.stdout(`\n${title}\n`);
-const ok = (io: Io, label: string, detail = '') =>
-    printChecks(io, [{ status: 'ok', label, detail }]);
 
 /** A release of the stack, as a site runs it. */
 interface Stack {
@@ -254,15 +246,7 @@ class Snapshot {
 
     take(): void {
         mkdirSync(join(this.root, 'files'), { recursive: true, mode: 0o700 });
-        for (const path of this.paths) {
-            const source = join(this.dir, path);
-            if (existsSync(source)) {
-                cpSync(source, join(this.root, 'files', path), {
-                    recursive: true,
-                    preserveTimestamps: true,
-                });
-            }
-        }
+        copyPresent(this.dir, this.paths, join(this.root, 'files'));
     }
 
     /** Every path as it was: copied back, or removed when it did not exist. */
@@ -290,14 +274,6 @@ class Snapshot {
  * manager runs as, but git's ownership check does not know that from inside
  * a container.
  */
-export async function git(io: Io, dir: string, args: readonly string[]) {
-    const result = await io.exec({ timeout: 60_000 })`git -c safe.directory=* -C ${dir} ${args}`;
-    return {
-        ok: result.exitCode === 0,
-        stdout: String(result.stdout ?? ''),
-        stderr: String(result.stderr ?? result.shortMessage ?? '').trim(),
-    };
-}
 
 /** The commit checked out, refusing a tree with local changes to tracked files. */
 async function cleanHead(io: Io, dir: string): Promise<string> {
@@ -411,17 +387,7 @@ export const updateCommand = defineCommand({
         const requested = requestedRelease(flags.channel, flags.to, '--to');
         const { context, site } = installedSite(io);
         const dir = site.dir;
-        const read = readMetadata(dir);
-        if (read.state === 'absent') {
-            throw new CliError(
-                `${dir} has no ${META_FILE}, so it was not installed by ./ghost-docker install, and ` +
-                    'update cannot tell which files are its own. Nothing has been changed.',
-            );
-        }
-        if (read.state === 'invalid') {
-            throw new CliError(`${read.reason}. Nothing has been changed.`);
-        }
-        const metadata = read.metadata;
+        const metadata = requireMetadata(dir, 'update cannot tell which files are its own');
         const clone = metadata.source === 'checkout';
         if (clone && (requested.channel !== null || requested.ref !== null)) {
             throw new UsageError(
@@ -583,18 +549,17 @@ async function apply(update: Update): Promise<number> {
             );
         }
         const findings = await io.busy('Validating the configuration', () => validate(io, dir));
-        const errors = findings.filter((finding) => finding.level === 'error');
-        if (errors.length > 0) {
-            throw new CliError(
-                `the configuration does not validate with this release:\n${errors.map((finding) => `  ${finding.file}: ${finding.message}`).join('\n')}`,
-            );
+        const errors = findingErrors(findings);
+        if (errors) {
+            throw new CliError(`the configuration does not validate with this release:\n${errors}`);
         }
         ok(io, 'configuration', 'valid with this release');
 
         stage = 'pull';
         heading(io, 'Starting the services');
-        const pull = await io.busy('Pulling the images this release names', () =>
-            compose(io, dir, ['pull', '--quiet', '--ignore-buildable'], { timeoutMs: 1_800_000 }),
+        const pull = await io.busy(
+            'Pulling the images this release names',
+            () => compose(io, { dir, timeout: PULL_MS })`pull --quiet --ignore-buildable`,
         );
         if (pull.exitCode !== 0) {
             throw new CliError(`the images could not be pulled: ${composeError(pull)}`);
@@ -605,14 +570,7 @@ async function apply(update: Update): Promise<number> {
         ok(io, 'services', 'healthy, by their own health checks');
 
         stage = 'verify';
-        heading(io, 'Verifying the site');
-        const verified = await io.busy('Reaching the site through its ingress', () =>
-            verifyIngress(io, siteFacts(dir, readSettings(dir)!)),
-        );
-        printChecks(io, verified);
-        if (failed(verified)) {
-            throw new CliError('the site started, but it is not reachable through its own ingress');
-        }
+        await verifySite(io, dir);
 
         stage = 'record';
         record(update);
@@ -622,30 +580,6 @@ async function apply(update: Update): Promise<number> {
     snapshot.remove();
     summarize(update);
     return EXIT.ok;
-}
-
-export async function upAndWait(io: Io, dir: string, spinner: string): Promise<void> {
-    const up = await io.busy(spinner, () =>
-        compose(
-            io,
-            dir,
-            ['up', '--detach', '--wait', '--wait-timeout', String(READY_TIMEOUT_SECONDS)],
-            {
-                timeoutMs: (READY_TIMEOUT_SECONDS + 900) * 1000,
-            },
-        ),
-    );
-    if (up.exitCode !== 0) {
-        throw new CliError(
-            `${up.timedOut ? 'the services did not finish starting before the deadline' : 'the services did not start and become healthy'}. Compose said:\n${composeError(
-                up,
-                8,
-            )
-                .split('\n')
-                .map((line) => `  ${line}`)
-                .join('\n')}`,
-        );
-    }
 }
 
 /** The launcher pinned to this image, then the metadata. */
@@ -673,7 +607,7 @@ function record({ io, site, metadata, clone, from, to, release, payload }: Updat
     }
     writeMetadata(dir, {
         ...metadata,
-        updatedAt: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+        updatedAt: isoSeconds(),
         channel: clone ? null : release.channel,
         stack: {
             version: to.version,
@@ -698,9 +632,7 @@ async function recover(
     error: unknown,
 ): Promise<number> {
     const dir = site.dir;
-    io.stderr(
-        `\n${error instanceof CliError ? `error: ${error.message}` : `error: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`}\n`,
-    );
+    io.stderr(`\n${describeError(error)}\n`);
     const servicesChanged = stage === 'start' || stage === 'verify' || stage === 'record';
     io.stderr(
         `\nThe update to ${describeStack(to)} did not complete. Putting ${describeStack(from)} back\n`,

@@ -7,6 +7,7 @@
 // rather than returning an error, and failure is a result (`failed`,
 // `exitCode`, `shortMessage`) rather than an exception, so callers read it.
 import { execa } from 'execa';
+import type { Io } from './io.ts';
 
 export const exec = execa({
     timeout: 30_000,
@@ -16,3 +17,13 @@ export const exec = execa({
 });
 
 export type Exec = typeof exec;
+
+/** git in the site's checkout, which the manager's own user may not own. */
+export async function git(io: Pick<Io, 'exec'>, dir: string, args: readonly string[]) {
+    const result = await io.exec({ timeout: 60_000 })`git -c safe.directory=* -C ${dir} ${args}`;
+    return {
+        ok: result.exitCode === 0,
+        stdout: String(result.stdout ?? ''),
+        stderr: String(result.stderr ?? result.shortMessage ?? '').trim(),
+    };
+}

@@ -7,7 +7,6 @@
 import { createReadStream } from 'node:fs';
 import { join } from 'node:path';
 import { Transform, type Readable, type TransformCallback } from 'node:stream';
-import type { BundleManifest } from '../bundle/manifest.ts';
 import { ServiceUnreachable, type SqlConnection } from '../clients.ts';
 import { compose, composePs, type ComposeResult, type ServiceState } from '../compose.ts';
 import { CliError } from '../errors.ts';
@@ -28,27 +27,19 @@ const CLIENT =
  * such as ActivityPub's, with the client of the server's own version, through
  * Compose with the profiles given.
  */
-export const loadDatabase = (
+const loadDatabase = (
     io: Io,
     dir: string,
-    { profiles, database }: { profiles: string; database?: string },
+    { profiles, database = '' }: { profiles: string; database?: string },
     input: Readable,
-    timeoutMs: number,
 ): Promise<ComposeResult> =>
-    compose(
-        io,
+    // An empty DB is the site's own database.
+    compose(io, {
         dir,
-        [
-            'exec',
-            '-T',
-            ...(database === undefined ? [] : ['-e', `DB=${database}`]),
-            'db',
-            'sh',
-            '-c',
-            CLIENT,
-        ],
-        { env: { COMPOSE_PROFILES: profiles }, input, timeoutMs },
-    );
+        profiles,
+        input,
+        timeout: DATABASE_MS,
+    })`exec -T -e DB=${database} db sh -c ${CLIENT}`;
 
 export interface DatabaseSession {
     /** COMPOSE_PROFILES for finding the db container, when `.env` does not select it yet. */
@@ -75,13 +66,7 @@ export async function withSiteDatabase<T>(
 ): Promise<T> {
     const settings = readSettings(dir);
     const value = (key: string, fallback: string) => settings?.get(key) || fallback;
-    const known =
-        services ??
-        (await composePs(
-            io,
-            dir,
-            profiles === undefined ? undefined : { COMPOSE_PROFILES: profiles },
-        ));
+    const known = services ?? (await composePs(io, dir, profiles));
     if (known === null) {
         throw new CliError(
             `${failure}: docker compose ps failed, so the db container was not found`,
@@ -227,13 +212,66 @@ const rewrite = (line: Buffer): Buffer =>
         ? Buffer.from(dropDefiner(line.toString('latin1')), 'latin1')
         : line;
 
-/** database.sql as the client reads it: as it is, or for a dump, without DEFINER clauses. */
-export function databaseInput(root: string, manifest: BundleManifest): Readable {
-    const file = createReadStream(join(root, manifest.database.path));
-    if (manifest.kind !== 'mysql-dump') {
+/** How long a dump, or loading one, may take. */
+export const DATABASE_MS = 3 * 60 * 60 * 1000;
+
+/** A file of SQL, without mysqldump's DEFINER clauses when `filter`; a read error ends it. */
+export function sqlFile(path: string, filter: boolean): Readable {
+    const file = createReadStream(path);
+    if (!filter) {
         return file;
     }
-    const filter = new DefinerFilter();
-    file.on('error', (error) => filter.destroy(error));
-    return file.pipe(filter);
+    const filtered = new DefinerFilter();
+    file.on('error', (error) => filtered.destroy(error));
+    return file.pipe(filtered);
+}
+
+/**
+ * Loads `file`, relative to `root`, into one of the site's databases, and
+ * returns the client's result for the caller to word. A file that cannot be
+ * read fails the load rather than feed it half a dump.
+ */
+export async function loadFile(
+    io: Io,
+    dir: string,
+    session: { profiles: string; database?: string },
+    {
+        root,
+        file,
+        filter,
+        spinner,
+    }: { root: string; file: string; filter: boolean; spinner: string },
+): Promise<ComposeResult> {
+    const input = sqlFile(join(root, file), filter);
+    let unreadable: Error | null = null;
+    input.on('error', (error) => {
+        unreadable ??= error;
+    });
+    const load = await io.busy(spinner, () => loadDatabase(io, dir, session, input));
+    input.destroy();
+    if (unreadable !== null) {
+        throw new CliError(`${file} could not be read: ${(unreadable as Error).message}`);
+    }
+    return load;
+}
+
+/**
+ * Each table's rows as `expected` records them, or a CliError headed
+ * `mismatch` naming every table that differs; `source` names the record.
+ */
+export async function checkRows(
+    io: Io,
+    dir: string,
+    session: DatabaseSession,
+    expected: Readonly<Record<string, number>>,
+    source: string,
+    mismatch: string,
+): Promise<void> {
+    const counted = await withSiteDatabase(io, dir, session, (sql) =>
+        rowCounts(sql, Object.keys(expected)),
+    );
+    const mismatches = rowMismatches(expected, counted, source);
+    if (mismatches.length > 0) {
+        throw new CliError(`${mismatch}:\n${mismatches.map((line) => `  ${line}`).join('\n')}`);
+    }
 }

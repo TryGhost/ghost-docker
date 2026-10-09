@@ -5,14 +5,12 @@
 import assert from 'node:assert/strict';
 import {
     appendFileSync,
-    cpSync,
     existsSync,
     mkdirSync,
     mkdtempSync,
     readdirSync,
     readFileSync,
     realpathSync,
-    renameSync,
     rmSync,
     statSync,
     writeFileSync,
@@ -32,10 +30,8 @@ import {
     type Harness,
     type ProgramResult,
 } from './helpers.ts';
-import { REPO } from './site.ts';
+import { imageApi, imageStack, INDEX, REFERENCE, rootContainer } from './site.ts';
 
-const INDEX = `sha256:${'1'.repeat(64)}`;
-const REFERENCE = `ghost@${INDEX}`;
 const MANAGER = `sha256:${'2'.repeat(64)}`;
 const IMAGES = {
     ghost: REFERENCE,
@@ -81,42 +77,9 @@ const scratchOutput = () =>
         )
         .join('\n') + '\n';
 
-/** A one-shot root container does to the site what it would on a real host. */
-function runContainer(spec: CreatedContainer) {
-    containers.push(spec);
-    const site = spec.binds.find((bind) => bind.endsWith(':/site'))?.split(':')[0];
-    const onHost = (path: string) => join(site!, path.replace(/^\/site\/?/, ''));
-    if (spec.entrypoint[0] === 'mv') {
-        const target = onHost(spec.cmd.at(-1)!);
-        for (const source of spec.cmd.slice(0, -1)) {
-            renameSync(onHost(source), join(target, source.split('/').pop()!));
-        }
-        return { status: 0 };
-    }
-    if (spec.entrypoint[0] === 'rm') {
-        for (const path of spec.cmd) {
-            rmSync(onHost(path), { recursive: true, force: true });
-        }
-        return { status: 0 };
-    }
-    if (spec.entrypoint[0] === 'sh') {
-        return scratch();
-    }
-    return undefined;
-}
-
 beforeEach(async () => {
     h = harness();
-    stack = realpathSync(mkdtempSync(join(tmpdir(), 'gd-backup-stack-')));
-    for (const file of ['compose.yml', 'compose.ipv6.yml', '.env.example', 'ghost.env.example']) {
-        cpSync(join(REPO, file), join(stack, file));
-    }
-    for (const directory of ['caddy', 'mysql-init']) {
-        cpSync(join(REPO, directory), join(stack, directory), { recursive: true });
-    }
-    h.env.GD_STACK_DIR = stack;
-    h.env.GD_LAUNCHER_SOURCE = join(REPO, 'ghost-docker');
-    h.env.GD_SOURCE = 'image';
+    stack = imageStack(h);
     h.env.GD_VERSION_FILE = `${stack}-version.json`;
     h.env.GD_CHANNEL = 'beta';
     writeFileSync(
@@ -131,32 +94,17 @@ beforeEach(async () => {
     dump = () => ok(DUMP);
     scratch = () => ({ status: 0, stdout: scratchOutput() });
     liveTables = (database) => Object.keys(ROWS[database] ?? {}).length;
-    h.daemon.run = runContainer;
-    h.daemon.api = ({ method, path }) => {
-        if (method === 'POST' && path === '/images/create') {
-            return { status: 200, body: Buffer.from('{"status":"Pulled"}\n') };
-        }
-        if (method === 'GET' && path === '/images/ghost:6-next-alpine/json') {
-            return json(200, {
-                Id: INDEX,
-                RepoDigests: [REFERENCE],
-                Config: {
-                    Env: [
-                        'GHOST_VERSION=6.67.0',
-                        'GHOST_CONTENT=/home/ghost/content',
-                        'GHOST_INSTALL=/home/ghost',
-                    ],
-                },
-            });
-        }
-        if (method === 'GET' && path === '/images/ghost-docker:checkout/json') {
-            return json(200, { Id: MANAGER, RepoDigests: [], Config: { Env: [] } });
-        }
-        if (method === 'GET' && path.startsWith('/images/')) {
-            return json(200, { Id: INDEX, RepoDigests: [], Config: { Env: [] } });
-        }
-        return undefined;
+    h.daemon.run = (spec) => {
+        containers.push(spec);
+        return spec.entrypoint[0] === 'sh' ? scratch() : rootContainer(spec);
     };
+    const images = imageApi({ manager: () => MANAGER });
+    // Every other image the backup records is held already.
+    h.daemon.api = (request) =>
+        images(request) ??
+        (request.method === 'GET' && request.path.startsWith('/images/')
+            ? json(200, { Id: INDEX, RepoDigests: [], Config: { Env: [] } })
+            : undefined);
     // The site's own user, asked over the site network.
     h.daemon.sql = (sql, { database }) => {
         if (sql.includes('information_schema')) {
@@ -212,7 +160,6 @@ beforeEach(async () => {
     containers = [];
 });
 afterEach(() => {
-    rmSync(stack, { recursive: true, force: true });
     rmSync(`${stack}-version.json`, { force: true });
     h.cleanup();
 });

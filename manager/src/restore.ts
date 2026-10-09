@@ -17,58 +17,48 @@
 //
 // The outcome is done, or needs the operator with what to do: a restore
 // that fails part-way does not put the old site back by itself.
-import { cpSync, createReadStream, existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import * as tar from 'tar';
+import { asRoot, removeAsRoot } from './asroot.ts';
 import { backupSiteFiles, readBackup } from './backup.ts';
 import { SITE_FILES_DIR, type BackupManifest } from './backup/manifest.ts';
-import { git, upAndWait } from './commands/update.ts';
-import { compose, composeConfig, composeError } from './compose.ts';
+import {
+    ALL_PROFILES,
+    composeConfig,
+    composeDown,
+    composeError,
+    composeUp,
+    upAndWait,
+} from './compose.ts';
 import type { Context } from './context.ts';
 import {
     DaemonError,
     inspectImage,
     listContainers,
     pullImage,
-    runOnce,
     splitReference,
 } from './docker/client.ts';
 import * as env from './env.ts';
-import { CliError, UsageError } from './errors.ts';
-import { atomicWrite, readIfExists } from './fs.ts';
-import {
-    DefinerFilter,
-    loadDatabase,
-    rowCounts,
-    rowMismatches,
-    withSiteDatabase,
-} from './import/database.ts';
+import { CliError, describeError, UsageError } from './errors.ts';
+import { atomicWrite, copyPresent, readIfExists } from './fs.ts';
+import { checkRows, loadFile } from './import/database.ts';
 import type { Io } from './io.ts';
 import { acquireLock } from './lock.ts';
-import { readMetadata, writeMetadata } from './meta.ts';
+import { readMetadata, siteFiles, writeMetadata } from './meta.ts';
 import { isCheckout, LAUNCHER } from './payload.ts';
+import { git } from './process.ts';
 import { takenPorts } from './ports.ts';
-import { failed, printChecks } from './report.ts';
+import { heading, ok, printChecks } from './report.ts';
 import {
     DATA_DIRS,
     ENV_FILE,
     MAILPIT_DATA_DIR,
     META_FILE,
-    OPERATOR_FILES,
     readSettings,
     RESTORE_DIR,
-    siteFacts,
 } from './site.ts';
-import { ALL_PROFILES } from './undo.ts';
-import { verifyIngress } from './verify.ts';
-
-/** How long loading a dump may take. */
-const LOAD_MS = 3 * 60 * 60 * 1000;
-const READY_SECONDS = 600;
-
-const heading = (io: Io, title: string) => io.stdout(`\n${title}\n`);
-const ok = (io: Io, label: string, detail: string) =>
-    printChecks(io, [{ status: 'ok', label, detail }]);
+import { verifySite } from './verify.ts';
 
 /** `over`: the backup's own site, replaced. `fresh`: a new, empty directory. */
 type Target = 'over' | 'fresh';
@@ -135,14 +125,7 @@ export async function restoreSite({ io, context, root, yes }: RestoreInput): Pro
         heading(io, 'Starting the services');
         await upAndWait(io, dir, 'Starting the services and waiting for them to be healthy');
         ok(io, 'services', 'healthy, by their own health checks');
-        heading(io, 'Verifying the site');
-        const verified = await io.busy('Reaching the site through its ingress', () =>
-            verifyIngress(io, siteFacts(dir, readSettings(dir)!)),
-        );
-        printChecks(io, verified);
-        if (failed(verified)) {
-            throw new CliError('the site started, but it is not reachable through its own ingress');
-        }
+        await verifySite(io, dir);
     } catch (error) {
         if (stage === 'prepare') {
             throw error;
@@ -344,10 +327,7 @@ async function ensureImage(io: Io, reference: string): Promise<void> {
 async function setAside(io: Io, context: Context, dir: string): Promise<void> {
     heading(io, 'Setting the current site aside');
     const down = await io.busy('Stopping the site', () =>
-        compose(io, dir, ['down', '--remove-orphans', '--timeout', '20'], {
-            timeoutMs: 300_000,
-            env: { COMPOSE_PROFILES: ALL_PROFILES },
-        }),
+        composeDown(io, dir, { profiles: ALL_PROFILES }),
     );
     if (down.exitCode !== 0) {
         throw new CliError(`the site could not be stopped: ${composeError(down, 2)}`);
@@ -365,15 +345,7 @@ async function setAside(io: Io, context: Context, dir: string): Promise<void> {
             );
         }
         const moved = await io.busy('Moving the data aside', () =>
-            runOnce(io.docker, {
-                image: context.image!,
-                entrypoint: ['mv', '--'],
-                cmd: [...data.map((path) => `/site/${path}`), `/site/${RESTORE_DIR}/data/`],
-                binds: [{ source: dir, target: '/site' }],
-                user: '0:0',
-                network: 'none',
-                timeoutMs: 600_000,
-            }),
+            asRoot(io, context.image!, dir, ['mv', '--'], [...data, `${RESTORE_DIR}/data/`]),
         );
         if (moved.status !== 0) {
             throw new CliError(
@@ -382,23 +354,11 @@ async function setAside(io: Io, context: Context, dir: string): Promise<void> {
         }
     }
     const metadata = readMetadata(dir);
-    const files = [
-        ...OPERATOR_FILES,
-        ...(metadata.state === 'present' && metadata.metadata.source === 'image'
-            ? Object.keys(metadata.metadata.payload)
-            : []),
-    ];
-    for (const path of new Set(files)) {
-        const source = join(dir, path);
-        if (existsSync(source)) {
-            cpSync(source, join(aside, 'files', path), {
-                recursive: true,
-                preserveTimestamps: true,
-            });
-            // The stack files of the release the site ran are replaced by the
-            // backup's; the operator's directories are emptied, then refilled.
-            rmSync(source, { recursive: true, force: true });
-        }
+    const kept = siteFiles(metadata.state === 'present' ? metadata.metadata : null);
+    // The stack files of the release the site ran are replaced by the
+    // backup's; the operator's directories are emptied, then refilled.
+    for (const path of copyPresent(dir, kept, join(aside, 'files'))) {
+        rmSync(join(dir, path), { recursive: true, force: true });
     }
     ok(
         io,
@@ -491,37 +451,23 @@ async function restoreDatabases(
     dir: string,
     manifest: BackupManifest,
 ): Promise<void> {
-    const db = await io.busy('Starting a new database', () =>
-        compose(
-            io,
-            dir,
-            ['up', '--detach', '--wait', '--wait-timeout', String(READY_SECONDS), 'db'],
-            {
-                timeoutMs: (READY_SECONDS + 900) * 1000,
-            },
-        ),
-    );
+    const db = await io.busy('Starting a new database', () => composeUp(io, dir, ['db']));
     if (db.exitCode !== 0) {
         throw new CliError(`the database did not become ready: ${composeError(db)}`);
     }
     const profiles = readSettings(dir)?.get('COMPOSE_PROFILES') ?? '';
     for (const database of manifest.databases) {
-        const file = createReadStream(join(root, database.file));
-        const input = file.pipe(new DefinerFilter());
-        let unreadable: Error | null = null;
-        file.on('error', (error) => {
-            unreadable ??= error;
-            input.destroy(error);
-        });
-        const load = await io.busy(`Loading the ${database.name} database`, () =>
-            loadDatabase(io, dir, { profiles, database: database.name }, input, LOAD_MS),
+        const load = await loadFile(
+            io,
+            dir,
+            { profiles, database: database.name },
+            {
+                root,
+                file: database.file,
+                filter: true,
+                spinner: `Loading the ${database.name} database`,
+            },
         );
-        input.destroy();
-        if (unreadable !== null) {
-            throw new CliError(
-                `${database.file} could not be read: ${(unreadable as Error).message}`,
-            );
-        }
         if (load.exitCode !== 0) {
             throw new CliError(
                 `the ${database.name} database could not be loaded. MySQL said:\n  ${composeError(load, 4).replaceAll('\n', '\n  ')}`,
@@ -529,7 +475,7 @@ async function restoreDatabases(
         }
         const tables = Object.keys(database.tables);
         if (tables.length > 0) {
-            const counted = await withSiteDatabase(
+            await checkRows(
                 io,
                 dir,
                 {
@@ -537,14 +483,10 @@ async function restoreDatabases(
                     database: database.name,
                     failure: `the ${database.name} database's tables could not be counted`,
                 },
-                (sql) => rowCounts(sql, tables),
+                database.tables,
+                'the backup',
+                `the loaded ${database.name} database does not match the backup`,
             );
-            const mismatches = rowMismatches(database.tables, counted, 'the backup');
-            if (mismatches.length > 0) {
-                throw new CliError(
-                    `the loaded ${database.name} database does not match the backup:\n${mismatches.map((line) => `  ${line}`).join('\n')}`,
-                );
-            }
         }
         ok(
             io,
@@ -559,22 +501,7 @@ async function restoreDatabases(
 /** The site as it was is no longer needed once the restore is verified. */
 async function removeAside(io: Io, context: Context, dir: string): Promise<void> {
     const aside = join(dir, RESTORE_DIR);
-    if (context.image !== null) {
-        await runOnce(io.docker, {
-            image: context.image,
-            entrypoint: ['rm', '-rf', '--'],
-            cmd: [`/site/${RESTORE_DIR}`],
-            binds: [{ source: dir, target: '/site' }],
-            user: '0:0',
-            network: 'none',
-            timeoutMs: 600_000,
-        });
-    }
-    try {
-        rmSync(aside, { recursive: true, force: true });
-    } catch {
-        // Reported below.
-    }
+    await removeAsRoot(io, context.image, dir, [RESTORE_DIR]);
     if (existsSync(aside)) {
         printChecks(io, [
             {
@@ -587,9 +514,7 @@ async function removeAside(io: Io, context: Context, dir: string): Promise<void>
 }
 
 function needsOperator(io: Io, dir: string, target: Target, error: unknown): never {
-    io.stderr(
-        `\n${error instanceof CliError ? `error: ${error.message}` : `error: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`}\n`,
-    );
+    io.stderr(`\n${describeError(error)}\n`);
     const aside = join(dir, RESTORE_DIR);
     io.stderr(
         (target === 'over'

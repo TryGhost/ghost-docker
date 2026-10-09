@@ -16,11 +16,9 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, test } from 'node:test';
 import { acquireLock } from '../src/lock.ts';
 import { SCHEMA_VERSION, writeMetadata } from '../src/meta.ts';
-import { failed, harness, json, ok, type Harness, type ProgramResult } from './helpers.ts';
-import { LOCAL, makeSite, REPO } from './site.ts';
+import { failed, harness, ok, type Harness, type ProgramResult } from './helpers.ts';
+import { imageApi, imageStack, INDEX, LOCAL, makeSite, REFERENCE } from './site.ts';
 
-const INDEX = `sha256:${'1'.repeat(64)}`;
-const REFERENCE = `ghost@${INDEX}`;
 const FIRST = `sha256:${'2'.repeat(64)}`;
 const SECOND = `sha256:${'3'.repeat(64)}`;
 const HEALTHY_GHOST = JSON.stringify({ Service: 'ghost', State: 'running', Health: 'healthy' });
@@ -58,46 +56,14 @@ function snapshot(dir = h.dir, prefix = ''): Record<string, string> {
 
 beforeEach(async () => {
     h = harness();
-    stack = join(h.dir, '..', `${h.dir.split('/').pop()}-stack`);
-    rmSync(stack, { recursive: true, force: true });
-    mkdirSync(stack, { recursive: true });
-    for (const file of ['compose.yml', 'compose.ipv6.yml', '.env.example', 'ghost.env.example']) {
-        cpSync(join(REPO, file), join(stack, file));
-    }
-    for (const directory of ['caddy', 'mysql-init']) {
-        cpSync(join(REPO, directory), join(stack, directory), { recursive: true });
-    }
-    h.env.GD_STACK_DIR = stack;
-    h.env.GD_LAUNCHER_SOURCE = join(REPO, 'ghost-docker');
-    h.env.GD_SOURCE = 'image';
+    stack = imageStack(h);
     h.env.GD_VERSION_FILE = `${stack}-version.json`;
 
     compose = [];
     managerId = FIRST;
     ups = [];
     config = () => ok(JSON.stringify({ services: { ghost: { environment: {} } } }));
-    h.daemon.api = ({ method, path }) => {
-        if (method === 'POST' && path === '/images/create') {
-            return { status: 200, body: Buffer.from('{"status":"Pulled"}\n') };
-        }
-        if (method === 'GET' && path === '/images/ghost:6-next-alpine/json') {
-            return json(200, {
-                Id: INDEX,
-                RepoDigests: [REFERENCE],
-                Config: {
-                    Env: [
-                        'GHOST_VERSION=6.67.0',
-                        'GHOST_CONTENT=/home/ghost/content',
-                        'GHOST_INSTALL=/home/ghost',
-                    ],
-                },
-            });
-        }
-        if (method === 'GET' && path === '/images/ghost-docker:checkout/json') {
-            return json(200, { Id: managerId, RepoDigests: [], Config: { Env: [] } });
-        }
-        return undefined;
-    };
+    h.daemon.api = imageApi({ manager: () => managerId });
     h.daemon.composeRun = (args) => {
         compose.push(args);
         switch (args[0]) {

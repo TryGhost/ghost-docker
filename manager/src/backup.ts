@@ -17,7 +17,6 @@ import { createHash } from 'node:crypto';
 import {
     chmodSync,
     closeSync,
-    cpSync,
     createReadStream,
     existsSync,
     mkdirSync,
@@ -41,27 +40,15 @@ import {
     SITE_FILES_DIR,
     type BackupManifest,
 } from './backup/manifest.ts';
-import { compose, composeConfig, composeError, composePs } from './compose.ts';
+import { compose, composeConfig, composeError, composePs, composeUp } from './compose.ts';
 import { runOnce } from './docker/client.ts';
 import { CliError } from './errors.ts';
-import { atomicWrite, PRIVATE } from './fs.ts';
-import { tableCount, withSiteDatabase } from './import/database.ts';
+import { atomicWrite, copyPresent, PRIVATE } from './fs.ts';
+import { DATABASE_MS, tableCount, withSiteDatabase } from './import/database.ts';
 import type { Io } from './io.ts';
-import type { Metadata } from './meta.ts';
-import { printChecks } from './report.ts';
-import {
-    BACKUPS_DIR,
-    DATA_DIRS,
-    hasProfile,
-    OPERATOR_FILES,
-    splitProfiles,
-    type SiteFacts,
-} from './site.ts';
-
-/** How long a dump, or loading one, may take. */
-const DATABASE_MS = 3 * 60 * 60 * 1000;
-/** How long the database may take to become healthy, when a backup starts it. */
-const READY_SECONDS = 600;
+import { isoSeconds, siteFiles, type Metadata } from './meta.ts';
+import { ok } from './report.ts';
+import { BACKUPS_DIR, DATA_DIRS, hasProfile, splitProfiles, type SiteFacts } from './site.ts';
 
 /** mysqldump's last line, which a dump cut short never has. */
 const COMPLETED = '-- Dump completed';
@@ -95,9 +82,6 @@ for db in "$@"; do
   client -N -B -e "SELECT CONCAT('SELECT ''', table_name, ''', COUNT(*) FROM \\\`', table_name, '\\\`;') FROM information_schema.tables WHERE table_schema = '$db' AND table_type = 'BASE TABLE'" | client -N -B "$db"
 done
 `;
-
-const say = (io: Io, label: string, detail: string) =>
-    printChecks(io, [{ status: 'ok', label, detail }]);
 
 /** `2026-10-09T14-03-22Z`: sortable, and a valid file name everywhere. */
 export const backupId = (now: Date): string =>
@@ -294,14 +278,7 @@ export async function takeBackup({
         const ps = await composePs(io, dir);
         const db = ps?.find((service) => service.Service === 'db');
         if (db?.State !== 'running') {
-            const up = await io.busy('Starting the database', () =>
-                compose(
-                    io,
-                    dir,
-                    ['up', '--detach', '--wait', '--wait-timeout', String(READY_SECONDS), 'db'],
-                    { timeoutMs: (READY_SECONDS + 900) * 1000 },
-                ),
-            );
+            const up = await io.busy('Starting the database', () => composeUp(io, dir, ['db']));
             startedDb = true;
             if (up.exitCode !== 0) {
                 throw new CliError(`the database did not start: ${composeError(up)}`);
@@ -313,11 +290,14 @@ export async function takeBackup({
         const liveTables = new Map<string, number>();
         for (const name of databases) {
             const file = join(partial, DATABASE_DIR, `${name}.sql`);
-            const dump = await io.busy(`Dumping the ${name} database`, () =>
-                compose(io, dir, ['exec', '-T', '-e', `DB=${name}`, 'db', 'sh', '-c', DUMP], {
-                    output: file,
-                    timeoutMs: DATABASE_MS,
-                }),
+            const dump = await io.busy(
+                `Dumping the ${name} database`,
+                () =>
+                    compose(io, {
+                        dir,
+                        output: file,
+                        timeout: DATABASE_MS,
+                    })`exec -T -e DB=${name} db sh -c ${DUMP}`,
             );
             if (dump.exitCode !== 0) {
                 throw new CliError(
@@ -344,7 +324,7 @@ export async function takeBackup({
                 throw new CliError(`the ${name} database's tables could not be counted`);
             }
             liveTables.set(name, tables);
-            say(io, name, `dumped, ${(statSync(file).size / 1024 ** 2).toFixed(1)} MB`);
+            ok(io, name, `dumped, ${(statSync(file).size / 1024 ** 2).toFixed(1)} MB`);
         }
 
         // Checked means the dump loads: into a scratch server, never the site's.
@@ -387,7 +367,7 @@ export async function takeBackup({
             }
             manifestDatabases.push({ name, file: `${DATABASE_DIR}/${name}.sql`, tables });
         }
-        say(
+        ok(
             io,
             'checked',
             databases
@@ -414,27 +394,11 @@ export async function takeBackup({
         } catch (error) {
             throw new CliError(`the content archive does not list: ${(error as Error).message}`);
         }
-        say(io, CONTENT_ARCHIVE, `${entries} entries, listed`);
+        ok(io, CONTENT_ARCHIVE, `${entries} entries, listed`);
 
         io.stdout('\nThe site’s files\n');
-        const siteFiles = [
-            ...OPERATOR_FILES,
-            // In image mode, the stack files and launcher the site runs, so a
-            // restore anywhere runs exactly the images this one did.
-            ...(metadata.source === 'image' ? Object.keys(metadata.payload) : []),
-        ];
-        let copied = 0;
-        for (const path of new Set(siteFiles)) {
-            const source = join(dir, path);
-            if (existsSync(source)) {
-                cpSync(source, join(partial, SITE_FILES_DIR, path), {
-                    recursive: true,
-                    preserveTimestamps: true,
-                });
-                copied += 1;
-            }
-        }
-        say(io, SITE_FILES_DIR, `${copied} files and directories: configuration, metadata, Caddy`);
+        const copied = copyPresent(dir, siteFiles(metadata), join(partial, SITE_FILES_DIR)).length;
+        ok(io, SITE_FILES_DIR, `${copied} files and directories: configuration, metadata, Caddy`);
 
         const files: Record<string, string> = {};
         for (const path of filesUnder(partial)) {
@@ -443,7 +407,7 @@ export async function takeBackup({
         const manifest: BackupManifest = {
             format: BACKUP_FORMAT,
             version: BACKUP_VERSION,
-            createdAt: now.toISOString().replace(/\.\d{3}Z$/, 'Z'),
+            createdAt: isoSeconds(now),
             manager: {
                 version: metadata.stack.version,
                 commit: metadata.stack.commit,
@@ -476,7 +440,7 @@ export async function takeBackup({
         throw error;
     } finally {
         if (startedDb) {
-            await compose(io, dir, ['stop', 'db'], { timeoutMs: 120_000 });
+            await compose(io, { dir })`stop db`;
         }
     }
 }

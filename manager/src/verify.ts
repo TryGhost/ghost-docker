@@ -18,8 +18,9 @@ import { ServiceUnreachable } from './clients.ts';
 import { composePs, type ServiceState } from './compose.ts';
 import type { Io } from './io.ts';
 import { NetworkUnavailable, type SiteNetwork } from './network.ts';
-import type { Check } from './report.ts';
-import { hasProfile, type SiteFacts } from './site.ts';
+import { CliError } from './errors.ts';
+import { failed, heading, printChecks, type Check } from './report.ts';
+import { hasProfile, readSettings, siteFacts, type SiteFacts } from './site.ts';
 
 const describeState = (state: ServiceState | undefined): string =>
     state ? [state.State, state.Health].filter(Boolean).join(', ') : 'no container';
@@ -140,4 +141,16 @@ export async function verifyIngress(
             '; a container cannot reach the host, so open the URL to see them from there',
     });
     return checks;
+}
+
+/** A site just started, verified and reported; a failure is a CliError. */
+export async function verifySite(io: Io, dir: string): Promise<void> {
+    heading(io, 'Verifying the site');
+    const verified = await io.busy('Verifying the site', () =>
+        verifyIngress(io, siteFacts(dir, readSettings(dir)!)),
+    );
+    printChecks(io, verified);
+    if (failed(verified)) {
+        throw new CliError('the site started, but it is not reachable through its own ingress');
+    }
 }

@@ -7,19 +7,13 @@ import { existsSync, rmdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { removeStaging } from './bundle/stage.ts';
-import { compose, composeError } from './compose.ts';
+import { ALL_PROFILES, composeDown, composeError } from './compose.ts';
 import type { Context } from './context.ts';
-import { runOnce } from './docker/client.ts';
+import { removeAsRoot } from './asroot.ts';
 import { atomicWrite, PRIVATE, readIfExists } from './fs.ts';
 import type { Io } from './io.ts';
 import type { Written } from './payload.ts';
 import { DATA_DIRS, ENV_FILE, GHOST_ENV_FILE, META_FILE } from './site.ts';
-
-/**
- * Every profile, as Compose itself spells it, so whatever a failed
- * installation started is found, including profiles added later.
- */
-export const ALL_PROFILES = '*';
 
 const journalSchema = z.object({
     files: z.array(z.string().startsWith('/')),
@@ -99,15 +93,10 @@ export class Created implements Written {
         if (this.project) {
             // Every profile, so whatever was started is found; the .env it
             // interpolates is still in place.
-            const down = await compose(
-                this.io,
-                this.dir,
-                ['down', '--volumes', '--remove-orphans', '--timeout', '20'],
-                {
-                    timeoutMs: 300_000,
-                    env: { COMPOSE_PROFILES: ALL_PROFILES },
-                },
-            );
+            const down = await composeDown(this.io, this.dir, {
+                volumes: true,
+                profiles: ALL_PROFILES,
+            });
             if (down.exitCode !== 0) {
                 leftovers.push(
                     `the project's containers (docker compose down failed: ${composeError(down, 2)})`,
@@ -139,33 +128,15 @@ export class Created implements Written {
         return leftovers;
     }
 
-    /**
-     * MySQL's data directory belongs to MySQL's user once it has run, so it is
-     * removed as root, in a short-lived container that does only that.
-     */
+    /** MySQL's data directory belongs to MySQL's user once it has run (asroot.ts). */
     private async removeData(): Promise<string[]> {
-        const targets = this.data.filter((path) => existsSync(path));
-        if (targets.length === 0) {
-            return [];
-        }
-        if (this.context.image !== null) {
-            await runOnce(this.io.docker, {
-                image: this.context.image,
-                entrypoint: ['rm', '-rf', '--'],
-                cmd: targets.map((path) => `/site/${path.slice(this.dir.length + 1)}`),
-                binds: [{ source: this.dir, target: '/site' }],
-                user: '0:0',
-                network: 'none',
-                timeoutMs: 120_000,
-            });
-        }
-        for (const path of targets) {
-            try {
-                rmSync(path, { recursive: true, force: true });
-            } catch {
-                // Reported below, as what is left.
-            }
-        }
-        return targets.filter((path) => existsSync(path));
+        const left = await removeAsRoot(
+            this.io,
+            this.context.image,
+            this.dir,
+            this.data.map((path) => path.slice(this.dir.length + 1)),
+            120_000,
+        );
+        return left.map((path) => join(this.dir, path));
     }
 }
