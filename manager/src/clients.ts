@@ -5,6 +5,7 @@
 // The dumps themselves stay with the version-matched mysqldump and mysql in
 // the db container: these clients ask questions, they do not move data.
 import { request } from 'node:https';
+import { connect, type Socket } from 'node:net';
 import { checkServerIdentity, type TLSSocket } from 'node:tls';
 import { createConnection, type Connection } from 'mysql2/promise';
 
@@ -57,7 +58,10 @@ export interface HttpsAnswer {
 /** A connection to one database as one user. Rows come back as arrays. */
 export interface SqlConnection {
     query: (sql: string, timeoutMs?: number) => Promise<unknown[][]>;
-    /** Always called, also after a failure; closing twice is harmless. */
+    /**
+     * Always called, also after a failure; closing twice is harmless. It
+     * takes at most CLOSE_MS, and the socket is gone once it returns.
+     */
     close: () => Promise<void>;
 }
 
@@ -77,6 +81,9 @@ export interface Clients {
 }
 
 const DEFAULT_TIMEOUT_MS = 10_000;
+
+/** The longest a connection with nothing outstanding is given to say goodbye. */
+export const CLOSE_MS = 1_000;
 
 const seconds = (ms: number) => `${Math.round(ms / 1000)} seconds`;
 
@@ -164,11 +171,17 @@ const sqlMessage = (error: unknown): string => {
 
 const mysql: Clients['mysql'] = async (target) => {
     const timeoutMs = target.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    // The socket is the manager's own, so it can be destroyed: mysql2's
+    // destroy() only half-closes it, which a server that has stopped
+    // answering need never complete.
+    let socket: Socket | undefined;
     let connection: Connection;
     try {
         connection = await createConnection({
-            host: target.host,
-            port: target.port,
+            stream: () => {
+                socket = connect({ host: target.host, port: target.port, noDelay: true });
+                return socket;
+            },
             user: target.user,
             password: target.password,
             database: target.database,
@@ -179,6 +192,7 @@ const mysql: Clients['mysql'] = async (target) => {
             bigNumberStrings: true,
         });
     } catch (error) {
+        socket?.destroy();
         const code = (error as { code?: string }).code;
         throw new ServiceUnreachable(
             code === 'ETIMEDOUT' ? 'timeout' : 'connect',
@@ -186,27 +200,80 @@ const mysql: Clients['mysql'] = async (target) => {
             { cause: error },
         );
     }
+    const open = socket!;
+    const where = `${target.host}:${target.port}`;
+    // Each query not yet answered, by what gives up on it. The deadline is
+    // the client's own, not mysql2's: mysql2 gives up waiting for a query
+    // that times out, but keeps it at the head of the connection's queue,
+    // so anything sent after it, end() included, would wait for an answer
+    // that may never come, and its timer would keep the process alive.
+    const waiting = new Set<(error: ServiceUnreachable) => void>();
+    let abandoned = false;
     let closed = false;
     const close = async () => {
         if (closed) {
             return;
         }
         closed = true;
-        // end() asks the server to close; the socket is destroyed whatever
-        // it does, so a server that goes away first cannot leave it open
-        // and keep the process alive.
-        await connection.end().catch(() => undefined);
+        if (waiting.size === 0 && !abandoned && !open.destroyed) {
+            // Nothing outstanding: the server is told, and given CLOSE_MS to
+            // close its side.
+            const gone = new Promise<void>((resolve) => open.once('close', () => resolve()));
+            let timer: NodeJS.Timeout | undefined;
+            await Promise.race([
+                connection.end().then(() => {
+                    // end() resolves once QUIT is queued; this sends it, and
+                    // half-closes, for the server to close its side.
+                    connection.destroy();
+                    return gone;
+                }),
+                new Promise<void>((resolve) => (timer = setTimeout(resolve, CLOSE_MS))),
+            ]).catch(() => undefined);
+            clearTimeout(timer);
+        }
+        for (const abandon of waiting) {
+            abandon(new ServiceUnreachable('query', `${where}: the connection was closed`));
+        }
+        // Closing, as mysql2 sees it, so the lost socket is not an error.
         connection.destroy();
+        if (!open.closed) {
+            const gone = new Promise((resolve) => open.once('close', resolve));
+            open.destroy();
+            await gone;
+        }
     };
     return {
-        query: async (sql, queryTimeoutMs = 60_000) => {
-            try {
-                const [rows] = await connection.query({ sql, timeout: queryTimeoutMs });
-                return Array.isArray(rows) ? (rows as unknown[][]) : [];
-            } catch (error) {
-                throw new ServiceUnreachable('query', sqlMessage(error), { cause: error });
-            }
-        },
+        query: (sql, queryTimeoutMs = 60_000) =>
+            new Promise((resolve, reject) => {
+                const settle = () => {
+                    clearTimeout(timer);
+                    waiting.delete(abandon);
+                };
+                const abandon = (error: ServiceUnreachable) => {
+                    settle();
+                    reject(error);
+                };
+                const timer = setTimeout(() => {
+                    abandoned = true;
+                    abandon(
+                        new ServiceUnreachable(
+                            'timeout',
+                            `${where}: no answer to a query within ${seconds(queryTimeoutMs)}`,
+                        ),
+                    );
+                }, queryTimeoutMs);
+                waiting.add(abandon);
+                connection.query({ sql }).then(
+                    ([rows]) => {
+                        settle();
+                        resolve(Array.isArray(rows) ? (rows as unknown[][]) : []);
+                    },
+                    (error: unknown) =>
+                        abandon(
+                            new ServiceUnreachable('query', sqlMessage(error), { cause: error }),
+                        ),
+                );
+            }),
         close,
     };
 };

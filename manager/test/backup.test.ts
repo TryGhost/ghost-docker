@@ -327,6 +327,27 @@ describe('backup', () => {
         assert.deepEqual(backups(), []);
     });
 
+    test('a database that stops answering fails the backup, and leaves the site for the next', async () => {
+        const answer = h.daemon.sql!;
+        h.daemon.sql = (sql, target) =>
+            target.database === 'activitypub'
+                ? new Error('db-x:3306: no answer to a query within 60 seconds')
+                : answer(sql, target);
+        const result = await h.run('backup');
+        assert.equal(result.code, 1);
+        assert.match(
+            result.stderr,
+            /the activitypub database's tables could not be counted: db-x:3306: no answer to a query within 60 seconds/,
+        );
+        assert.deepEqual(backups(), []);
+        assert.ok(!existsSync(join(h.dir, '.ghost-docker.lock')));
+        assert.equal(h.network.held, 0, 'the manager is still on the site network');
+        assert.equal(h.network.opened, h.network.closed, 'a database connection was left open');
+
+        h.daemon.sql = answer;
+        await backUp();
+    });
+
     test('is refused while another operation holds the lock', async () => {
         const lock = acquireLock(
             h.dir,
