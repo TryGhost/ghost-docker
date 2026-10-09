@@ -121,6 +121,12 @@ delivers it. `docs/install.md` describes what exists.
   `.ghost-docker-restore/` until verified) or into an empty directory, through
   a fresh MySQL and the import's client and DEFINER filter. Its outcome is
   done or needs the operator; it never puts the old site back by itself.
+  `siteFiles` (`src/meta.ts`), with the overrides, is the one inventory of a
+  site's files that backup copies, self-update snapshots and restore sets
+  aside. Backup refuses a site whose running images are not what its
+  configuration names; restore checks the backup's configuration, staged
+  outside the site, and the pulled images' identities before it changes
+  anything.
 - The manager asks a site's services directly: `src/network.ts` joins the
   manager's own container to the network the site's running containers share
   (discovered, never guessed) and leaves it however the work ends, and

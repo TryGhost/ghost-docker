@@ -170,6 +170,26 @@ export function refuseMovedData(site: SiteFacts, resolved: ResolvedSite): void {
 }
 
 /**
+ * A site that runs other images than its configuration names is refused
+ * before anything is captured. A restore runs the configuration it holds,
+ * and its data was written by what ran: the two must be the same images, by
+ * their immutable identity, or the backup could not be restored as the site
+ * ran. Applying the configuration, or putting it back, makes them the same.
+ */
+export async function refuseDrift(io: Io, resolved: ResolvedSite): Promise<void> {
+    const drift = await imageDrift(io, resolved, await observeSite(io, resolved));
+    if (drift.length > 0) {
+        throw new CliError(
+            `the site runs other images than its configuration names, so a backup of it could not be\n` +
+                '  restored as it runs:\n' +
+                drift.map((line) => `    ${line}\n`).join('') +
+                '  Apply the configuration (docker compose up -d), or put it back as it was, then back up\n' +
+                '  again. Nothing has been changed.',
+        );
+    }
+}
+
+/**
  * The overrides GD_COMPOSE_OVERRIDES adds, relative to the site, so a backup
  * holds them; one outside the site is refused, since a restore could not
  * bring it back.
@@ -347,6 +367,7 @@ export async function takeBackup({
     const resolved = await io.busy('Resolving the Compose project', () => resolveSite(io, dir));
     refuseMovedData(site, resolved);
     const overrides = siteOverrides(resolved);
+    await refuseDrift(io, resolved);
     const images: Record<string, string> = {};
     for (const [service, definition] of Object.entries(resolved.services)) {
         if (definition.image !== null) {
@@ -399,17 +420,6 @@ export async function takeBackup({
         // and checks the dumps with the MySQL that wrote them.
         const running = await observeSite(io, resolved);
         const ran = await runningImages(io, running);
-        const drift = await imageDrift(io, resolved, running);
-        if (drift.length > 0) {
-            printChecks(io, [
-                {
-                    status: 'warn',
-                    label: 'images',
-                    detail: `${drift.join('; ')}. The backup records both; docker compose up -d applies the configuration`,
-                },
-            ]);
-        }
-
         const commit = metadata.source === 'checkout' ? await checkedOut(io, dir) : null;
 
         io.stdout('\nThe capture\n');
@@ -486,7 +496,7 @@ export async function takeBackup({
         io.stdout('\nThe site’s files\n');
         const copied = copyPresent(
             dir,
-            [...siteFiles(metadata), ...overrides],
+            siteFiles(metadata, overrides),
             join(partial, SITE_FILES_DIR),
         ).length;
         ok(

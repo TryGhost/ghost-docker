@@ -1670,6 +1670,26 @@ while building it:
   `--import`'s bundle.
 - **A site whose `.env` moves its data** (`UPLOAD_LOCATION`,
   `MYSQL_DATA_LOCATION`) is refused rather than half backed up.
+- **One inventory of a site's files** (PLA-522): `siteFiles` in `meta.ts`,
+  with the overrides `GD_COMPOSE_OVERRIDES` adds, is what a backup copies, an
+  update snapshots and a restore sets aside, together with the backup's own
+  files, so a restore that fails after writing an override has the site's
+  copy of it. Each copy set aside is compared with its original before the
+  original is removed.
+- **A backup restores the images its site ran** (PLA-522). Every stack image
+  is pinned by digest, so the only way a configured image and a running one
+  differ is configuration not yet applied, such as a clone checked out at a
+  commit that bumps MySQL. Of the contracts weighed (restore the configured
+  images and say so; take the backup and refuse it at restore; or restore
+  what ran through an override the manager would write), backup refuses such
+  a site before capturing anything, as `self-update` does before its
+  snapshot: every backup is then one whose configuration and running images
+  are the same, and the operator resolves the difference while it can still
+  be resolved. A restore checks it again before it changes anything: the
+  backup's configuration, staged outside the site (with a clone's own
+  `compose.yml`), must resolve exactly the recorded images and mount the
+  data where restore loads it, and each pulled image must be, by ID or
+  registry digest, the one that ran.
 - **No metadata changes**: `schemaVersion` stays 1.
 
 ### S7 — Host-driven Ghost upgrades

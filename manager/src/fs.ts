@@ -12,6 +12,7 @@ import {
     existsSync,
     fsyncSync,
     openSync,
+    readdirSync,
     readFileSync,
     renameSync,
     rmSync,
@@ -74,6 +75,27 @@ export function modeOf(path: string): number | undefined {
     } catch {
         return undefined;
     }
+}
+
+/** Whether `a` and `b` hold the same: a file's bytes, a directory's entries, recursively. */
+export function sameTree(a: string, b: string): boolean {
+    if (!existsSync(a) || !existsSync(b)) {
+        return false;
+    }
+    const left = statSync(a);
+    const right = statSync(b);
+    if (left.isDirectory() !== right.isDirectory()) {
+        return false;
+    }
+    if (!left.isDirectory()) {
+        return readFileSync(a).equals(readFileSync(b));
+    }
+    const entries = readdirSync(a).sort();
+    const others = readdirSync(b).sort();
+    return (
+        entries.join('\0') === others.join('\0') &&
+        entries.every((entry) => sameTree(join(a, entry), join(b, entry)))
+    );
 }
 
 /**
