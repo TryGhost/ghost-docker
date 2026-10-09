@@ -547,7 +547,9 @@ async function apply(update: Update): Promise<number> {
     let backup: string | null = null;
     try {
         heading(io, 'Backing up the site');
-        backup = await takeBackup({ io, site, metadata: update.metadata });
+        // Consistent: the update restarts the services anyway, and a recovery
+        // loads this backup over everything the site wrote.
+        backup = await takeBackup({ io, site, metadata: update.metadata, consistent: true });
         ok(io, 'backup', `${relative(dir, backup)}, checked`);
 
         stage = 'write';

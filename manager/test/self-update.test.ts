@@ -48,6 +48,9 @@ const metadata = () => JSON.parse(readSite('.ghost-docker.json'));
 const pinnedImage = () => /^readonly GD_PINNED_IMAGE="(.*)"$/m.exec(readSite('ghost-docker'))?.[1];
 const update = (...args: string[]) => h.run('self-update', ...args);
 const composed = (command: string) => compose.filter((args) => args[0] === command).length;
+/** `up`s that start the release's services, not the backup starting its writers again. */
+const started = () =>
+    compose.filter((args) => args[0] === 'up' && !args.includes('--no-recreate')).length;
 
 /**
  * Every file in the site, with its content, to compare before and after:
@@ -127,11 +130,14 @@ describe('an update between releases', () => {
         assert.equal(after.installedAt, before.installedAt);
         assert.match(after.updatedAt, /^\d{4}-\d\d-\d\dT/);
 
-        // Backed up, then validated, pulled, started and verified, in that order.
+        // Backed up with Ghost stopped for the capture and started again,
+        // then validated, pulled, started and verified, in that order.
         assert.deepEqual(
             compose.map((args) => args[0]),
-            ['config', 'ps', 'exec', 'ps', 'config', 'config', 'pull', 'up', 'ps'],
+            ['config', 'ps', 'stop', 'exec', 'ps', 'up', 'config', 'config', 'pull', 'up', 'ps'],
         );
+        assert.deepEqual(compose[2]!.slice(-1), ['ghost']);
+        assert.ok(compose[5]!.includes('--no-recreate'));
         const [backup] = readdirSync(join(h.dir, 'backups'));
         assert.match(
             result.stdout,
@@ -342,7 +348,7 @@ describe('a failed update', () => {
             /Restored: the site is back on v0\.1\.0-beta\.1, with its files as they were\. Its services were not changed\./,
         );
         assert.deepEqual(snapshot(), before);
-        assert.equal(composed('up'), 0);
+        assert.equal(started(), 0);
         assert.equal(composed('pull'), 0);
     });
 
@@ -356,7 +362,7 @@ describe('a failed update', () => {
         assert.equal(result.code, 1);
         assert.match(result.stderr, /could not be pulled: manifest unknown/);
         assert.deepEqual(snapshot(), before);
-        assert.equal(composed('up'), 0);
+        assert.equal(started(), 0);
     });
 
     test('services that do not start: the previous release is started again', async () => {
@@ -373,7 +379,7 @@ describe('a failed update', () => {
         assert.deepEqual(snapshot(), before);
         assert.equal(pinnedImage(), FIRST);
         // The release's, a new database for the backup, then the previous release's.
-        assert.equal(composed('up'), 3);
+        assert.equal(started(), 3);
         assert.deepEqual([...site.running].sort(), ['db', 'ghost']);
     });
 
@@ -405,7 +411,7 @@ describe('a failed update', () => {
         assert.ok(!existsSync(join(h.dir, '.ghost-docker.lock')));
 
         // Stopped before anything was put back, then started on the backup's data.
-        const after = compose.slice(compose.findIndex((args) => args[0] === 'up'));
+        const after = compose.slice(compose.findIndex((args) => args[0] === 'pull') + 1);
         assert.deepEqual(
             after.map((args) => args[0]),
             ['up', 'down', 'ps', 'up', 'exec', 'ps', 'up', 'ps'],
@@ -469,7 +475,7 @@ describe('a failed update', () => {
         assert.ok(
             !existsSync(join(h.dir, 'backups')) || readdirSync(join(h.dir, 'backups')).length === 0,
         );
-        assert.equal(composed('up'), 0);
+        assert.equal(started(), 0);
         assert.equal(composed('pull'), 0);
     });
 });
@@ -577,7 +583,7 @@ describe('a checkout', () => {
         assert.deepEqual(gitCalls.at(-1), ['checkout', '--quiet', '--detach', PREVIOUS]);
         assert.match(result.stderr, /The checkout is at aaaaaaaaaaaa again, with a detached HEAD/);
         assert.deepEqual(snapshot(), before);
-        assert.equal(composed('up'), 3);
+        assert.equal(started(), 3);
         assert.deepEqual([...site.running].sort(), ['db', 'ghost']);
     });
 

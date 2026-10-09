@@ -525,6 +525,13 @@ function summarize(
             `  ${'content'.padEnd(12)} ${manifest.content.entries} entries`,
             `  ${'ghost'.padEnd(12)} ${manifest.images.ghost ?? 'as recorded'}`,
             ...unapplied(manifest).map((line) => `  ${line}`),
+            ...(manifest.consistency === 'live'
+                ? [
+                      '',
+                      'This backup was taken live: its databases and content were captured at different',
+                      'moments, so content written or removed between them may not match the database.',
+                  ]
+                : []),
             ...(manifest.notIncluded.length > 0
                 ? [
                       '',

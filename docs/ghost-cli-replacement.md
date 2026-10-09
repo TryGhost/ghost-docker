@@ -423,6 +423,13 @@ is written private, and kept until the operator removes it. State outside the
 site (a Tinybird workspace), Caddy's certificates and Mailpit's inbox are named
 in the manifest as not included.
 
+A backup is **live** by default, as Ghost-CLI's was: each database one
+snapshot, but captured at a different moment from the others and from the
+content. `--consistent` stops Ghost and ActivityPub, the services that write
+them, while they are captured and starts them again before the check, so
+they are one moment of the site at the cost of a brief outage; stack updates
+take a consistent one. The manifest records which.
+
 **Restore** works over the backup's own site or into a new, empty directory.
 It reads the backup whole and checks every checksum first, then takes the lock
 and pulls the recorded images. Over a site it stops the site and sets its
@@ -1492,6 +1499,15 @@ Status: implemented. `tests/e2e/backup.sh` covers every acceptance item against
 real containers; `docs/install.md` describes both commands. Decisions made
 while building it:
 
+- **Live by default, consistent on request** (PLA-515): `backup` keeps the
+  site running, as Ghost-CLI's did, with the weaker guarantee documented.
+  `backup --consistent`, and the backup `self-update` takes, stop Ghost and
+  ActivityPub for the capture (dumps, content, site files) and start them
+  again, not recreated, before the scratch check; they end as they began on
+  success and failure. The manifest records `consistency` (absent means
+  live), so the backup version stays 1. `tests/e2e/backup.sh` seeds
+  ActivityPub records, changes them after the backup, and checks their exact
+  values after both restores.
 - **One dump per database**, `database/<name>.sql`, as the site's user:
   `--single-transaction --no-tablespaces --set-gtid-purged=OFF`, no routines
   or events, which need privileges the site's user does not have and Ghost

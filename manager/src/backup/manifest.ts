@@ -34,6 +34,13 @@ export const backupManifestSchema = z.strictObject({
     format: z.literal(BACKUP_FORMAT),
     version: z.literal(BACKUP_VERSION),
     createdAt: z.iso.datetime(),
+    /**
+     * `quiesced`: the databases and the content were captured with nothing
+     * writing to them, as one moment. `live`: each database is one snapshot,
+     * captured at a different moment from the others and from the content.
+     * Backups from before this was recorded were live.
+     */
+    consistency: z.enum(['quiesced', 'live']).default('live'),
     /** The manager that took it. */
     manager: z.strictObject({ version: nullable, commit: nullable, image: nullable }),
     site: z.strictObject({

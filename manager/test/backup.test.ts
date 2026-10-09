@@ -18,6 +18,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, test } from 'node:test';
+import * as tar from 'tar';
 import { backupId, parseCounts } from '../src/backup.ts';
 import { readBackupManifest } from '../src/backup/manifest.ts';
 import { acquireLock } from '../src/lock.ts';
@@ -131,7 +132,9 @@ beforeEach(async () => {
                 return ok(resolvedProject(dir, IMAGES, mounts));
             case 'up': {
                 // What `up --wait` starts stays running, healthy or not.
-                const named = args.slice(args.indexOf('--wait-timeout') + 2);
+                const named = args
+                    .slice(args.indexOf('--wait-timeout') + 2)
+                    .filter((arg) => !arg.startsWith('--'));
                 for (const service of named.length > 0 ? named : SERVICES) {
                     running.add(service);
                 }
@@ -144,13 +147,15 @@ beforeEach(async () => {
                 }
                 return answer;
             }
-            case 'stop':
-                if (args.includes('db')) {
-                    running.delete('db');
-                } else {
-                    running.clear();
+            case 'stop': {
+                const named = args
+                    .slice(1)
+                    .filter((arg) => !arg.startsWith('--') && !/^\d+$/.test(arg));
+                for (const service of named.length > 0 ? named : [...running]) {
+                    running.delete(service);
                 }
                 return ok('');
+            }
             case 'ps':
                 return ok(
                     [...running]
@@ -195,8 +200,8 @@ afterEach(() => {
 });
 
 /** Takes a backup, which must succeed, and returns its directory. */
-async function backUp(): Promise<string> {
-    const result = await h.run('backup');
+async function backUp(...options: string[]): Promise<string> {
+    const result = await h.run('backup', ...options);
     assert.equal(result.code, 0, result.stderr);
     const [id] = backups();
     return join(h.dir, 'backups', id!);
@@ -582,6 +587,7 @@ describe('restore over the site', () => {
 
     test('data that cannot all be moved aside is moved back, and nothing is written', async () => {
         const root = await backUp();
+        compose = [];
         const env = readSite('.env');
         h.daemon.run = (spec) =>
             spec.entrypoint[0] === 'mv' && spec.cmd[0] === '/site/data/mysql'
@@ -816,6 +822,158 @@ describe('restore into a new directory', () => {
         const result = await h.run('restore', root);
         assert.equal(result.code, 1);
         assert.match(result.stderr, new RegExp(`git -C ${fresh} checkout d{40}`));
+    });
+});
+
+describe('consistency', () => {
+    const PHOTO = join('data', 'ghost', 'images', '2026', 'photo.jpg');
+    /** What the backup's content archive holds. */
+    const archived = async (root: string): Promise<string[]> => {
+        const entries: string[] = [];
+        await tar.t({
+            file: join(root, 'content.tar.gz'),
+            onReadEntry: (entry) => entries.push(entry.path),
+        });
+        return entries;
+    };
+    /** Compose's commands and the scratch check, in the order they ran. */
+    let events: string[];
+
+    beforeEach(() => {
+        running.add('activitypub');
+        events = [];
+        const answer = h.daemon.composeRun!;
+        h.daemon.composeRun = (args, env, input) => {
+            const result = answer(args, env, input);
+            const services = args
+                .slice(1)
+                .filter((arg) => /^[a-z]+$/.test(arg))
+                .join(' ');
+            events.push(
+                args[0] === 'exec'
+                    ? 'dump'
+                    : args[0] === 'up' && args.includes('--no-recreate')
+                      ? `resume ${services}`
+                      : args[0] === 'stop'
+                        ? `stop ${services}`
+                        : args[0]!,
+            );
+            return result;
+        };
+        const run = h.daemon.run!;
+        h.daemon.run = (spec) => {
+            events.push(spec.entrypoint[0] === 'sh' ? 'scratch' : spec.entrypoint[0]!);
+            return run(spec);
+        };
+        // Something writing while Ghost runs: a post's image removed after
+        // the database that refers to it was dumped.
+        dump = () => {
+            if (running.has('ghost')) {
+                rmSync(join(h.dir, PHOTO), { force: true });
+            }
+            return ok(DUMP);
+        };
+    });
+
+    test('a consistent backup stops Ghost and ActivityPub for the capture, running again before the check', async () => {
+        const root = await backUp('--consistent');
+        assert.deepEqual(events, [
+            'config',
+            'ps',
+            'stop ghost activitypub',
+            // Each dump, then its tables counted over the site network.
+            'dump',
+            'ps',
+            'dump',
+            'ps',
+            'resume ghost activitypub',
+            'scratch',
+        ]);
+        assert.deepEqual([...running].sort(), ['activitypub', 'db', 'ghost']);
+        assert.equal(
+            JSON.parse(readFileSync(join(root, 'manifest.json'), 'utf8')).consistency,
+            'quiesced',
+        );
+        // Nothing wrote between the dumps and the archive: the image the
+        // database refers to is in it.
+        assert.ok((await archived(root)).includes('./images/2026/photo.jpg'));
+    });
+
+    test('a backup is live by default: they keep running, and it records its weaker guarantee', async () => {
+        const result = await h.run('backup');
+        assert.equal(result.code, 0, result.stderr);
+        assert.match(result.stdout, /captured at different moments/);
+        assert.ok(!events.some((event) => event.startsWith('stop') || event.startsWith('resume')));
+        const [id] = backups();
+        const root = join(h.dir, 'backups', id!);
+        assert.equal(
+            JSON.parse(readFileSync(join(root, 'manifest.json'), 'utf8')).consistency,
+            'live',
+        );
+        // The writer ran during the capture: the database refers to an image
+        // the archive does not hold, which is what live means.
+        assert.ok(!(await archived(root)).includes('./images/2026/photo.jpg'));
+
+        const restored = await h.run('restore', '--yes', root);
+        assert.equal(restored.code, 0, restored.stderr);
+        assert.match(restored.stdout, /This backup was taken live/);
+    });
+
+    test('writers that were not running are not started', async () => {
+        running.delete('ghost');
+        running.delete('activitypub');
+        await backUp('--consistent');
+        assert.ok(!events.some((event) => event.startsWith('stop') || event.startsWith('resume')));
+        assert.deepEqual([...running], ['db']);
+    });
+
+    test('only the writers that were running are stopped and started again', async () => {
+        running.delete('activitypub');
+        await backUp('--consistent');
+        assert.ok(events.includes('stop ghost'));
+        assert.deepEqual(
+            events.filter((event) => event.startsWith('resume')),
+            ['resume ghost'],
+        );
+        assert.deepEqual([...running].sort(), ['db', 'ghost']);
+    });
+
+    test('a capture that fails starts the writers again', async () => {
+        dump = (database) =>
+            database === 'activitypub' ? failed(2, 'mysqldump: Got error: 2013') : ok(DUMP);
+        const result = await h.run('backup', '--consistent');
+        assert.equal(result.code, 1);
+        assert.match(result.stderr, /the activitypub database could not be dumped/);
+        assert.deepEqual(
+            events.filter((event) => event.startsWith('resume')),
+            ['resume ghost activitypub'],
+        );
+        assert.deepEqual([...running].sort(), ['activitypub', 'db', 'ghost']);
+        assert.deepEqual(backups(), []);
+    });
+
+    test('a check that fails after the capture leaves the writers running', async () => {
+        scratch = () => ({ status: 4, stderr: 'the dump of ghost does not load\n' });
+        const result = await h.run('backup', '--consistent');
+        assert.equal(result.code, 1);
+        assert.deepEqual(
+            events.filter((event) => event.startsWith('resume')),
+            ['resume ghost activitypub'],
+        );
+        assert.deepEqual([...running].sort(), ['activitypub', 'db', 'ghost']);
+        assert.deepEqual(backups(), []);
+    });
+
+    test('writers that do not start again fail the backup, saying how to start them', async () => {
+        ups = [failed(1, 'container ghost is unhealthy')];
+        const result = await h.run('backup', '--consistent');
+        assert.equal(result.code, 1);
+        assert.match(
+            result.stderr,
+            /ghost and activitypub did not start again after the capture: container ghost is unhealthy/,
+        );
+        assert.match(result.stderr, /docker compose up -d/);
+        assert.deepEqual(backups(), []);
     });
 });
 

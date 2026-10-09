@@ -497,7 +497,7 @@ manager image built from it as `ghost-docker:checkout-<commit>`. `--to` and
 ## backup and restore
 
 ```text
-ghost-docker backup
+ghost-docker backup [--consistent]
 ghost-docker restore [--yes] <backup>
 ```
 
@@ -524,11 +524,38 @@ as `backups/.<name>.partial`, and a failure removes that. **A dump that fails
 is an error, not a backup:** `backup` exits `1` and leaves nothing in
 `backups/`.
 
-The site keeps running. If its database was not running, it is started for
-the dump and stopped again. What a backup cannot hold is named in its
-manifest and in the summary: Caddy's certificates, which Caddy obtains again
-when the site starts; the Tinybird workspace and analytics data outside the
-site; Mailpit's inbox.
+What a backup cannot hold is named in its manifest and in the summary:
+Caddy's certificates, which Caddy obtains again when the site starts; the
+Tinybird workspace and analytics data outside the site; Mailpit's inbox.
+
+#### What a backup captures
+
+By default a backup is **live**, as Ghost-CLI's was: the site keeps running,
+and nothing is unavailable. Each database's dump is one consistent snapshot
+of that database, but each database and the content are captured at
+different moments. Content written or removed during the backup, and
+anything that relates Ghost's and ActivityPub's data, may not match: a
+restored post can refer to an image deleted before the content was archived.
+On a quiet site this rarely matters. The manifest records
+`"consistency": "live"`, and `restore` says so when it restores one.
+
+`--consistent` makes the databases and the content **one moment** of the
+site. Ghost and ActivityPub, the services that write them, are stopped
+(`docker compose stop`) while the databases are dumped, the content archived
+and the site's files copied, then started again, the same containers, before
+the backup is checked. The site is unavailable for the capture alone,
+typically seconds to a few minutes for a large content directory; Caddy and
+MySQL keep running, so visitors get an error from Caddy rather than no
+answer. The manifest records `"consistency": "quiesced"`.
+
+The writers end as they began: those that were not running are not started,
+and those that were are started again whether the backup succeeds or fails.
+If they do not start again, `backup` fails and says so; start them with
+`docker compose up -d`. In either mode, if the database was not running, it
+is started for the dump and stopped again.
+
+`self-update` takes a consistent backup: it restarts the services anyway, and
+a failed update is put back from it.
 
 What the backup records is what Compose resolves from every file the site
 runs with, and what the daemon runs, not what `.env` alone says:
