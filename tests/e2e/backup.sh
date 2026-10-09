@@ -354,9 +354,12 @@ ok "check reports a stale lock and how to remove it"
 step "A consistent backup whose dump fails is an error, not a backup, and leaves the writers running"
 before=$(backups_of "$B")
 writers_before=$(writers "$B")
-root_sql "$B" "REVOKE SELECT ON \`ghost\`.* FROM 'ghost'@'%'"
+# A view whose table is gone: mysqldump cannot dump it, and Ghost, which
+# never reads it, still starts. Taking a privilege away from Ghost's user
+# instead would also stop Ghost starting again after the capture.
+root_sql "$B" 'CREATE TABLE ghost.e2e_gone (n INT); CREATE VIEW ghost.e2e_broken AS SELECT n FROM ghost.e2e_gone; DROP TABLE ghost.e2e_gone'
 run gd "$B" backup --consistent
-root_sql "$B" "GRANT SELECT ON \`ghost\`.* TO 'ghost'@'%'"
+root_sql "$B" 'DROP VIEW ghost.e2e_broken'
 expect_status 1
 expect_output 'the ghost database could not be dumped'
 [[ $(backups_of "$B") == "$before" ]] || fail "a failed dump left a backup behind" "$(backups_of "$B")"
