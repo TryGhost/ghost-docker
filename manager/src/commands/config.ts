@@ -6,7 +6,7 @@
 // value because it was asked for one.
 import { join } from 'node:path';
 import { defineCommand } from '../command.ts';
-import { operatorKeyTest, validate } from '../config.ts';
+import { findingChecks, operatorKeyTest, validate } from '../config.ts';
 import * as env from '../env.ts';
 import { EXIT, UsageError } from '../errors.ts';
 import { atomicWrite, PRIVATE, readIfExists } from '../fs.ts';
@@ -111,15 +111,7 @@ export const setCommand = defineCommand({
 export async function validateSite(io: Io): Promise<number> {
     const { site } = installedSite(io);
     const findings = await io.busy('Validating the configuration', () => validate(io, site.dir));
-    printChecks(
-        io,
-        findings.map((finding) => ({
-            status: finding.level === 'error' ? 'error' : 'warn',
-            label: finding.file,
-            detail: finding.message,
-        })),
-        10,
-    );
+    printChecks(io, findingChecks(findings), 10);
     if (findings.some((finding) => finding.level === 'error')) {
         return EXIT.failure;
     }

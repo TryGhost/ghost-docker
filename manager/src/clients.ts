@@ -4,6 +4,7 @@
 //
 // The dumps themselves stay with the version-matched mysqldump and mysql in
 // the db container: these clients ask questions, they do not move data.
+import { once } from 'node:events';
 import { checkServerIdentity, connect as connectTls } from 'node:tls';
 import { createConnection, type Connection } from 'mysql2/promise';
 
@@ -53,58 +54,32 @@ const DEFAULT_TIMEOUT_MS = 10_000;
 
 const seconds = (ms: number) => `${Math.round(ms / 1000)} seconds`;
 
-const unreachable = (target: Target, error: unknown): ServiceUnreachable =>
-    error instanceof ServiceUnreachable
-        ? error
-        : new ServiceUnreachable(
-              'connect',
-              `${target.host}:${target.port}: ${error instanceof Error ? error.message : String(error)}`,
-              { cause: error },
-          );
-
-const certificate: Clients['certificate'] = (target) =>
-    new Promise((resolve, reject) => {
-        const timeoutMs = target.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-        let connected = false;
-        // Not verified against a trust store: the question is what the server
-        // presents for the name, which `covers` and `issuer` answer.
-        const socket = connectTls({
-            host: target.host,
-            port: target.port,
-            servername: target.servername,
-            rejectUnauthorized: false,
-            timeout: timeoutMs,
-        });
-        socket.once('connect', () => {
-            connected = true;
-        });
-        socket.once('secureConnect', () => {
-            const peer = socket.getPeerCertificate();
-            socket.destroy();
-            if (!peer || Object.keys(peer).length === 0) {
-                reject(new ServiceUnreachable('tls', 'the server presented no certificate'));
-                return;
-            }
-            resolve({
-                issuer:
-                    [peer.issuer?.O, peer.issuer?.CN].flat().find(Boolean) ?? 'an unnamed issuer',
-                covers: checkServerIdentity(target.servername, peer) === undefined,
-            });
-        });
-        socket.once('timeout', () => {
-            socket.destroy();
-            reject(new ServiceUnreachable('timeout', `no answer within ${seconds(timeoutMs)}`));
-        });
-        socket.once('error', (error) => {
-            socket.destroy();
-            // Connected, then refused a session: TLS itself failed.
-            reject(
-                connected
-                    ? new ServiceUnreachable('tls', error.message, { cause: error })
-                    : unreachable(target, error),
-            );
-        });
-    });
+const certificate: Clients['certificate'] = async ({
+    host,
+    port,
+    servername,
+    timeoutMs = DEFAULT_TIMEOUT_MS,
+}) => {
+    // Not verified against a trust store: the question is what the server
+    // presents for the name, which `covers` and `issuer` answer.
+    const socket = connectTls({ host, port, servername, rejectUnauthorized: false });
+    try {
+        await once(socket, 'secureConnect', { signal: AbortSignal.timeout(timeoutMs) });
+        const peer = socket.getPeerCertificate();
+        return {
+            issuer: [peer.issuer?.O, peer.issuer?.CN].flat().find(Boolean) ?? 'an unnamed issuer',
+            covers: checkServerIdentity(servername, peer) === undefined,
+        };
+    } catch (error) {
+        const timedOut = (error as Error).name === 'AbortError';
+        // Connected, then refused a session: TLS itself failed.
+        const stage = timedOut ? 'timeout' : socket.connecting ? 'connect' : 'tls';
+        const said = timedOut ? `no answer within ${seconds(timeoutMs)}` : (error as Error).message;
+        throw new ServiceUnreachable(stage, `${host}:${port}: ${said}`, { cause: error });
+    } finally {
+        socket.destroy();
+    }
+};
 
 /** What a mysql2 error says, with MySQL's own code when there is one. */
 const sqlMessage = (error: unknown): string => {

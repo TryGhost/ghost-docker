@@ -15,18 +15,23 @@ export interface InstalledSite {
 }
 
 /**
- * The launcher's context, and the site in its directory. The manager must be
- * working in the directory the launcher mounted, or every bind mount would
- * resolve to somewhere else.
+ * The launcher's context. The manager must be working in the directory the
+ * launcher mounted, or every bind mount would resolve to somewhere else.
  */
-export function installedSite(io: Io): InstalledSite {
+export function siteContext(io: Io): Context {
     const context = loadContext(io.env);
-    const dir = context.siteDir;
-    if (io.cwd() !== dir) {
+    if (io.cwd() !== context.siteDir) {
         throw new CliError(
-            `working in ${io.cwd()}, but the launcher gave the site directory as ${dir}`,
+            `working in ${io.cwd()}, but the launcher gave the site directory as ${context.siteDir}`,
         );
     }
+    return context;
+}
+
+/** The launcher's context, and the site in its directory. */
+export function installedSite(io: Io): InstalledSite {
+    const context = siteContext(io);
+    const dir = context.siteDir;
     const settings = readSettings(dir);
     if (settings === null) {
         throw new CliError(

@@ -1,9 +1,8 @@
 // What the manager leaves to the image's own Compose, against that Compose.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { compose, composeVersion } from '../../src/compose.ts';
+import { ALL_PROFILES, compose, composeVersion } from '../../src/compose.ts';
 import { operatorKeyTest } from '../../src/config.ts';
-import { ALL_PROFILES } from '../../src/undo.ts';
 import { atLeast, MINIMUM } from '../../src/versions.ts';
 import { makeSite, NO_HOST_PORTS, realIo } from './site.ts';
 

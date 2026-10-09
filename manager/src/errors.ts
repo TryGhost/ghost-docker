@@ -22,6 +22,12 @@ export class CliError extends Error {
     }
 }
 
+/** An error as the operator sees it: a CliError's message, anything else with its stack. */
+export const describeError = (error: unknown): string =>
+    error instanceof CliError
+        ? `error: ${error.message}`
+        : `error: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`;
+
 export class UsageError extends CliError {
     constructor(message: string) {
         super(message, EXIT.usage);

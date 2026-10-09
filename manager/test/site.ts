@@ -1,11 +1,23 @@
 // A site directory for tests: the repository's own compose.yml and examples,
 // a `.env` written through the real encoder, and a scripted
 // `docker compose config` that answers what Compose would.
-import { copyFileSync, cpSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+    copyFileSync,
+    cpSync,
+    mkdirSync,
+    mkdtempSync,
+    readFileSync,
+    realpathSync,
+    renameSync,
+    rmSync,
+    writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { DockerRequest, DockerResponse } from '../src/docker/transport.ts';
 import * as env from '../src/env.ts';
-import { failed, ok, type Harness } from './helpers.ts';
+import { failed, json, ok, type CreatedContainer, type Harness } from './helpers.ts';
 
 export const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -109,4 +121,98 @@ export function makeSite(
         }
         return resolve?.(args, environment);
     };
+}
+
+// --- An image-mode site ---------------------------------------------------------
+
+/** The Ghost image every fake pull resolves to. */
+export const INDEX = `sha256:${'1'.repeat(64)}`;
+export const REFERENCE = `ghost@${INDEX}`;
+
+/**
+ * The stack's files as the manager image carries them, in a directory of
+ * their own that the harness removes, with GD_* pointing at them as the
+ * image's environment does.
+ */
+export function imageStack(h: Harness): string {
+    const stack = realpathSync(mkdtempSync(join(tmpdir(), 'gd-stack-')));
+    for (const file of ['compose.yml', 'compose.ipv6.yml', '.env.example', 'ghost.env.example']) {
+        copyFileSync(join(REPO, file), join(stack, file));
+    }
+    for (const directory of ['caddy', 'mysql-init']) {
+        cpSync(join(REPO, directory), join(stack, directory), { recursive: true });
+    }
+    h.env.GD_STACK_DIR = stack;
+    h.env.GD_LAUNCHER_SOURCE = join(REPO, 'ghost-docker');
+    h.env.GD_SOURCE = 'image';
+    const cleanup = h.cleanup;
+    h.cleanup = () => {
+        rmSync(stack, { recursive: true, force: true });
+        cleanup();
+    };
+    return stack;
+}
+
+export interface ImageApi {
+    /** Ghost's tags the registry has, and the version each is; `6-next-alpine` is 6.67.0. */
+    readonly ghost?: Readonly<Record<string, string>>;
+    /** The manager image's ID; it has no repository digest. */
+    readonly manager?: () => string;
+    /** Each tag pulled, in order. */
+    readonly pulls?: string[];
+}
+
+/** The daemon's answers about the images an image-mode command reads. */
+export const imageApi =
+    ({ ghost = { '6-next-alpine': '6.67.0' }, manager, pulls }: ImageApi = {}) =>
+    ({ method, path, query }: DockerRequest): DockerResponse | undefined => {
+        if (method === 'POST' && path === '/images/create') {
+            const tag = query?.tag ?? '';
+            pulls?.push(tag);
+            return query?.fromImage !== 'ghost' || tag in ghost
+                ? { status: 200, body: Buffer.from('{"status":"Pulled"}\n') }
+                : json(404, { message: `manifest for ghost:${tag} not found` });
+        }
+        const tag = /^\/images\/ghost:(.+)\/json$/.exec(path)?.[1];
+        if (method === 'GET' && tag !== undefined && tag in ghost) {
+            return json(200, {
+                Id: INDEX,
+                RepoDigests: [REFERENCE],
+                Config: {
+                    Env: [
+                        `GHOST_VERSION=${ghost[tag]}`,
+                        'GHOST_CONTENT=/home/ghost/content',
+                        'GHOST_INSTALL=/home/ghost',
+                    ],
+                },
+            });
+        }
+        if (method === 'GET' && path === '/images/ghost-docker:checkout/json') {
+            return json(200, {
+                Id: manager?.() ?? `sha256:${'2'.repeat(64)}`,
+                RepoDigests: [],
+                Config: { Env: [] },
+            });
+        }
+        return undefined;
+    };
+
+/** A one-shot root container doing to the site what it would on a real host: `mv` and `rm`. */
+export function rootContainer(spec: CreatedContainer): { status: number } | undefined {
+    const site = spec.binds.find((bind) => bind.endsWith(':/site'))?.split(':')[0];
+    const onHost = (path: string) => join(site!, path.replace(/^\/site\/?/, ''));
+    if (spec.entrypoint[0] === 'mv') {
+        const target = onHost(spec.cmd.at(-1)!);
+        for (const source of spec.cmd.slice(0, -1)) {
+            renameSync(onHost(source), join(target, source.split('/').pop()!));
+        }
+        return { status: 0 };
+    }
+    if (spec.entrypoint[0] === 'rm') {
+        for (const path of spec.cmd) {
+            rmSync(onHost(path), { recursive: true, force: true });
+        }
+        return { status: 0 };
+    }
+    return undefined;
 }

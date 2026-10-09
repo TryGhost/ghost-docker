@@ -3,7 +3,6 @@
 // tests/e2e/import.sh; this is what it decides.
 import assert from 'node:assert/strict';
 import {
-    cpSync,
     existsSync,
     mkdirSync,
     mkdtempSync,
@@ -29,11 +28,9 @@ import {
     rowCountQuery,
     rowMismatches,
 } from '../src/import/database.ts';
-import { failed, harness, json, ok, ps, type Harness, type ProgramResult } from './helpers.ts';
-import { fixture, REPO, type Manifest } from './site.ts';
+import { failed, harness, ok, ps, type Harness, type ProgramResult } from './helpers.ts';
+import { fixture, imageApi, imageStack, REFERENCE, rootContainer, type Manifest } from './site.ts';
 
-const INDEX = `sha256:${'1'.repeat(64)}`;
-const REFERENCE = `ghost@${INDEX}`;
 const VERSION = '6.2.0';
 
 // --- The pieces ---------------------------------------------------------------
@@ -194,17 +191,7 @@ let images: Record<string, string>;
 beforeEach(() => {
     h = harness();
     work = realpathSync(mkdtempSync(join(tmpdir(), 'gd-import-bundle-')));
-    const stack = join(work, 'stack');
-    mkdirSync(stack);
-    for (const file of ['compose.yml', 'compose.ipv6.yml', '.env.example', 'ghost.env.example']) {
-        cpSync(join(REPO, file), join(stack, file));
-    }
-    for (const directory of ['caddy', 'mysql-init']) {
-        cpSync(join(REPO, directory), join(stack, directory), { recursive: true });
-    }
-    h.env.GD_STACK_DIR = stack;
-    h.env.GD_LAUNCHER_SOURCE = join(REPO, 'ghost-docker');
-    h.env.GD_SOURCE = 'image';
+    imageStack(h);
 
     calls = [];
     pulls = [];
@@ -224,38 +211,8 @@ beforeEach(() => {
         return undefined;
     };
     images = { [`${VERSION}-next-alpine`]: VERSION };
-    h.daemon.api = ({ method, path, query }) => {
-        if (method === 'POST' && path === '/images/create') {
-            const tag = query?.tag ?? '';
-            pulls.push(tag);
-            return tag in images
-                ? { status: 200, body: Buffer.from('{"status":"Pulled"}\n') }
-                : json(404, { message: `manifest for ghost:${tag} not found` });
-        }
-        const image = /^\/images\/ghost:(.+)\/json$/.exec(path);
-        if (method === 'GET' && image && image[1]! in images) {
-            return json(200, {
-                Id: INDEX,
-                RepoDigests: [REFERENCE],
-                Config: {
-                    Env: [
-                        `GHOST_VERSION=${images[image[1]!]}`,
-                        'GHOST_CONTENT=/home/ghost/content',
-                        'GHOST_INSTALL=/home/ghost',
-                    ],
-                },
-            });
-        }
-        if (method === 'GET' && path === '/images/ghost-docker:checkout/json') {
-            return json(200, {
-                Id: `sha256:${'2'.repeat(64)}`,
-                RepoDigests: [],
-                Config: { Env: [] },
-            });
-        }
-        return undefined;
-    };
-    h.daemon.run = ({ entrypoint }) => (entrypoint[0] === 'rm' ? { status: 0 } : undefined);
+    h.daemon.api = (request) => imageApi({ ghost: images, pulls })(request);
+    h.daemon.run = rootContainer;
     h.daemon.composeRun = (args, environment, input) => {
         calls.push({ args, profiles: environment.COMPOSE_PROFILES, input });
         switch (args[0]) {
@@ -724,7 +681,7 @@ describe('an import that is kept, or killed, cannot be started and is cleared by
 });
 
 test('the load reads database.sql through the DEFINER filter for a dump only', async () => {
-    const { databaseInput } = await import('../src/import/database.ts');
+    const { sqlFile } = await import('../src/import/database.ts');
     const dir = bundle(local('mysql-dump'));
     writeFileSync(
         join(dir, 'database.sql'),
@@ -733,7 +690,8 @@ test('the load reads database.sql through the DEFINER filter for a dump only', a
     const read = (kind: string) => {
         const result = readManifest(local(kind));
         assert.ok(result.ok);
-        return text(databaseInput(dir, result.manifest));
+        // As the import decides it: only a dump is filtered.
+        return text(sqlFile(join(dir, 'database.sql'), result.manifest.kind === 'mysql-dump'));
     };
     assert.equal(await read('mysql-dump'), '/*!50013 SQL SECURITY DEFINER */\n');
     assert.equal(await read('mysql-data'), '/*!50013 DEFINER=`root`@`%` SQL SECURITY DEFINER */\n');

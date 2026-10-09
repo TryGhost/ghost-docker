@@ -14,6 +14,7 @@ import { existsSync } from 'node:fs';
 import { dirname, isAbsolute, join } from 'node:path';
 import type { Readable } from 'node:stream';
 import { z } from 'zod';
+import { CliError } from './errors.ts';
 import type { Io } from './io.ts';
 import type { Exec } from './process.ts';
 import { COMPOSE_FILE, COMPOSE_OVERRIDE_FILE } from './site.ts';
@@ -117,6 +118,69 @@ export async function compose(
         stderr: String(result.stderr ?? result.shortMessage ?? ''),
         timedOut: Boolean(result.timedOut),
     };
+}
+
+/**
+ * Every profile, as Compose itself spells it, so whatever a site started is
+ * found, including profiles added later.
+ */
+export const ALL_PROFILES = '*';
+
+/** `down`, of every profile's services when `allProfiles`; volumes only when asked. */
+export const composeDown = (
+    io: Io,
+    dir: string,
+    { volumes = false, allProfiles = false }: { volumes?: boolean; allProfiles?: boolean } = {},
+): Promise<ComposeResult> =>
+    compose(
+        io,
+        dir,
+        ['down', ...(volumes ? ['--volumes'] : []), '--remove-orphans', '--timeout', '20'],
+        {
+            timeoutMs: 300_000,
+            ...(allProfiles ? { env: { COMPOSE_PROFILES: ALL_PROFILES } } : {}),
+        },
+    );
+
+/** How long `up --wait` gives the services to become healthy. */
+export const READY_SECONDS = 600;
+
+/**
+ * `up --detach --wait` for `services`, or every service the profiles select,
+ * with time beyond the wait to pull their images.
+ */
+export const composeUp = (
+    io: Io,
+    dir: string,
+    services: readonly string[] = [],
+    env?: Readonly<Record<string, string>>,
+): Promise<ComposeResult> =>
+    compose(
+        io,
+        dir,
+        ['up', '--detach', '--wait', '--wait-timeout', String(READY_SECONDS), ...services],
+        {
+            timeoutMs: (READY_SECONDS + 900) * 1000,
+            ...(env === undefined ? {} : { env }),
+        },
+    );
+
+/**
+ * Every service up and healthy, behind a spinner, or an error in Compose's
+ * own words, then `hint`. Docker names a port it could not bind; its wording
+ * changes between versions, so it is quoted, not parsed.
+ */
+export async function upAndWait(io: Io, dir: string, spinner: string, hint = ''): Promise<void> {
+    const up = await io.busy(spinner, () => composeUp(io, dir));
+    if (up.exitCode !== 0) {
+        const said = composeError(up, 8)
+            .split('\n')
+            .map((line) => `  ${line}`)
+            .join('\n');
+        throw new CliError(
+            `${up.timedOut ? 'the services did not finish starting before the deadline' : 'the services did not start and become healthy'}. Compose said:\n${said}${hint ? `\n${hint}` : ''}`,
+        );
+    }
 }
 
 /** Compose's own last words: the final non-empty lines of its stderr. */

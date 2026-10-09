@@ -25,18 +25,18 @@ import { randomBytes } from 'node:crypto';
 import { existsSync, readdirSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { ACME_EMAIL, isHostname, SITE_FILE, writeRoutes } from '../caddy.ts';
-import { compose } from '../compose.ts';
+import { ALL_PROFILES, compose, upAndWait } from '../compose.ts';
 import { z } from 'zod';
 import { defineCommand, flag, refused } from '../command.ts';
-import { validate } from '../config.ts';
+import { findingErrors, validate } from '../config.ts';
 import { loadContext, type Context } from '../context.ts';
 import * as env from '../env.ts';
-import { CliError, EXIT, UsageError } from '../errors.ts';
+import { CliError, describeError, EXIT, UsageError } from '../errors.ts';
 import { atomicWrite, PRIVATE } from '../fs.ts';
 import { resolveGhost, type ResolvedGhost } from '../ghost.ts';
 import { clearUnfinishedImport, Importing, importConflict } from '../import.ts';
 import type { Io, Prompter } from '../io.ts';
-import { SCHEMA_VERSION, writeMetadata } from '../meta.ts';
+import { isoSeconds, SCHEMA_VERSION, writeMetadata } from '../meta.ts';
 import {
     isCheckout,
     makeDirectories,
@@ -47,20 +47,18 @@ import {
     writeLauncher,
     writePayload,
 } from '../payload.ts';
-import { failed, printChecks } from '../report.ts';
+import { failed, heading, ok, printChecks } from '../report.ts';
 import {
     DATA_DIRS,
     ENV_FILE,
     GHOST_ENV_FILE,
     MAILPIT_DATA_DIR,
     META_FILE,
-    readSettings,
-    siteFacts,
     type SiteMode,
 } from '../site.ts';
 import { takenPorts } from '../ports.ts';
-import { ALL_PROFILES, Created } from '../undo.ts';
-import { verifyIngress } from '../verify.ts';
+import { Created } from '../undo.ts';
+import { verifySite } from '../verify.ts';
 import {
     channelOption,
     releaseOf,
@@ -78,7 +76,6 @@ export const DEFAULT_MAILPIT_PORT = 8025;
 const PORT_SEARCH = 200;
 const PRODUCTION_PORTS = { http: 80, https: 443 } as const;
 /** Compose waits this long for health checks; pulls and builds come before it. */
-export const READY_TIMEOUT_SECONDS = 600;
 
 /** The services `--with` can name. */
 const OPTIONAL_SERVICES = ['activitypub', 'mailpit'];
@@ -289,10 +286,6 @@ export function choosePort(taken: ReadonlySet<number>, start = DEFAULT_PORT): nu
 }
 
 // --- The installation ---------------------------------------------------------
-
-const heading = (io: Io, title: string) => io.stdout(`\n${title}\n`);
-const ok = (io: Io, label: string, detail = '') =>
-    printChecks(io, [{ status: 'ok', label, detail }]);
 
 /** The site directory, and what installation would write into it. */
 interface Target {
@@ -655,10 +648,10 @@ function makeDataDirectories({ io, dir, intent }: Site, created: Created, isImpo
 
 async function validateConfiguration({ io, dir, intent }: Site) {
     const findings = await io.busy('Validating the configuration', () => validate(io, dir));
-    const errors = findings.filter((finding) => finding.level === 'error');
-    if (errors.length > 0) {
+    const errors = findingErrors(findings);
+    if (errors) {
         throw new CliError(
-            `the generated configuration did not validate; please report this:\n${errors.map((finding) => `  ${finding.file}: ${finding.message}`).join('\n')}`,
+            `the generated configuration did not validate; please report this:\n${errors}`,
         );
     }
     ok(io, 'configuration', `.env and ghost.env are valid for a ${intent.mode} site`);
@@ -691,7 +684,7 @@ function writeSiteMetadata(site: Site, created: Created) {
     created.file(join(dir, META_FILE));
     writeMetadata(dir, {
         schemaVersion: SCHEMA_VERSION,
-        installedAt: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+        installedAt: isoSeconds(),
         mode: intent.mode,
         channel: clone ? null : channel,
         source: clone ? 'checkout' : 'image',
@@ -725,29 +718,16 @@ function writeSiteMetadata(site: Site, created: Created) {
 async function startAndVerify({ io, dir }: Site, created: Created) {
     heading(io, 'Starting the services');
     created.project = true;
-    const up = await io.busy(
+    await upAndWait(
+        io,
+        dir,
         'Pulling images, starting the services and waiting for them to be healthy',
-        () =>
-            compose(
-                io,
-                dir,
-                ['up', '--detach', '--wait', '--wait-timeout', String(READY_TIMEOUT_SECONDS)],
-                { timeoutMs: (READY_TIMEOUT_SECONDS + 900) * 1000 },
-            ),
+        '  If a port is already in use, choose another for Ghost with --port; a production\n' +
+            '  site needs 80 and 443 free for Caddy. Nothing that was already running was stopped.',
     );
-    if (up.exitCode !== 0) {
-        throw startFailure(up.stderr || up.stdout, up.timedOut);
-    }
     ok(io, 'services', 'healthy, by their own health checks');
 
-    heading(io, 'Verifying the site');
-    const verified = await io.busy('Reaching the site through its ingress', () =>
-        verifyIngress(io, siteFacts(dir, readSettings(dir)!)),
-    );
-    printChecks(io, verified);
-    if (failed(verified)) {
-        throw new CliError('the site started, but it is not reachable through its own ingress');
-    }
+    await verifySite(io, dir);
 }
 
 // --- The outcome ----------------------------------------------------------------
@@ -762,7 +742,7 @@ async function undoInstall(
     importing: Importing | null,
     error: unknown,
 ): Promise<never> {
-    io.stderr(`\n${describe(error)}\n`);
+    io.stderr(`\n${describeError(error)}\n`);
     importing?.markIncomplete();
     if (created.project) {
         const logs = await io.busy("Reading the services' logs", () =>
@@ -836,11 +816,6 @@ function printSummary(site: Site, importing: Importing | null) {
     );
 }
 
-const describe = (error: unknown) =>
-    error instanceof CliError
-        ? `error: ${error.message}`
-        : `error: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`;
-
 /**
  * Written fresh rather than copied from the example, whose SMTP block is a
  * placeholder: a site shipping with smtp.example.com fails to send mail in a
@@ -870,21 +845,3 @@ export const mailpitMail = (project: string): [string, string][] => [
     ['mail__options__port', '1025'],
     ['mail__options__secure', 'false'],
 ];
-
-/**
- * Why `up` failed, in Compose's own words. Docker names a port it could not
- * bind; its wording changes between versions, so it is quoted, not parsed.
- */
-function startFailure(output: string, timedOut: boolean): CliError {
-    const said = output
-        .trim()
-        .split('\n')
-        .slice(-8)
-        .map((line) => `  ${line}`)
-        .join('\n');
-    return new CliError(
-        `${timedOut ? 'the services did not finish starting before the deadline' : 'the services did not start and become healthy'}. Compose said:\n${said}\n` +
-            '  If a port is already in use, choose another for Ghost with --port; a production\n' +
-            '  site needs 80 and 443 free for Caddy. Nothing that was already running was stopped.',
-    );
-}
