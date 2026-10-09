@@ -92,9 +92,10 @@ http_status() {
     curl --silent --noproxy '*' --max-time 20 --output /dev/null --write-out '%{http_code}' \
         "http://127.0.0.1:$1/ghost/api/admin/site/" || true
 }
-# Every file under a directory with its checksum, to compare before and after.
+# Every file under a directory with its checksum, to compare before and after:
+# not the data, nor the backups each update takes.
 fingerprint() {
-    (cd "$1" && find . -type f -not -path './data/*' -not -path './.git/*' -print0 | sort -z |
+    (cd "$1" && find . -type f -not -path './data/*' -not -path './backups/*' -not -path './.git/*' -print0 | sort -z |
         xargs -0 shasum -a 256)
 }
 
@@ -240,13 +241,15 @@ compose_before=$(git_c show "$previous:compose.yml")
 run env -u GD_IMAGE "$C/ghost-docker" --dir "$C" self-update
 expect_status 1
 expect_output 'did not start and become healthy'
-expect_output "Restored: the site is back on commit ${previous:0:12}, with its files as they were, and its services running and healthy\\."
+expect_output "Restored: the site is back on commit ${previous:0:12}, with its files as they were, its databases and content from the backup, and its services running and healthy\\."
+expect_output 'The backup taken before the update is kept in backups/'
 [[ $(git_c rev-parse HEAD) == "$previous" ]] || fail "the checkout is at $(git_c rev-parse HEAD), not $previous"
 [[ $(cat "$C/compose.yml") == "$compose_before" ]] || fail "compose.yml is not the previous commit's"
 if ! records "$C" commit "$previous" || records "$C" commit "$broken"; then
     fail "the metadata does not record $previous alone" "$(cat "$C/.ghost-docker.json")"
 fi
 [[ $(http_status "$clone_port") == 200 ]] || fail "the site does not answer on 127.0.0.1:$clone_port"
-ok "the checkout is at ${previous:0:12} again, and the site answers"
+[[ ! -e $C/.ghost-docker-update && ! -e $C/.ghost-docker.lock ]] || fail "the update left its snapshot or lock"
+ok "the checkout is at ${previous:0:12} again, its databases loaded from the backup, and the site answers"
 
 printf '\nAll checks passed.\n'
