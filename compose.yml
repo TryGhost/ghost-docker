@@ -65,6 +65,7 @@ services:
       tinybird__tracker__datasource: analytics_events
       tinybird__adminToken: ${TINYBIRD_ADMIN_TOKEN:-}
       tinybird__workspaceId: ${TINYBIRD_WORKSPACE_ID:-}
+      tinybird__sync_auth_key: ${TINYBIRD_SYNC_AUTH:-}
       tinybird__stats__endpoint: ${TINYBIRD_API_URL:-https://api.tinybird.co}
     volumes:
       - ${UPLOAD_LOCATION:-./data/ghost}:${GHOST_CONTENT_PATH:-/home/ghost/content}
@@ -194,6 +195,7 @@ services:
       SALT_STORE_TYPE: ${SALT_STORE_TYPE:-file}
       SALT_STORE_FILE_PATH: /data/salts.json
       TINYBIRD_TRACKER_TOKEN: ${TINYBIRD_TRACKER_TOKEN:-}
+      TINYBIRD_SYNC_AUTH: ${TINYBIRD_SYNC_AUTH:-}
       LOG_LEVEL: ${TRAFFIC_ANALYTICS_LOG_LEVEL:-info}
     networks:
       ghost_network:
