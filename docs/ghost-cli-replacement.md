@@ -470,7 +470,7 @@ Write the protocol document before implementing either side. It must include:
   any added later) and its from/to versions; Admin renders both lists without
   component-specific rules. Stack updates are always manual: the stack update
   replaces the supervisor's own image and can change `compose.yml`, so it stays
-  a host command (`./ghost-docker update`). A Ghost upgrade the host's policy
+  a host command (`./ghost-docker self-update`). A Ghost upgrade the host's policy
   forbids, or one that needs a newer stack, is manual too and says why.
 - Request states including queued, backing-up, pulling, restarting, verifying, done,
   failed, restoring, rolled-back, and recovery-required, plus legal transitions.
@@ -1554,7 +1554,7 @@ show host capabilities, confirm downtime/backup behavior, and display durable jo
 progress with bounded reconnection and recovery guidance. Wire notification links.
 Show the status's two update lists (§2.6): one-click updates with an action, and
 manual ones as a notice with their reason and host steps, such as a stack update
-to run with `./ghost-docker update`.
+to run with `./ghost-docker self-update`.
 
 Acceptance: older backend, unsupported adapter, owner/admin permissions, successful
 restart/reconnect, queued job, stale supervisor, failed restore, and recovery-required
