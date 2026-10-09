@@ -145,7 +145,7 @@ jobs:
         run: |
           set -euo pipefail
           site=$(mktemp -d)
-          curl -fsSL "https://$DOMAIN/install.sh" | bash -s -- --dir "$site" install --local --no-prompt
+          curl -fsSL "https://$DOMAIN/install.sh" | bash -s -- --dir "$site" --local --no-prompt
           version=$(jq -r .stack.version "$site/.ghost-docker.json")
           channel=$(jq -r .channel "$site/.ghost-docker.json")
           [[ $version == "$TAG" && $channel == beta ]] || {

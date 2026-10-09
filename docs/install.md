@@ -2,13 +2,17 @@
 
 ```bash
 mkdir ~/my-site && cd ~/my-site
-curl -fsSL https://docker.ghost.org/install.sh | bash -s -- install --local   # or: --domain example.com
+curl -fsSL https://docker.ghost.org/install.sh | bash -s -- --local   # or: --domain example.com
 ```
 
 `install.sh` is the launcher, `ghost-docker`, from the newest release. Piped
-into bash it installs the newest release on the `beta` channel; `install`
-writes a copy of it into the site, and every later command is
-`./ghost-docker ...` from there.
+into bash with no command, it runs `install` with the options given, from the
+newest release on the `beta` channel. As with Ghost-CLI's `ghost install`, a
+site is a production one unless `--local` is given: plain `curl -fsSL
+https://docker.ghost.org/install.sh | bash` asks for its domain. `install`
+writes a copy of the launcher into the site, and every later command is
+`./ghost-docker ...` from there. Other commands can still be piped by name:
+`bash -s -- self-update`.
 
 ## Releases
 
@@ -26,7 +30,7 @@ a beta.
 | The development image | `GD_CHANNEL=edge` | `edge`, built from every push to `next-docker`. Not a release. |
 
 These go to the launcher with the command: `curl -fsSL
-https://docker.ghost.org/install.sh | bash -s -- install --local --release
+https://docker.ghost.org/install.sh | bash -s -- --local --release
 v0.1.0-beta.1`. A site always runs one image digest, never a channel: `install`
 pins the site's launcher to the digest it ran as, and records the channel the
 site follows, which `self-update` uses.
@@ -61,7 +65,7 @@ ghost-docker install --import BUNDLE [--domain DOMAIN] [--admin-domain DOMAIN] [
 | Option | Meaning |
 | --- | --- |
 | `--local` | Ghost and MySQL, published on `127.0.0.1:PORT`. `NODE_ENV=development`, `RESTART_POLICY=no`. |
-| `--domain DOMAIN` | Production: Ghost, MySQL and Caddy with HTTPS on that domain. |
+| `--domain DOMAIN` | The production site's domain: Ghost, MySQL and Caddy with HTTPS on it. Production is the default; asked for at a terminal when omitted. |
 | `--admin-domain DOMAIN` | A separate Ghost Admin domain. Production only. |
 | `--email EMAIL` | The ACME account email. Production only; see below. |
 | `--port PORT` | The loopback port Ghost is published on, in both modes. Omitted: the first at or above 2368 that is free (see [Ports](#ports-and-your-existing-proxy)). |
@@ -73,11 +77,11 @@ ghost-docker install --import BUNDLE [--domain DOMAIN] [--admin-domain DOMAIN] [
 | `--no-start` | Write the configuration and routes; create no containers. |
 | `--import BUNDLE` | Import a local or production Ghost-CLI site from the bundle `ghost migrate-export` made; see [Importing a Ghost-CLI site](#importing-a-ghost-cli-site). |
 
-With neither `--local` nor `--domain`, `install` asks which kind of site, and
-for a production site its domain. It asks only at a terminal, including when
-the launcher was piped from curl. Without one, or with `--no-prompt`, a missing
-answer is a usage error naming the option that supplies it; nothing has a
-silent default. Every question has an option, so a script never needs to answer
+Without `--local`, the site is a production one, as with Ghost-CLI's
+`ghost install`, and `install` asks for the domain `--domain` would give. It
+asks only at a terminal, including when the launcher was piped from curl.
+Without one, or with `--no-prompt`, a missing answer is a usage error naming
+the option that supplies it. Every question has an option, so a script never needs to answer
 one.
 
 Exit statuses: `0` installed, `1` failed, `2` a usage error. Options the plan
@@ -341,7 +345,7 @@ cd ~/sites/my-blog
 ghost stop
 ghost migrate-export --output ../my-blog-bundle
 mkdir ../my-blog-docker && cd ../my-blog-docker
-curl -fsSL https://docker.ghost.org/install.sh | bash -s -- install --import ../my-blog-bundle --port 2368
+curl -fsSL https://docker.ghost.org/install.sh | bash -s -- --import ../my-blog-bundle --port 2368
 ```
 
 - **Stop first.** The exporter stops a running site while it copies, and
@@ -399,7 +403,7 @@ ghost stop
 ghost migrate-export --output ~/my-site-bundle
 sudo systemctl stop nginx
 mkdir ~/my-site && cd ~/my-site
-curl -fsSL https://docker.ghost.org/install.sh | bash -s -- install --import ~/my-site-bundle
+curl -fsSL https://docker.ghost.org/install.sh | bash -s -- --import ~/my-site-bundle
 ```
 
 - **Stop nginx yourself.** Nothing in the import stops it; it may serve other
@@ -426,7 +430,7 @@ scp ~/my-site-bundle.tgz new-host:
 
 # On the new host
 mkdir ~/my-site && cd ~/my-site
-curl -fsSL https://docker.ghost.org/install.sh | bash -s -- install --import ~/my-site-bundle.tgz
+curl -fsSL https://docker.ghost.org/install.sh | bash -s -- --import ~/my-site-bundle.tgz
 ```
 
 Then point the domain's DNS at the new host. Until it moves, `check` reports
@@ -448,7 +452,7 @@ domain of its own (the source's admin domain is not carried to it; name the
 copy's own with `--admin-domain` if it needs one):
 
 ```bash
-curl -fsSL https://docker.ghost.org/install.sh | bash -s -- install --import ~/my-site-bundle.tgz --domain staging.example.com --no-start
+curl -fsSL https://docker.ghost.org/install.sh | bash -s -- --import ~/my-site-bundle.tgz --domain staging.example.com --no-start
 ```
 
 **A copied database sends real mail.** Before starting the copy, remove the

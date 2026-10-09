@@ -14,7 +14,7 @@ Configuration to run Ghost and its services with Docker Compose.
 
 ```sh
 # Linux, macOS, and Windows through WSL2; or --domain example.com --email ops@example.com
-curl -fsSL https://docker.ghost.org/install.sh | bash -s -- install --local
+curl -fsSL https://docker.ghost.org/install.sh | bash -s -- --local
 ./ghost-docker check
 ./ghost-docker self-update
 ```

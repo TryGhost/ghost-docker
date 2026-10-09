@@ -123,10 +123,14 @@ const hostname = z
 
 const options = z
     .object({
-        local: flag('A local site: Ghost and MySQL on 127.0.0.1:PORT.'),
+        local: flag(
+            'A local site: Ghost and MySQL on 127.0.0.1:PORT. Without it, the site is a production one.',
+        ),
         domain: hostname
             .optional()
-            .describe('A production site on this domain: Ghost, MySQL and Caddy with HTTPS.'),
+            .describe(
+                "The production site's domain: Ghost, MySQL and Caddy with HTTPS. Asked for at a terminal.",
+            ),
         adminDomain: hostname
             .optional()
             .describe('Serve Ghost Admin on a separate domain. Production only.'),
@@ -202,24 +206,17 @@ interface Plan {
 /** What the options ask for, and at a terminal, what they leave out. */
 async function plan(flags: Flags, prompt: Prompter | null): Promise<Plan> {
     const ask = flags.noPrompt ? null : prompt;
-    let mode: SiteMode | null = flags.local
-        ? 'local'
-        : flags.domain !== undefined
-          ? 'production'
-          : null;
-    if (mode === null) {
-        if (ask === null) {
-            throw new UsageError('choose a site mode: --local, or --domain example.com');
-        }
-        mode = await ask.choose<SiteMode>('What kind of site?', [
-            { name: 'Local: for themes and trying Ghost, on 127.0.0.1', value: 'local' },
-            { name: 'Production: on a domain, with HTTPS', value: 'production' },
-        ]);
-    }
+    // As Ghost-CLI's `ghost install`: production unless --local says otherwise.
+    const mode: SiteMode = flags.local ? 'local' : 'production';
     let domain = flags.domain ?? '';
     if (mode === 'production' && domain === '') {
+        if (ask === null) {
+            throw new UsageError(
+                'a production site needs --domain example.com; for a local site, use --local',
+            );
+        }
         domain = (
-            await ask!.text('Its domain (example.com):', (answer) =>
+            await ask.text('Its domain (example.com):', (answer) =>
                 isHostname(answer) ? null : 'a hostname such as example.com, not a URL',
             )
         ).toLowerCase();
