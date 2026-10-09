@@ -4,7 +4,9 @@
 //   1. Refusals that change nothing: the backup is read whole and every file
 //      checked against its checksum; the directory is this backup's own
 //      site, or empty; in a new directory, nothing on the daemon already
-//      uses the site's project name or ports. Then the lock, and the
+//      uses the site's project name or ports, and over the site, no other
+//      directory's; the overrides in effect are the ones the backup was
+//      taken with. Then the lock, and the
 //      recorded images are pulled before anything stops.
 //   2. Over the site itself: the site is stopped, and its files and data are
 //      moved aside into RESTORE_DIR, which is kept until the restore has
@@ -25,9 +27,9 @@ import { backupSiteFiles, readBackup } from './backup.ts';
 import { SITE_FILES_DIR, type BackupManifest } from './backup/manifest.ts';
 import {
     ALL_PROFILES,
-    composeConfig,
     composeDown,
     composeError,
+    composeFileList,
     composeUp,
     upAndWait,
 } from './compose.ts';
@@ -48,9 +50,13 @@ import { acquireLock } from './lock.ts';
 import { readMetadata, siteFiles, writeMetadata } from './meta.ts';
 import { isCheckout, LAUNCHER } from './payload.ts';
 import { git } from './process.ts';
+import { PROJECT_LABEL, refuseForeignProject } from './project.ts';
 import { takenPorts } from './ports.ts';
 import { heading, ok, printChecks } from './report.ts';
+import { insideSite, resolveSite } from './resolved.ts';
 import {
+    COMPOSE_FILE,
+    COMPOSE_OVERRIDE_FILE,
     DATA_DIRS,
     ENV_FILE,
     MAILPIT_DATA_DIR,
@@ -86,9 +92,11 @@ export async function restoreSite({ io, context, root, yes }: RestoreInput): Pro
     );
 
     const target = classify(context, dir, manifest);
+    refuseOtherOverrides(io, dir, manifest);
     if (target === 'fresh') {
         await refuseTaken(io, root, manifest);
     } else {
+        await refuseForeignProject(io, manifest.site.project, dir);
         await confirm(io, dir, manifest, yes);
     }
     if (manifest.site.source === 'checkout') {
@@ -208,6 +216,26 @@ function classify(context: Context, dir: string, manifest: BackupManifest): Targ
 }
 
 /**
+ * The site runs with the overrides it was backed up with, which the backup
+ * holds; GD_COMPOSE_OVERRIDES must name the same ones, or Compose would run
+ * the restored site as another.
+ */
+function refuseOtherOverrides(io: Io, dir: string, manifest: BackupManifest): void {
+    const now = composeFileList(dir, io.env.GD_COMPOSE_OVERRIDES)
+        .filter(
+            (file) => file !== join(dir, COMPOSE_FILE) && file !== join(dir, COMPOSE_OVERRIDE_FILE),
+        )
+        .map((file) => insideSite(dir, file) ?? file);
+    const recorded = manifest.site.overrides;
+    if (now.join(',') !== recorded.join(',')) {
+        throw new CliError(
+            `the backup was taken with ${recorded.length > 0 ? `GD_COMPOSE_OVERRIDES=${recorded.join(',')}` : 'no GD_COMPOSE_OVERRIDES'}, and this restore runs with ${now.length > 0 ? `GD_COMPOSE_OVERRIDES=${now.join(',')}` : 'none'}.\n` +
+                '  Run it with the same overrides the site ran with. Nothing has been changed.',
+        );
+    }
+}
+
+/**
  * A site restored into a new directory keeps its project name and its ports,
  * so nothing on this daemon may already use them. The site the backup was
  * taken from is the usual one, and it is named, never stopped.
@@ -215,7 +243,7 @@ function classify(context: Context, dir: string, manifest: BackupManifest): Targ
 async function refuseTaken(io: Io, root: string, manifest: BackupManifest): Promise<void> {
     const project = await listContainers(io.docker, {
         all: true,
-        labels: [`com.docker.compose.project=${manifest.site.project}`],
+        labels: [`${PROJECT_LABEL}=${manifest.site.project}`],
     });
     if (project.length > 0) {
         throw new CliError(
@@ -399,13 +427,10 @@ function writeSiteFiles(io: Io, root: string, dir: string, manifest: BackupManif
 
 /** The images the backup records are the ones Compose now resolves: the site is pinned to them. */
 async function checkImages(io: Io, dir: string, manifest: BackupManifest): Promise<void> {
-    const resolved = await io.busy('Resolving the Compose project', () => composeConfig(io, dir));
-    if (!resolved.ok) {
-        throw new CliError(`Compose cannot resolve the restored project: ${resolved.reason}`);
-    }
+    const resolved = await io.busy('Resolving the Compose project', () => resolveSite(io, dir));
     const differ: string[] = [];
     for (const [service, image] of Object.entries(manifest.images)) {
-        const now = resolved.project.services[service]?.image;
+        const now = resolved.services[service]?.image;
         if (now !== image) {
             differ.push(
                 `${service}: the backup records ${image}, Compose resolves ${now ?? 'nothing'}`,
@@ -563,6 +588,7 @@ function summarize(
             ),
             `  ${'content'.padEnd(12)} ${manifest.content.entries} entries`,
             `  ${'ghost'.padEnd(12)} ${manifest.images.ghost ?? 'as recorded'}`,
+            ...unapplied(manifest).map((line) => `  ${line}`),
             ...(manifest.notIncluded.length > 0
                 ? [
                       '',
@@ -574,3 +600,18 @@ function summarize(
         ].join('\n'),
     );
 }
+
+/**
+ * Services that ran another image than their configuration named when the
+ * backup was taken: the restore runs the configured one.
+ */
+const unapplied = (manifest: BackupManifest): string[] =>
+    Object.entries(manifest.running)
+        .filter(([service, ran]) => {
+            const configured = manifest.images[service];
+            return configured !== undefined && ran.image !== configured;
+        })
+        .map(
+            ([service, ran]) =>
+                `${service.padEnd(12)} ran ${ran.image} when backed up; restored as configured`,
+        );

@@ -13,10 +13,11 @@ import {
     writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { DockerRequest, DockerResponse } from '../src/docker/transport.ts';
 import * as env from '../src/env.ts';
+import { readSettings } from '../src/site.ts';
 import { failed, json, ok, type CreatedContainer, type Harness } from './helpers.ts';
 
 export const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -215,4 +216,56 @@ export function rootContainer(spec: CreatedContainer): { status: number } | unde
         return { status: 0 };
     }
     return undefined;
+}
+
+/**
+ * `docker compose config --format json` of a site, as Compose resolves it:
+ * the project's name, and each service in `images` with its image, the data
+ * mounts `.env` places, and the project's network.
+ */
+export function resolvedProject(
+    dir: string,
+    images: Record<string, string>,
+    mounts: Record<string, { type: string; source: string; target: string }[]> = {},
+): string {
+    const settings = readSettings(dir);
+    const get = (key: string, fallback: string) => settings?.get(key) || fallback;
+    const at = (path: string) => (isAbsolute(path) ? path : join(dir, path));
+    const project = get('COMPOSE_PROJECT_NAME', basename(dir));
+    const data: Record<string, { type: string; source: string; target: string }[]> = {
+        ghost: [
+            {
+                type: 'bind',
+                source: at(get('UPLOAD_LOCATION', './data/ghost')),
+                target: get('GHOST_CONTENT_PATH', '/home/ghost/content'),
+            },
+        ],
+        db: [
+            {
+                type: 'bind',
+                source: at(get('MYSQL_DATA_LOCATION', './data/mysql')),
+                target: '/var/lib/mysql',
+            },
+            {
+                type: 'bind',
+                source: join(dir, 'mysql-init'),
+                target: '/docker-entrypoint-initdb.d',
+            },
+        ],
+    };
+    return JSON.stringify({
+        name: project,
+        services: Object.fromEntries(
+            Object.entries(images).map(([service, image]) => [
+                service,
+                {
+                    image,
+                    environment: {},
+                    volumes: [...(data[service] ?? []), ...(mounts[service] ?? [])],
+                    networks: { ghost_network: null },
+                },
+            ]),
+        ),
+        networks: { ghost_network: { name: `${project}_ghost_network` } },
+    });
 }

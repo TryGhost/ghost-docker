@@ -46,6 +46,7 @@ import {
     stackDir,
 } from '../payload.ts';
 import { compareReleases, isRelease } from '../release.ts';
+import { refuseForeignProject } from '../project.ts';
 import { heading, ok, printChecks } from '../report.ts';
 import { META_FILE, OPERATOR_FILES, UPDATE_DIR, type SiteFacts } from '../site.ts';
 import { verifySite } from '../verify.ts';
@@ -465,6 +466,8 @@ export const selfUpdateCommand = defineCommand({
                     '  and run ./ghost-docker self-update again. Nothing has been changed.',
             );
         }
+
+        await refuseForeignProject(io, site.settings.get('COMPOSE_PROJECT_NAME') || '', dir);
 
         const lock = acquireLock(dir, `update to ${describeStack(to)}`);
         try {

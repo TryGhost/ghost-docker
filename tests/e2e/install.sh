@@ -177,13 +177,13 @@ expect_status 0
 expect_output 'This site looks healthy'
 expect_output 'ok +database +accepts a client connection'
 run "$A/ghost-docker" --dir "$A" list
-expect_output "ghost-local-e2e-local-a +local +running\\([0-9]+\\) +$A"
+expect_output "$(setting "$A" COMPOSE_PROJECT_NAME) +local +running\\([0-9]+\\) +$A"
 ok "check passes through the site's own pinned launcher, and list finds the site"
 
 # --- A second local site beside it ------------------------------------------
 
-step "A second local site, beside the first"
-new_site e2e-local-b
+step "A second local site, beside the first, in a directory of the same name"
+new_site other/e2e-local-a
 B=$SITE
 run install_alone "$B" --local
 expect_status 0
@@ -192,8 +192,10 @@ expect_status 0
 for site in "$A" "$B"; do
     [[ $(http_status "$(setting "$site" GHOST_PORT)") == 200 ]] || fail "$site does not answer"
 done
-ok "distinct identities and ports, and both answer at once"
+[[ $(setting "$A" COMPOSE_PROJECT_NAME) == ghost-local-e2e-local-a-* ]] || fail "the first site is not named for its directory"
 compose_in "$B" down --volumes >/dev/null 2>&1
+[[ $(http_status "$(setting "$A" GHOST_PORT)") == 200 ]] || fail "taking the second site down stopped the first"
+ok "distinct identities and ports, both answer at once, and one taken down leaves the other"
 
 # --- --no-start, and the encoder through real containers ------------------------
 
@@ -390,10 +392,11 @@ new_site e2e-mailpit
 M=$SITE
 run install_alone "$M" --local --with mailpit
 expect_status 0
-expect_output 'ok +mailpit +healthy: Ghost sends mail to mailpit-ghost-local-e2e-mailpit:1025'
+project=$(setting "$M" COMPOSE_PROJECT_NAME)
+expect_output "ok +mailpit +healthy: Ghost sends mail to mailpit-$project:1025"
 expect_output 'Mailpit +http://127\.0\.0\.1:[0-9]+'
 inbox=$(setting "$M" MAILPIT_PORT)
-[[ $(setting "$M" mail__options__host) == mailpit-ghost-local-e2e-mailpit ]] || fail "ghost.env does not send mail to Mailpit"
+[[ $(setting "$M" mail__options__host) == "mailpit-$project" ]] || fail "ghost.env does not send mail to Mailpit"
 bindings=$(docker inspect -f '{{range $p, $b := .HostConfig.PortBindings}}{{range $b}}{{.HostIp}} {{end}}{{end}}' "$(compose_in "$M" ps -q mailpit)")
 [[ $bindings == "127.0.0.1 " ]] || fail "Mailpit is published on: $bindings"
 ok "installed, verified, and the inbox is published on 127.0.0.1:$inbox only"

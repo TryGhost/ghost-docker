@@ -2,9 +2,10 @@
 // does on a real host is tests/e2e/install.sh; this is what it decides.
 import assert from 'node:assert/strict';
 import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { afterEach, beforeEach, describe, test } from 'node:test';
-import { choosePort, projectName, secret, slug } from '../src/commands/install.ts';
+import { choosePort, secret } from '../src/commands/install.ts';
+import { projectName, slug } from '../src/project.ts';
 import * as env from '../src/env.ts';
 import { ghostTag } from '../src/ghost.ts';
 import { failed, harness, json, ok, type Harness } from './helpers.ts';
@@ -468,6 +469,46 @@ describe('a production site, not started', () => {
     });
 });
 
+describe('the project name', () => {
+    /** A container of `project`, made in `dir`, as Compose labels it. */
+    const containerOf = (project: string, dir: string) => ({
+        Id: `${project}-id`,
+        Names: [`/${project}-ghost-1`],
+        State: 'exited',
+        Labels: {
+            'com.docker.compose.project': project,
+            'com.docker.compose.project.working_dir': dir,
+            'com.docker.compose.service': 'ghost',
+        },
+        Ports: [],
+    });
+
+    test('a local site is named for its directory and a random pair, kept in .env', async () => {
+        const result = await install('--local', '--no-start');
+        assert.equal(result.code, 0, result.stderr);
+        const project = env.get(readFileSync(join(h.dir, '.env'), 'utf8'), 'COMPOSE_PROJECT_NAME');
+        const directory = slug(basename(h.dir));
+        assert.match(project ?? '', new RegExp(`^ghost-local-${directory}-[a-z]+-[a-z-]+$`));
+        assert.equal(
+            JSON.parse(readFileSync(join(h.dir, '.ghost-docker.json'), 'utf8')).site.project,
+            project,
+        );
+        assert.match(result.stdout, new RegExp(`Project +${project} `));
+    });
+
+    test('a production name another directory has containers for is refused', async () => {
+        h.daemon.containers = [containerOf('ghost-example-com', '/srv/other')];
+        const result = await install('--domain', 'example.com', '--no-start');
+        assert.equal(result.code, 1);
+        assert.match(
+            result.stderr,
+            /the Compose project ghost-example-com belongs to \/srv\/other: its containers \(ghost-example-com-ghost-1\)/,
+        );
+        assert.match(result.stderr, /Nothing has been changed/);
+        assert.deepEqual(siteFiles(), []);
+    });
+});
+
 describe('a failed start', () => {
     test('a busy port names itself and --port, and everything created is removed', async () => {
         up = () =>
@@ -505,19 +546,55 @@ describe('a failed start', () => {
 });
 
 describe('the pieces', () => {
-    test('a production identity comes from the domain, a local one from the directory', () => {
+    test('a production identity comes from the domain, a local one from the directory and a random pair', () => {
         assert.equal(projectName('production', 'Example.COM', '/x'), 'ghost-example-com');
         assert.equal(
             projectName('production', 'blog.my-site.co.uk', '/x'),
             'ghost-blog-my-site-co-uk',
         );
-        assert.equal(projectName('local', '', '/home/me/My Site'), 'ghost-local-my-site');
-        assert.equal(projectName('local', '', '/home/me/---'), 'ghost-local-site');
-        assert.notEqual(
-            projectName('local', '', '/a/site-a'),
-            projectName('local', '', '/a/site-b'),
+        const first = () => 'amazing-kitten';
+        assert.equal(
+            projectName('local', '', '/home/me/My Site', new Set(), first),
+            'ghost-local-my-site-amazing-kitten',
         );
+        assert.equal(
+            projectName('local', '', '/home/me/---', new Set(), first),
+            'ghost-local-site-amazing-kitten',
+        );
+        assert.equal(
+            projectName('local', '', `/home/me/${'long-'.repeat(10)}`, new Set(), first),
+            'ghost-local-long-long-long-long-long-amazing-kitten',
+        );
+        // Two directories of one name are two projects.
+        assert.match(projectName('local', '', '/a/blog'), /^ghost-local-blog-[a-z]+-[a-z]+$/);
+        assert.notEqual(projectName('local', '', '/a/blog'), projectName('local', '', '/b/blog'));
         assert.equal(slug('  A__b--C  '), 'a-b-c');
+    });
+
+    test('a local identity is never one the daemon already has', () => {
+        const names = ['amazing-kitten', 'amazing-puppy'];
+        const counting = () => names.shift()!;
+        assert.equal(
+            projectName(
+                'local',
+                '',
+                '/a/blog',
+                new Set(['ghost-local-blog-amazing-kitten']),
+                counting,
+            ),
+            'ghost-local-blog-amazing-puppy',
+        );
+        assert.throws(
+            () =>
+                projectName(
+                    'local',
+                    '',
+                    '/a/blog',
+                    new Set(['ghost-local-blog-amazing-kitten']),
+                    () => 'amazing-kitten',
+                ),
+            /no free project name/,
+        );
     });
 
     test('secrets are long, random and free of dotenv metacharacters', () => {

@@ -144,8 +144,12 @@ with it before that login. Add it to an installed site: set the tokens with
    `GHOST_IMAGE_REF=ghost@sha256:...`; Ghost and Tinybird sync both run it, and
    changing `GHOST_VERSION` alone never changes what a site runs.
 5. **Identity and secrets.** A stable `COMPOSE_PROJECT_NAME` — `ghost-example-com`
-   in production, `ghost-local-<directory>` locally — kept in `.env` and
-   independent of the directory name afterwards. Fresh database passwords of
+   in production, `ghost-local-<directory>-<adjective>-<animal>` locally
+   (`ghost-local-blog-secondary-roadrunner`), chosen so that no project on the
+   daemon has it — kept in `.env` and independent of the directory name
+   afterwards. Two local sites in directories of the same name are two
+   projects. A production name another directory's containers already have is
+   refused: Compose would take them for this site's. Fresh database passwords of
    192 bits each; nothing has a default credential.
 6. **Configuration.** `.env` in one atomic write, and a fresh `ghost.env`,
    both mode `0600`, through the one encoder (see
@@ -498,14 +502,14 @@ backups off the host to keep them safe.
 
 | Path in the backup | What it is |
 | --- | --- |
-| `manifest.json` | What the backup holds: the site, the exact image of each service, every table's row count, a SHA-256 of every file, and what is not included. |
+| `manifest.json` | What the backup holds: the site, the image Compose resolves for each service and, for each running one, the exact image it ran (its ID and registry digests), every table's row count, a SHA-256 of every file, and what is not included. |
 | `database/ghost.sql` | A `mysqldump` of Ghost's database, taken as the site's own database user in one consistent snapshot. |
 | `database/activitypub.sql` | ActivityPub's database, when the `activitypub` profile is on. |
 | `content.tar.gz` | The content directory, `data/ghost`: images, media, files, themes, settings. |
-| `site/` | `.env`, `ghost.env`, `.ghost-docker.json`, `compose.override.yml`, `caddy/sites/`, `caddy/custom/`, `caddy/global/` and, for a site installed from the image, the stack's files and the launcher the site ran. |
+| `site/` | `.env`, `ghost.env`, `.ghost-docker.json`, `compose.override.yml` and the overrides `GD_COMPOSE_OVERRIDES` names, `caddy/sites/`, `caddy/custom/`, `caddy/global/` and, for a site installed from the image, the stack's files and the launcher the site ran. |
 
 A backup is **checked** before it counts as one: every dump is loaded into a
-scratch MySQL, in a throwaway container of the site's own MySQL image, with
+scratch MySQL, in a throwaway container of the MySQL image the site runs, with
 the same number of tables as the site's database and, for Ghost's, a
 migration history; the content archive is listed. Until then it is written
 as `backups/.<name>.partial`, and a failure removes that. **A dump that fails
@@ -518,8 +522,21 @@ manifest and in the summary: Caddy's certificates, which Caddy obtains again
 when the site starts; the Tinybird workspace and analytics data outside the
 site; Mailpit's inbox.
 
-A site whose `.env` moves the data (`UPLOAD_LOCATION`,
-`MYSQL_DATA_LOCATION`) is refused rather than half backed up.
+What the backup records is what Compose resolves from every file the site
+runs with, and what the daemon runs, not what `.env` alone says:
+
+- A site whose data Compose mounts anywhere but `data/ghost` and
+  `data/mysql`, whether `.env` moved it (`UPLOAD_LOCATION`,
+  `MYSQL_DATA_LOCATION`) or an override did, or that mounts anything else
+  inside them, is refused rather than half backed up.
+- An override `GD_COMPOSE_OVERRIDES` names is backed up with the site, and
+  recorded; one outside the site directory is refused. A restore must run with
+  the same `GD_COMPOSE_OVERRIDES`.
+- A service running another image than its configuration now names, because
+  the configuration changed and `docker compose up -d` has not run since, is
+  reported as a warning; the manifest records both.
+- A Compose project whose containers another directory made is refused
+  before anything runs (see [the project name](configuration.md#service-names-on-the-network)).
 
 ### restore
 

@@ -205,6 +205,8 @@ const containerSummary = z.object({
     Names: z.array(z.string()).default([]),
     Status: z.string().default(''),
     State: z.string().default(''),
+    Image: z.string().default(''),
+    ImageID: z.string().default(''),
     Labels: z.record(z.string(), z.string()).nullable().default({}),
     Ports: z
         .array(
@@ -225,6 +227,11 @@ export interface ContainerFacts {
     readonly status: string;
     /** `running`, `exited`, `created` and so on. */
     readonly state: string;
+    readonly id: string;
+    /** The image as the container was created from it: the reference Compose gave. */
+    readonly image: string;
+    /** The image it runs, by ID, whatever its reference names now. */
+    readonly imageId: string;
     readonly labels: Readonly<Record<string, string>>;
     /** Host ports the container publishes. */
     readonly publishedPorts: readonly number[];
@@ -248,6 +255,9 @@ export async function listContainers(
         name: (container.Names[0] ?? container.Id.slice(0, 12)).replace(/^\//, ''),
         status: container.Status,
         state: container.State,
+        id: container.Id,
+        image: container.Image,
+        imageId: container.ImageID,
         labels: container.Labels ?? {},
         publishedPorts: [
             ...new Set(
