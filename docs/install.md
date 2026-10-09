@@ -7,8 +7,9 @@ curl -fsSL https://docker.ghost.org/install.sh | bash -s -- --local   # or: --do
 
 `install.sh` is the launcher, `ghost-docker`, from the newest release. Piped
 into bash with no command, it runs `install` with the options given, from the
-newest release on the `beta` channel; plain `curl -fsSL
-https://docker.ghost.org/install.sh | bash` asks for the site mode. `install`
+newest release on the `beta` channel. As with Ghost-CLI's `ghost install`, a
+site is a production one unless `--local` is given: plain `curl -fsSL
+https://docker.ghost.org/install.sh | bash` asks for its domain. `install`
 writes a copy of the launcher into the site, and every later command is
 `./ghost-docker ...` from there. Other commands can still be piped by name:
 `bash -s -- self-update`.
@@ -64,7 +65,7 @@ ghost-docker install --import BUNDLE [--domain DOMAIN] [--admin-domain DOMAIN] [
 | Option | Meaning |
 | --- | --- |
 | `--local` | Ghost and MySQL, published on `127.0.0.1:PORT`. `NODE_ENV=development`, `RESTART_POLICY=no`. |
-| `--domain DOMAIN` | Production: Ghost, MySQL and Caddy with HTTPS on that domain. |
+| `--domain DOMAIN` | The production site's domain: Ghost, MySQL and Caddy with HTTPS on it. Production is the default; asked for at a terminal when omitted. |
 | `--admin-domain DOMAIN` | A separate Ghost Admin domain. Production only. |
 | `--email EMAIL` | The ACME account email. Production only; see below. |
 | `--port PORT` | The loopback port Ghost is published on, in both modes. Omitted: the first at or above 2368 that is free (see [Ports](#ports-and-your-existing-proxy)). |
@@ -76,11 +77,11 @@ ghost-docker install --import BUNDLE [--domain DOMAIN] [--admin-domain DOMAIN] [
 | `--no-start` | Write the configuration and routes; create no containers. |
 | `--import BUNDLE` | Import a local or production Ghost-CLI site from the bundle `ghost migrate-export` made; see [Importing a Ghost-CLI site](#importing-a-ghost-cli-site). |
 
-With neither `--local` nor `--domain`, `install` asks which kind of site, and
-for a production site its domain. It asks only at a terminal, including when
-the launcher was piped from curl. Without one, or with `--no-prompt`, a missing
-answer is a usage error naming the option that supplies it; nothing has a
-silent default. Every question has an option, so a script never needs to answer
+Without `--local`, the site is a production one, as with Ghost-CLI's
+`ghost install`, and `install` asks for the domain `--domain` would give. It
+asks only at a terminal, including when the launcher was piped from curl.
+Without one, or with `--no-prompt`, a missing answer is a usage error naming
+the option that supplies it. Every question has an option, so a script never needs to answer
 one.
 
 Exit statuses: `0` installed, `1` failed, `2` a usage error. Options the plan

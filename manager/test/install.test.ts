@@ -46,7 +46,7 @@ const siteFiles = () =>
 describe('refusals that change nothing', () => {
     test('usage errors exit 2', async () => {
         for (const [args, message] of [
-            [[], /choose a site mode: --local, or --domain example.com/],
+            [[], /a production site needs --domain example\.com; for a local site, use --local/],
             [['--local', '--domain', 'example.com'], /not both/],
             [['--local', '--with', 'analytics'], /set up after installation.*\n.*TINYBIRD\.md/],
             [['--local', '--without', 'redis'], /without/],
@@ -86,10 +86,10 @@ describe('refusals that change nothing', () => {
         assert.deepEqual(siteFiles(), []);
     });
 
-    test('at a terminal, the mode and the domain are asked for', async () => {
-        h.answers = ['production', 'example.com'];
+    test('without --local, it is a production site, and at a terminal the domain is asked for', async () => {
+        h.answers = ['example.com'];
         assert.equal((await install('--no-start')).code, 0);
-        assert.deepEqual(h.asked, ['What kind of site?', 'Its domain (example.com):']);
+        assert.deepEqual(h.asked, ['Its domain (example.com):']);
         assert.equal(
             env.get(readFileSync(join(h.dir, '.env'), 'utf8'), 'URL'),
             'https://example.com',
@@ -97,10 +97,10 @@ describe('refusals that change nothing', () => {
     });
 
     test('--no-prompt never asks, even at a terminal', async () => {
-        h.answers = ['local'];
+        h.answers = ['example.com'];
         const result = await install('--no-prompt');
         assert.equal(result.code, 2);
-        assert.match(result.stderr, /choose a site mode/);
+        assert.match(result.stderr, /a production site needs --domain/);
         assert.deepEqual(h.asked, []);
     });
 
