@@ -115,6 +115,16 @@ while (($#)); do
             bundle_at=${#args[@]}
             args+=("${1#*=}")
             ;;
+        # The end of options: everything after it is the command's own,
+        # passed on as it is, never read as a launcher option however it is
+        # spelled. restore's backup can still be the first of it.
+        --)
+            if [[ $command_word == restore && -z $bundle_at && $# -gt 1 ]]; then
+                bundle_at=$((${#args[@]} + 1))
+            fi
+            args+=("$@")
+            break
+            ;;
         *)
             # restore's backup: the argument after the command, mounted
             # like a bundle when it is outside the site.

@@ -4,6 +4,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import * as env from '../src/env.ts';
+import { DOTENV, keyOf } from './dotenv.ts';
 
 const TRICKY: Record<string, string> = {
     plain: 'plain',
@@ -108,6 +109,24 @@ describe('formats it did not write', () => {
     test('comments and other lines are not keys', () => {
         assert.equal(env.get(foreign, 'COMMENTED'), undefined);
         assert.ok(!env.keys(foreign).includes('not'));
+    });
+});
+
+describe("hand-written values, as Compose's own parser reads them", () => {
+    // test/integration/compose.test.ts holds the same values against the
+    // image's Compose; this holds env.ts to them.
+    const text = `${DOTENV.map(([line]) => line).join('\n')}\n`;
+    for (const [line, value] of DOTENV) {
+        test(line, () => assert.equal(env.get(text, keyOf(line)), value));
+    }
+
+    test('an unquoted value has no escapes: a backslash and t stay as they are', () => {
+        assert.equal(env.get('VALUE=some\\tvalue\n', 'VALUE'), 'some\\tvalue');
+    });
+
+    test('a single-quoted value ends at a quote whose backslash is itself escaped', () => {
+        assert.deepEqual(env.keys("A='x\\\\'\nB='y'\n"), ['A', 'B']);
+        assert.equal(env.get("A='x\\\\'\nB='y'\n", 'A'), 'x\\\\');
     });
 });
 

@@ -11,6 +11,7 @@ import * as env from '../env.ts';
 import { EXIT, UsageError } from '../errors.ts';
 import { atomicWrite, PRIVATE, readIfExists } from '../fs.ts';
 import type { Io } from '../io.ts';
+import { acquireLock } from '../lock.ts';
 import { printChecks } from '../report.ts';
 import { CONFIG_FILES, ENV_FILE, GHOST_ENV_FILE, type ConfigFile } from '../site.ts';
 import { installedSite } from './common.ts';
@@ -77,7 +78,7 @@ export const setCommand = defineCommand({
     brief:
         'Write one value, encoded for Compose, atomically. Without a file, the key decides: ' +
         'a setting Compose interpolates goes in .env, anything else in ghost.env. ' +
-        'A value that starts with a dash goes after --.',
+        'A value that starts with a dash goes after --. Holds the site lock while it writes.',
     positionals: ['file', 'key', 'value'],
     run: async (_values, args, io) => {
         const { site } = installedSite(io);
@@ -85,13 +86,21 @@ export const setCommand = defineCommand({
         const [key, value] = rest as [string, string];
         checkKey(key);
         const path = join(site.dir, file);
-        const before = readIfExists(path);
-        // A new file is private; an existing one keeps its mode.
-        atomicWrite(
-            path,
-            env.set(before ?? '', key, value),
-            before === undefined ? PRIVATE : undefined,
-        );
+        // Read, changed and written under the lock: another `config set`, or
+        // an update putting its snapshot back, would otherwise lose one of
+        // the two changes without saying so.
+        const lock = acquireLock(site.dir, `config set ${file} ${key}`);
+        try {
+            const before = readIfExists(path);
+            // A new file is private; an existing one keeps its mode.
+            atomicWrite(
+                path,
+                env.set(before ?? '', key, value),
+                before === undefined ? PRIVATE : undefined,
+            );
+        } finally {
+            lock.release();
+        }
         io.stderr(`updated ${key} in ${file}\n`);
         if (file === ENV_FILE) {
             io.stderr(

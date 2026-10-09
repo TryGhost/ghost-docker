@@ -40,6 +40,7 @@ WORKDIR /opt/ghost-docker/manager
 COPY manager/src ./src
 COPY manager/templates ./templates
 COPY manager/test/integration ./test/integration
+COPY manager/test/dotenv.ts ./test/dotenv.ts
 ENTRYPOINT ["node", "--test", "--test-timeout=900000", "test/integration/*.test.ts"]
 
 # Plain Alpine with Node's binary copied in: the image only runs node, and the
