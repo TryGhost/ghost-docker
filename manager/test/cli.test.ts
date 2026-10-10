@@ -239,8 +239,8 @@ describe('list', () => {
     });
 });
 
-test('`update` is not a command until it updates Ghost (S7); self-update updates the stack', async () => {
-    const result = await h.run('update');
-    assert.equal(result.code, 2);
-    assert.match((await h.run('help')).stdout, /self-update/);
+test('`update` updates Ghost and self-update the stack, and help says which is which', async () => {
+    const help = (await h.run('help')).stdout;
+    assert.match(help, /update +Update Ghost to a newer release/);
+    assert.match(help, /self-update +Update the stack/);
 });

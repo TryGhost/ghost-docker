@@ -26,15 +26,21 @@ export const MINIMUM_IMPORT_VERSION = '6.61.0';
  * What the operator asked for, as a tag. A bare version selects the default
  * variant (`6.3.1` is `6.3.1-next-alpine`); anything else is a tag already.
  */
-export function ghostTag(requested: string | undefined): string {
+export function ghostTag(requested: string | undefined, variant = DEFAULT_VARIANT): string {
     if (!requested) {
         return DEFAULT_TAG;
     }
     const bare = requested.replace(/^v/, '');
     if (/^\d+(\.\d+)*$/.test(bare)) {
-        return `${bare}-${DEFAULT_VARIANT}`;
+        return `${bare}-${variant}`;
     }
     return requested;
+}
+
+/** The variant a tag names, `next-alpine` in `6.61.0-next-alpine`; the default for a bare version. */
+export function variantOf(tag: string): string {
+    const match = /^v?\d+(?:\.\d+)*-(.+)$/.exec(tag);
+    return match?.[1] ?? DEFAULT_VARIANT;
 }
 
 export interface ResolvedGhost {

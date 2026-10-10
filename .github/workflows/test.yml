@@ -141,6 +141,23 @@ jobs:
       - name: Self-update end to end
         run: tests/e2e/self-update.sh
 
+  # Real Ghost updates on Docker Engine: from the oldest `next` image to the
+  # newest Ghost 6, across its migrations, and one that never becomes healthy.
+  ghost-update-linux:
+    name: Ghost update on Linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: ./.github/actions/docker-hub
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Ghost update end to end
+        run: tests/e2e/ghost-update.sh
+
   # An installation of the released main layout, migrated by the served
   # launcher: refusals before any change, recovery after a failed start, and
   # the migration keeping its project, data, routes and overrides.
@@ -265,6 +282,7 @@ jobs:
       - launcher-linux
       - install-linux
       - self-update-linux
+      - ghost-update-linux
       - migrate-main-linux
       - backup-linux
       - import-linux

@@ -165,7 +165,7 @@ operator-visible results, including pending certificates before DNS cutover.
 
 ## Recovery
 
-`src/lock.ts` serializes backup, restore, self-update and `config set`. Atomic
+`src/lock.ts` serializes backup, restore, self-update, `update` and `config set`. Atomic
 file replacement alone cannot prevent overlapping read/modify/write operations
 from losing a change. Lock acquisition refuses rather than waits. An interrupted
 operation leaves its lock for the operator; nothing clears it automatically.
@@ -202,10 +202,18 @@ backup resumes them after capture, before scratch validation. Self-update owns
 the pause from before capture until it attempts to start the release, or restores
 the old files and resumes the same containers after an early failure.
 
+`src/update.ts` is the one update executor: snapshot, writer pause, checked
+backup, the caller's writes, startup and verification, and recovery. It returns
+the outcome (`done`, `restored` or `needs-operator`) instead of printing it, so
+self-update and `update` (Ghost) word it themselves and the supervisor can
+record it.
+
 **Attempting service startup is the recovery boundary.** Even a failing
-`up --wait` can migrate data and accept writes. After that attempt, self-update
-stops services, restores files when stopping succeeds, and leaves data untouched
-for the operator. It never automatically loads the earlier backup over newer
+`up --wait` can migrate data and accept writes. After that attempt, an update
+stops services and leaves data untouched for the operator. Self-update then
+restores its files when stopping succeeds: the stack's files change nothing the
+data depends on. A Ghost update keeps the new pin and metadata, because Ghost's
+migrations are not undone by switching the image back. It never automatically loads the earlier backup over newer
 writes. Before that boundary, recovery restores files and resumes the paused
 writers. Recovery reports observed service state and retains the snapshot if an
 operator is needed. The [operator guide](install.md#self-update) owns the recovery
@@ -219,6 +227,9 @@ exactly the files restore will write, using the backup's copies (the checkout's
 own base Compose file for checkout restores) and `.env` with the destination's
 `PROJECT_DIR`. Absolute override/data paths must retain their meaning; validation
 must not reinterpret them under a temporary project directory.
+A backup of a site that ran Ghost from its floating tag is restored with
+`GHOST_IMAGE_REF` pinned to the digest Ghost ran (`restoredPin`), so restore
+never runs data on a Ghost newer than the one that wrote it.
 
 `src/recovery.ts` provides observed service shutdown, verified copies set aside
 one boundary at a time, and loading backup data into a fresh MySQL directory.
@@ -228,8 +239,8 @@ automatically put the old site back. Instructions name only copies that exist.
 The set-aside site is removed only after verification succeeds.
 
 There is no automatic crash resume, maintenance ingress, or backup retention
-policy. Future Ghost upgrades and the supervisor must use these same recovery
-invariants; their remaining requirements belong in the roadmap.
+policy. The supervisor must run Ghost updates through `src/update.ts`; its
+remaining requirements belong in the roadmap.
 
 ## Releases and compatibility
 
