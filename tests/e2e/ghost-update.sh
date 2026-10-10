@@ -31,7 +31,7 @@ for tool in jq curl; do
 done
 
 OWNER_EMAIL=owner@example.com
-OWNER_PASSWORD='Kept-through-a-Ghost-update-2026!'
+OWNER_PASSWORD='Kept-through-an-upgrade-2026!'
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/ghost-docker-ghost-update-e2e.XXXXXXXX")
 WORK=$(CDPATH='' cd -- "$WORK" && pwd -P)
