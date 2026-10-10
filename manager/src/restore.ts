@@ -97,10 +97,18 @@ export async function restoreSite({ io, context, root, yes }: RestoreInput): Pro
     try {
         heading(io, 'Pulling the recorded images');
         const pulled = new Map<string, ImageFacts>();
-        for (const image of new Set(Object.values(manifest.images))) {
+        for (const image of new Set(Object.values(restoredImages(manifest)))) {
             pulled.set(image, await io.busy(`Pulling ${image}`, () => ensureImage(io, image)));
         }
         refuseOtherImages(manifest, pulled);
+        const pin = restoredPin(manifest);
+        if (pin !== null) {
+            ok(
+                io,
+                'Ghost',
+                `pinned to ${pin}, the image it ran, rather than ${manifest.images.ghost}`,
+            );
+        }
         ok(
             io,
             'images',
@@ -112,7 +120,7 @@ export async function restoreSite({ io, context, root, yes }: RestoreInput): Pro
         }
         writing = true;
         heading(io, 'Restoring the site');
-        writeSiteFiles(io, root, dir, manifest);
+        writeSiteFiles(io, root, dir, manifest, pin === null ? null : pulled.get(pin)!);
         await checkImages(io, dir, manifest);
         await loadBackupData(io, root, dir, manifest);
 
@@ -242,9 +250,44 @@ function restoredFiles(root: string, dir: string, manifest: BackupManifest): str
     ];
 }
 
-/** The restored site's `.env`: the backup's, with this directory as its own. */
-const restoredEnv = (text: string, dir: string): string =>
-    env.get(text, 'PROJECT_DIR') === dir ? text : env.set(text, 'PROJECT_DIR', dir);
+/**
+ * The Ghost a backup ran, by its registry digest, when the site followed
+ * Ghost's tag rather than pinning it (`GHOST_IMAGE_REF` unset): the tag has
+ * likely moved since, and the data must not start on a newer Ghost than the
+ * one that wrote it, which would migrate it. Null for a pinned site, and for
+ * one whose Ghost was not running, or ran an image with no registry digest.
+ */
+export function restoredPin(manifest: BackupManifest): string | null {
+    const configured = manifest.images.ghost;
+    const ran = manifest.running.ghost;
+    if (configured === undefined || configured.includes('@') || ran?.image !== configured) {
+        return null;
+    }
+    const { repository } = splitReference(configured);
+    return ran.digests.find((digest) => digest.startsWith(`${repository}@`)) ?? null;
+}
+
+/** Each service by the image the restored site runs: Ghost's by its pin when restoredPin gives one. */
+function restoredImages(manifest: BackupManifest): Record<string, string> {
+    const pin = restoredPin(manifest);
+    const floating = manifest.images.ghost;
+    return Object.fromEntries(
+        Object.entries(manifest.images).map(([service, image]) => [
+            service,
+            pin !== null && image === floating ? pin : image,
+        ]),
+    );
+}
+
+/** The restored site's `.env`: the backup's, with this directory as its own, and Ghost pinned (restoredPin). */
+function restoredEnv(text: string, dir: string, manifest: BackupManifest): string {
+    let restored = env.get(text, 'PROJECT_DIR') === dir ? text : env.set(text, 'PROJECT_DIR', dir);
+    const pin = restoredPin(manifest);
+    if (pin !== null) {
+        restored = env.set(restored, 'GHOST_IMAGE_REF', pin);
+    }
+    return restored;
+}
 
 /**
  * The backup's configuration resolves exactly the images it records, and
@@ -262,7 +305,7 @@ async function refuseOtherConfiguration(
     if (text === undefined) {
         throw new CliError(`the backup holds no ${ENV_FILE}. Nothing has been changed.`);
     }
-    const restored = restoredEnv(text, dir);
+    const restored = restoredEnv(text, dir, manifest);
     // Compose reads an `.env` only from a file; this one is the restored
     // site's, outside the site, removed once read.
     const scratch = mkdtempSync(join(tmpdir(), 'gd-restore-'));
@@ -280,18 +323,19 @@ async function refuseOtherConfiguration(
     } finally {
         rmSync(scratch, { recursive: true, force: true });
     }
+    const expected = restoredImages(manifest);
     const services = new Set([
-        ...Object.keys(manifest.images),
+        ...Object.keys(expected),
         ...Object.entries(resolved.services)
             .filter(([, service]) => service.image !== null)
             .map(([service]) => service),
     ]);
     const differ = [...services]
         .sort()
-        .filter((service) => resolved.services[service]?.image !== manifest.images[service])
+        .filter((service) => resolved.services[service]?.image !== expected[service])
         .map(
             (service) =>
-                `${service}: the backup records ${manifest.images[service] ?? 'nothing'}, its configuration resolves ${resolved.services[service]?.image ?? 'nothing'}`,
+                `${service}: the backup records ${expected[service] ?? 'nothing'}, its configuration resolves ${resolved.services[service]?.image ?? 'nothing'}`,
         );
     if (differ.length > 0) {
         throw new CliError(
@@ -435,6 +479,7 @@ async function ensureImage(io: Io, reference: string): Promise<ImageFacts> {
  * reference that names another image on this host than it did there.
  */
 function refuseOtherImages(manifest: BackupManifest, pulled: ReadonlyMap<string, ImageFacts>) {
+    const restored = restoredImages(manifest);
     const differ: string[] = [];
     for (const [service, ran] of Object.entries(manifest.running)) {
         const configured = manifest.images[service];
@@ -447,13 +492,13 @@ function refuseOtherImages(manifest: BackupManifest, pulled: ReadonlyMap<string,
             );
             continue;
         }
-        const now = pulled.get(configured);
+        const now = pulled.get(restored[service]!);
         if (
             now === undefined ||
             (now.id !== ran.id && !now.repoDigests.some((digest) => ran.digests.includes(digest)))
         ) {
             differ.push(
-                `${service} ran ${ran.id.slice(0, 19)}, and ${configured} is ${now?.id.slice(0, 19) ?? 'nothing'} here`,
+                `${service} ran ${ran.id.slice(0, 19)}, and ${restored[service]} is ${now?.id.slice(0, 19) ?? 'nothing'} here`,
             );
         }
     }
@@ -506,8 +551,17 @@ async function setAside(
     );
 }
 
-/** The backup's files at their places, with this directory as the site's own. */
-function writeSiteFiles(io: Io, root: string, dir: string, manifest: BackupManifest): void {
+/**
+ * The backup's files at their places, with this directory as the site's own,
+ * and Ghost pinned to `ghost`, the image restoredPin names, when there is one.
+ */
+function writeSiteFiles(
+    io: Io,
+    root: string,
+    dir: string,
+    manifest: BackupManifest,
+    ghost: ImageFacts | null,
+): void {
     const files = backupSiteFiles(manifest);
     for (const file of files) {
         const target = join(dir, file);
@@ -519,15 +573,26 @@ function writeSiteFiles(io: Io, root: string, dir: string, manifest: BackupManif
     if (text === undefined) {
         throw new CliError(`the backup holds no ${ENV_FILE}`);
     }
-    const restored = restoredEnv(text, dir);
+    const restored = restoredEnv(text, dir, manifest);
     if (restored !== text) {
         atomicWrite(envPath, restored);
     }
     const metadata = readMetadata(dir);
-    if (metadata.state === 'present' && metadata.metadata.site.dir !== dir) {
+    const pin = restoredPin(manifest);
+    if (metadata.state === 'present' && (metadata.metadata.site.dir !== dir || pin !== null)) {
+        const recorded = metadata.metadata.ghost;
         writeMetadata(dir, {
             ...metadata.metadata,
             site: { ...metadata.metadata.site, dir },
+            // The pin and the metadata together: the Ghost the backup ran.
+            ghost:
+                pin === null
+                    ? recorded
+                    : {
+                          ...recorded,
+                          version: ghost?.env.GHOST_VERSION || recorded.version,
+                          digest: pin.slice(pin.indexOf('@') + 1),
+                      },
         });
     }
     ok(
@@ -541,7 +606,7 @@ function writeSiteFiles(io: Io, root: string, dir: string, manifest: BackupManif
 async function checkImages(io: Io, dir: string, manifest: BackupManifest): Promise<void> {
     const resolved = await io.busy('Resolving the Compose project', () => resolveSite(io, dir));
     const differ: string[] = [];
-    for (const [service, image] of Object.entries(manifest.images)) {
+    for (const [service, image] of Object.entries(restoredImages(manifest))) {
         const now = resolved.services[service]?.image;
         if (now !== image) {
             differ.push(

@@ -306,4 +306,12 @@ The installer writes `GHOST_IMAGE_REF=ghost@sha256:...`. This is the authoritati
 reference for Ghost and Tinybird sync, so a later pull cannot move the site to a
 new image. `GHOST_IMAGE` and `GHOST_VERSION` record the requested repository/tag;
 without `GHOST_IMAGE_REF`, they remain the fallback for manually configured sites.
-Image-changing operations must update the pin and recorded metadata together.
+
+A site may follow Ghost's tag instead, by leaving `GHOST_IMAGE_REF` empty: then
+`./ghost-docker backup`, `docker compose pull ghost` and `docker compose up -d`
+move it to the newest Ghost of its major. Its metadata keeps the version it was
+installed with, and `update` refuses it. Restoring a backup of it pins
+`GHOST_IMAGE_REF` to the exact Ghost the backup ran, so its data never starts
+on a newer Ghost than wrote it.
+Image-changing operations must update the pin and recorded metadata together;
+`update` writes both before it starts the new Ghost.

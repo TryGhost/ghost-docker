@@ -7,6 +7,8 @@ MANAGER COMMANDS:
   ./ghost-docker help               # Supported commands and options
   ./ghost-docker install --help     # Installation and bundle import
   ./ghost-docker check              # Diagnose this site
+  ./ghost-docker update             # Update Ghost within its major version
+  ./ghost-docker self-update        # Update the stack: its files and manager
 
 DAILY OPERATION (Docker Compose, from the site directory):
   docker compose up -d

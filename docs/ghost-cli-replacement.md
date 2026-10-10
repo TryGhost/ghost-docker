@@ -13,7 +13,7 @@ Linear](https://linear.app/ghost/issue/PLA-412).
 | --- | --- | --- |
 | Tagged single-site production | S5e production import, S12 qualification | Existing image self-update, local import, backup and restore |
 | Several sites behind shared Caddy | S13 | Existing backup/restore and released-main migration |
-| Admin-driven Ghost upgrades | S7 host upgrade, S8 supervisor, S9 core adapter/API, S10 Admin | S7 before supervisor execution; S8 protocol before S9; S9 before S10; S13 integration if shipped |
+| Admin-driven Ghost upgrades | S7 analytics acceptance, S8 supervisor, S9 core adapter/API, S10 Admin | Existing `update`; S8 protocol before S9; S9 before S10; S13 integration if shipped |
 | Later extensions | S11 file secrets, S14 service references, S15 nightlies, S16 Redis | See each step |
 
 Qualify production on Linux with rootful Docker Engine. Local qualification also covers
@@ -45,32 +45,21 @@ scenarios pass.
 
 ### S7 — Host-driven Ghost upgrades
 
-Repo: ghost-docker. Depends on backup/restore and release compatibility. Implement
-`./ghost-docker update [version|latest]` following the [recovery
-invariants](architecture.md#recovery), initially without a supervisor. Specify the
-reusable execution interface so the supervisor cannot diverge from backup/recovery
-behavior. Keep supported majors/downgrades constrained and feature compatibility
-explicit.
+Repo: ghost-docker. `./ghost-docker update [version|latest]` moves a site within its
+Ghost major, through the update executor self-update shares (`src/update.ts`), as
+[install.md](install.md#update) describes. `tests/e2e/ghost-update.sh` covers an
+upgrade across real migrations, a target that fails after startup, and refusals in
+CI. Remaining:
 
-Take the site lock, resolve and pull one exact target image of the same major before
-stopping the site, pause writers and capture a checked backup. Update the Ghost pin and
-metadata together. Start with `up --wait` and verify ingress; Ghost runs its own
-migrations at boot. Recovery follows the startup boundary linked above: switching an
-image back does not reverse migrations. Going back to an older version later requires a
-deliberate restore.
-
-Acceptance: upgrade across a real database migration, with the analytics sync and deploy
-run; a target that fails after startup leaves every accepted write intact and reports
-`needs-operator`, with its backup and recovery choices; an early failure restores the
-previous files and resumes the paused writers; a concurrent second request is refused by
-the lock; another major and a downgrade are refused.
+Acceptance on a site with analytics: the update reruns Tinybird sync from the new
+image and the deploy succeeds. It needs a Tinybird login, so it is run by hand.
 
 ### S8 — Supervisor command, protocol, and installer integration
 
-Repo: ghost-docker. Deps: S7, S9; S13 if it has shipped. Write
+Repo: ghost-docker. Deps: S9; S13 if it has shipped. Write
 `docs/upgrade-supervisor.md` with the exact schemas, transitions, ownership, policy, and
 recovery rules below, then implement the supervisor as a long-running command of the
-manager image. Reuse S7 behavior. Wire `--with supervisor` and request submission/status
+manager image. Run updates through `src/update.ts`, as `update` does. Wire `--with supervisor` and request submission/status
 tooling. Scope: one active job, durable status, `interrupted` for work found unfinished,
 a 20-job history; no queue and no resuming.
 
@@ -98,7 +87,7 @@ algorithm.
 
 **Execution.** The supervisor is the host
 command run on Ghost's behalf, not a job system: the same executor as
-`./ghost-docker update` (S7) and the shared recovery rules, with a file exchange in
+`./ghost-docker update` (`src/update.ts`) and the shared recovery rules, with a file exchange in
 front of it. So it has:
 
 - **One active job.** A job starts only when no job is active and the
@@ -197,7 +186,7 @@ promises must match the actual enforced policy.
 
 ### S11 — Optional file-based secrets
 
-Repo: ghost-docker. Deps: the credential consumers in backup, import, restore and S7-S8.
+Repo: ghost-docker. Deps: the credential consumers in backup, import, restore, `update` and S8.
 Add Compose secret files and `_FILE` wiring only for Ghost versions known to support it.
 Importing older Ghost 6 images must still work via their supported credential mechanism.
 Migrate without changing existing initialized MySQL credentials accidentally.
@@ -214,7 +203,7 @@ environment-based installs, older imports, restart, and restore still work.
 ### S12 — Single-site release qualification and documentation
 
 Repo: ghost-docker, with cross-repo fixtures. Deps: S5e, plus existing install,
-backup/restore, self-update and released-main migration; qualify S13, S7-S10 and S11 when they have shipped.
+backup/restore, self-update and released-main migration; qualify S13, S8-S10 and S11 when they have shipped.
 Gates the first stable tag and merging `next-docker` into `main`. Include the launcher
 on Linux, macOS and WSL2. Consolidate CI and qualify the actual minimum supported tools
 and image versions. Run fresh local/production install, optional-service variants, CLI
@@ -294,7 +283,7 @@ ghost-docker requirement.
 
 Repos: Ghost/image publishing workflow and ghost-docker; Ghost Admin/API if channel or
 build metadata requires extending the existing upgrade interface. Deps: S14 image
-references and existing S7-S10 upgrade integration. Follow the requirements below. Add
+references and existing `update` and S8-S10 upgrade integration. Follow the requirements below. Add
 `--ghost-channel stable|nightly`, with stable as default and nightly explicitly opted
 in. Nightly images are published to GHCR with immutable source/build identities. Keep
 the stack `--channel` independent and do not equate nightly selection with unattended

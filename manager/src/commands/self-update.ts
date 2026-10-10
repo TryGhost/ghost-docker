@@ -3,12 +3,12 @@
 // even a failed start may have accepted writes. See docs/architecture.md#recovery.
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
-import { refuseDrift, takeBackup } from '../backup.ts';
-import { compose, composeConfig, composeError, upAndWait } from '../compose.ts';
+import { refuseDrift } from '../backup.ts';
+import { compose, composeConfig, composeError } from '../compose.ts';
 import { z } from 'zod';
 import { defineCommand, flag } from '../command.ts';
 import { findingErrors, validate } from '../config.ts';
-import { CliError, describeError, EXIT } from '../errors.ts';
+import { CliError, EXIT } from '../errors.ts';
 import { atomicWrite } from '../fs.ts';
 import type { Io } from '../io.ts';
 import { acquireLock } from '../lock.ts';
@@ -29,14 +29,13 @@ import {
     sha256,
     stackDir,
 } from '../payload.ts';
-import { describeServices, runningServices, Snapshot, stopServices } from '../recovery.ts';
+import { describeServices } from '../recovery.ts';
 import { compareReleases, isRelease } from '../release.ts';
 import { resolveSite } from '../resolved.ts';
 import { heading, ok, printChecks } from '../report.ts';
 import { COMPOSE_FILE, META_FILE, UPDATE_DIR, type SiteFacts } from '../site.ts';
-import { verifySite } from '../verify.ts';
+import { runUpdate, type UpdateOutcome } from '../update.ts';
 import { atLeast, MINIMUM } from '../versions.ts';
-import { WriterPause } from '../writers.ts';
 import {
     channelOption,
     installedSite,
@@ -415,71 +414,54 @@ async function apply(update: Update): Promise<number> {
         ]);
     }
 
-    heading(io, 'Keeping the current files');
-    const snapshot = new Snapshot(dir, touched(update.metadata, payload));
-    snapshot.take();
-    ok(io, UPDATE_DIR, 'the configuration, the metadata and the files this update writes');
+    const outcome = await runUpdate({
+        io,
+        site,
+        metadata: update.metadata,
+        to: describeStack(to),
+        paths: touched(update.metadata, payload),
+        kept: 'the configuration, the metadata and the files this update writes',
+        failing: `The update to ${describeStack(to)} did not complete. Putting ${describeStack(from)}'s files back`,
+        afterStartup: 'restore',
+        async write() {
+            heading(io, 'Writing the stack');
+            writePayloadChanges(io, dir, stack, payload);
 
-    // Owned by the update, not the backup: the writers stay stopped from
-    // before the backup until the release starts, or the site is put back.
-    const pause = new WriterPause(io, dir, 'the update');
-    let servicesChanged = false;
-    let backup: string | null = null;
-    try {
-        heading(io, 'Backing up the site');
-        backup = await takeBackup({
-            io,
-            site,
-            metadata: update.metadata,
-            consistent: true,
-            pause,
-        });
-        ok(io, 'backup', `${relative(dir, backup)}, checked`);
-
-        heading(io, 'Writing the stack');
-        writePayloadChanges(io, dir, stack, payload);
-
-        // validate() only warns when Compose cannot resolve the project; here
-        // that is the release failing.
-        const resolved = await io.busy('Resolving the Compose project', () =>
-            composeConfig(io, dir),
-        );
-        if (!resolved.ok) {
-            throw new CliError(
-                `Compose cannot resolve the project with this release: ${resolved.reason}`,
+            // validate() only warns when Compose cannot resolve the project; here
+            // that is the release failing.
+            const resolved = await io.busy('Resolving the Compose project', () =>
+                composeConfig(io, dir),
             );
-        }
-        const findings = await io.busy('Validating the configuration', () => validate(io, dir));
-        const errors = findingErrors(findings);
-        if (errors) {
-            throw new CliError(`the configuration does not validate with this release:\n${errors}`);
-        }
-        ok(io, 'configuration', 'valid with this release');
-
-        heading(io, 'Starting the services');
-        // Quick when the early pull got them; whatever it could not, now.
-        const pull = await io.busy(
-            'Pulling the images this release names',
-            () => compose(io, { dir, timeout: PULL_MS })`pull --quiet --ignore-buildable`,
-        );
-        if (pull.exitCode !== 0) {
-            throw new CliError(`the images could not be pulled: ${composeError(pull)}`);
-        }
-
-        // Set before attempting up: even a failed start may migrate data or accept writes.
-        servicesChanged = true;
-        pause.end();
-        await upAndWait(io, dir, 'Starting the services and waiting for them to be healthy');
-        ok(io, 'services', 'healthy, by their own health checks');
-
-        await verifySite(io, dir);
-
-        record(update);
-    } catch (error) {
-        return recover(update, snapshot, pause, backup, servicesChanged, error);
+            if (!resolved.ok) {
+                throw new CliError(
+                    `Compose cannot resolve the project with this release: ${resolved.reason}`,
+                );
+            }
+            const findings = await io.busy('Validating the configuration', () => validate(io, dir));
+            const errors = findingErrors(findings);
+            if (errors) {
+                throw new CliError(
+                    `the configuration does not validate with this release:\n${errors}`,
+                );
+            }
+            ok(io, 'configuration', 'valid with this release');
+        },
+        async pull() {
+            // Quick when the early pull got them; whatever it could not, now.
+            const pull = await io.busy(
+                'Pulling the images this release names',
+                () => compose(io, { dir, timeout: PULL_MS })`pull --quiet --ignore-buildable`,
+            );
+            if (pull.exitCode !== 0) {
+                throw new CliError(`the images could not be pulled: ${composeError(pull)}`);
+            }
+        },
+        record: () => record(update),
+    });
+    if (outcome.state !== 'done') {
+        return failed(update, outcome);
     }
-    snapshot.remove();
-    summarize(update, backup);
+    summarize(update, outcome.backup);
     return EXIT.ok;
 }
 
@@ -519,52 +501,19 @@ function record({ io, site, metadata, from, to, release, payload }: Update): voi
     ok(io, META_FILE, `records ${describeStack(to)}`);
 }
 
-/** Restore files and resume only before startup; afterwards preserve data for the operator. */
-async function recover(
+/** A failed update, as the operator needs to hear it. */
+function failed(
     { io, site, from, to }: Update,
-    snapshot: Snapshot,
-    pause: WriterPause,
-    backup: string | null,
-    servicesChanged: boolean,
-    error: unknown,
-): Promise<number> {
+    outcome: Exclude<UpdateOutcome, { state: 'done' }>,
+): never {
     const dir = site.dir;
-    io.stderr(`\n${describeError(error)}\n`);
-    io.stderr(
-        `\nThe update to ${describeStack(to)} did not complete. Putting ${describeStack(from)}'s files back\n`,
-    );
-    const problems: string[] = [];
-    if (servicesChanged) {
-        const stopped = await stopServices(io, dir, `Stopping ${describeStack(to)}`);
-        if (stopped.error !== null) {
-            problems.push(`the services could not be stopped: ${stopped.error}`);
-        }
-    }
-    if (problems.length === 0) {
-        try {
-            snapshot.restore();
-        } catch (restoreError) {
-            problems.push(`the files could not be put back: ${(restoreError as Error).message}`);
-        }
-    }
-    // Stopped for the update and never changed: started again as they were,
-    // on the files as they were. Left stopped when those are not back.
-    const resumed = [...pause.paused];
-    if (problems.length === 0 && !servicesChanged) {
-        try {
-            await pause.resume();
-        } catch (resumeError) {
-            problems.push((resumeError as Error).message);
-        }
-    }
-
+    const { backup } = outcome;
     const kept =
         backup === null
             ? []
             : [`The backup taken before the update is kept in ${relative(dir, backup)}.`];
-    if (servicesChanged || problems.length > 0) {
-        const running = await runningServices(io, dir);
-        const filesBack = problems.length === 0;
+    if (outcome.state === 'needs-operator') {
+        const { servicesChanged, filesBack, problems, running, snapshot } = outcome;
         io.stderr(
             [
                 '',
@@ -597,15 +546,15 @@ async function recover(
                             '',
                         ]
                       : kept),
-                `The files as they were before the update are in ${snapshot.root}/files.`,
+                `The files as they were before the update are in ${snapshot}/files.`,
                 `The site ran the manager image ${from.image}; its launcher still runs it.`,
-                `Once the site is as it should be (./ghost-docker check), remove ${snapshot.root}.`,
+                `Once the site is as it should be (./ghost-docker check), remove ${snapshot}.`,
                 '',
             ].join('\n'),
         );
         throw new CliError('the update failed, and the site needs the operator.');
     }
-    snapshot.remove();
+    const { resumed } = outcome;
     io.stderr(
         [
             '',

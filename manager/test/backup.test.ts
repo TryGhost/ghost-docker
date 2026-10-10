@@ -673,6 +673,69 @@ describe('restore over the site', () => {
         assert.ok(!existsSync(join(h.dir, '.ghost-docker-restore')));
     });
 
+    test("a site that followed Ghost's tag is restored pinned to the Ghost it ran, after the tag moved", async () => {
+        const FLOATING = 'ghost:6-next-alpine';
+        const MOVED = `sha256:${'7'.repeat(64)}`;
+        // A site with no GHOST_IMAGE_REF: Compose resolves Ghost from its tag, or the pin once written.
+        writeFileSync(join(h.dir, '.env'), env.set(readSite('.env'), 'GHOST_IMAGE_REF', ''));
+        const resolve = h.daemon.composeRun!;
+        h.daemon.composeRun = (args, environment, input, dir = h.dir, envFile) => {
+            if (args[0] !== 'config') {
+                return resolve(args, environment, input, dir, envFile);
+            }
+            compose.push(args);
+            const text = readFileSync(envFile ?? join(dir, '.env'), 'utf8');
+            const ghost = env.get(text, 'GHOST_IMAGE_REF') || FLOATING;
+            return ok(resolvedProject(dir, { ...IMAGES, ghost }, mounts, envFile));
+        };
+        let tag = INDEX;
+        const images = h.daemon.api!;
+        h.daemon.api = (request) =>
+            request.method === 'GET' && request.path === `/images/${FLOATING}/json`
+                ? json(200, { Id: tag, RepoDigests: [`ghost@${tag}`], Config: { Env: [] } })
+                : request.method === 'GET' && request.path === `/images/${INDEX}/json`
+                  ? json(200, {
+                        Id: INDEX,
+                        RepoDigests: [REFERENCE],
+                        Config: { Env: ['GHOST_VERSION=6.67.0'] },
+                    })
+                  : request.method === 'GET' && request.path === `/images/${REFERENCE}/json`
+                    ? json(200, {
+                          Id: INDEX,
+                          RepoDigests: [REFERENCE],
+                          Config: { Env: ['GHOST_VERSION=6.67.0'] },
+                      })
+                    : images(request);
+        h.daemon.containers = [containerOf('ghost', { Image: FLOATING })];
+        const root = await backUp();
+        const read = readBackupManifest(root);
+        const manifest = read.state === 'present' ? read.manifest : null!;
+        assert.equal(manifest.images.ghost, FLOATING);
+        assert.deepEqual(manifest.running.ghost?.digests, [REFERENCE]);
+
+        // `docker compose pull`: the tag names a newer Ghost now.
+        tag = MOVED;
+        h.daemon.containers = [];
+        const result = await h.run('restore', '--yes', root);
+        assert.equal(result.code, 0, result.stderr);
+        assert.match(
+            result.stdout,
+            new RegExp(`Ghost +pinned to ${REFERENCE}, the image it ran, rather than ${FLOATING}`),
+        );
+        assert.equal(env.get(readSite('.env'), 'GHOST_IMAGE_REF'), REFERENCE);
+        const metadata = JSON.parse(readSite('.ghost-docker.json'));
+        assert.equal(metadata.ghost.digest, INDEX);
+        assert.equal(metadata.ghost.version, '6.67.0');
+    });
+
+    test('a pinned site is restored with its own pin, as recorded', async () => {
+        const root = await backUp();
+        const result = await h.run('restore', '--yes', root);
+        assert.equal(result.code, 0, result.stderr);
+        assert.doesNotMatch(result.stdout, /pinned to/);
+        assert.equal(env.get(readSite('.env'), 'GHOST_IMAGE_REF'), REFERENCE);
+    });
+
     test('a backup recording another image than its configuration names is refused before anything stops', async () => {
         h.daemon.containers = [containerOf('ghost')];
         const root = await backUp();

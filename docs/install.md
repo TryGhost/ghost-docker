@@ -577,8 +577,8 @@ ghost-docker self-update [--check] [--channel stable|beta | --to vX.Y.Z]
 Moves a site installed from the image to a newer release of ghost-docker: the
 stack's files and the manager image. A clone of the repository is updated with
 git and Compose instead ([Updating a clone](#updating-a-clone)). **It never changes Ghost.** `.env`, and the exact Ghost image
-`GHOST_IMAGE_REF` pins, are left as they are; updating Ghost is a separate
-command planned in [S7](ghost-cli-replacement.md#s7--host-driven-ghost-upgrades).
+`GHOST_IMAGE_REF` pins, are left as they are; Ghost is updated by
+[`update`](#update).
 When a release needs a newer Ghost than the site runs,
 `self-update` stops before changing anything and says to upgrade Ghost first.
 
@@ -717,6 +717,61 @@ self-update. Compose files you used with `-f` by hand, such as
 `GD_COMPOSE_OVERRIDES` when you migrate, as for every manager command
 ([configuration](configuration.md#the-compose-invocation-contract)).
 
+## update
+
+```text
+ghost-docker update [--check] [<version> | latest]
+```
+
+Moves the site's Ghost to a newer release of the same major version, in an
+image installation or a clone: the newest (`latest`, the default) or the
+version named, such as `6.68.0`, of the image variant the site runs. Ghost runs
+its own database migrations when it starts. `--check` says whether there is a
+newer Ghost and which, and changes nothing; it pulls the image to find out.
+
+| Option | Meaning |
+| --- | --- |
+| `--check` | Whether there is a newer Ghost, and which. Changes nothing. |
+| `<version>` | Exactly that Ghost, such as `6.68.0`. Omitted, or `latest`: the newest of the site's major. |
+
+The update refuses another major version, an older Ghost, a tag that is not the
+version named, a `GHOST_IMAGE_REF` that is not the one the metadata records,
+another operation's lock and an unfinished update snapshot. It pulls the new
+Ghost while the site keeps running, keeps `.env` and the metadata in
+`.ghost-docker-update/`, then pauses Ghost and ActivityPub and takes a
+consistent backup. It writes the new pin to `.env` (`GHOST_IMAGE_REF`, with
+`GHOST_VERSION` and the image's content paths) and to the metadata together,
+then starts the site and verifies it. Ghost, and Tinybird sync with analytics,
+run the new image. The site is unavailable from the backup until Ghost has
+migrated and become healthy.
+
+On success the snapshot is removed and the backup stays in `backups/` until you
+remove it. Going back to the earlier Ghost means restoring that backup, which
+discards anything written since: an older Ghost does not undo a newer one's
+migrations.
+
+A failure before startup is attempted puts `.env` and the metadata back and
+starts the paused writers again in the same containers: **restored**.
+
+Once startup has been attempted, the new Ghost may have migrated the database
+and accepted writes, even if it never became healthy. The update stops the
+services and leaves the data **and the new pin** as they are: unlike
+`self-update`, it does not put the old pin back, because the old Ghost would
+then run on a database it does not know. It says **the site needs you**, with
+two ways on:
+
+- `./ghost-docker restore --yes backups/<backup>`, the backup the update took:
+  the earlier Ghost and the site exactly as they were when the update began,
+  discarding anything written since.
+- Find why the new Ghost did not start (`docker compose logs ghost`), fix it,
+  and start it: `docker compose up -d`, then `./ghost-docker check`.
+
+The snapshot is left in `.ghost-docker-update/` until you remove it, and
+another update is refused while it is there.
+
+Exit statuses: `0` updated, or nothing to update; `1` refused or failed; `2` a
+usage error.
+
 ## backup and restore
 
 ```text
@@ -838,7 +893,10 @@ In order:
 2. **The lock**, then every image the backup records is pulled before anything
    stops, and each service that was running must get, by its image ID or a
    registry digest, the very image it ran. A reference that names another
-   image on this host is refused. Nothing has changed.
+   image on this host is refused. Nothing has changed. A site that followed
+   Ghost's tag, with no `GHOST_IMAGE_REF`, is restored pinned to the Ghost it
+   ran, by its registry digest: the tag may have moved since, and a newer Ghost
+   would migrate the restored data. Remove the pin to follow the tag again.
 3. **Over the site:** it is stopped (`docker compose down`; volumes, such as
    Caddy's certificates, are kept), and `data/ghost`, `data/mysql` and every
    file the restore replaces (the site's own and the backup's, overrides

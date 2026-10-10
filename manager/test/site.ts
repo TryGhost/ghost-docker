@@ -203,6 +203,8 @@ export interface ImageApi {
     readonly ghost?: Readonly<Record<string, string>>;
     /** Those of Ghost's tags installed by Ghost-CLI, as the older `-alpine` variants are. */
     readonly legacy?: readonly string[];
+    /** The digest each tag resolves to; INDEX for any not named. */
+    readonly digests?: Readonly<Record<string, string>>;
     /** The manager image's ID; it has no repository digest. */
     readonly manager?: () => string;
     /** Each tag pulled, in order. */
@@ -211,7 +213,13 @@ export interface ImageApi {
 
 /** The daemon's answers about the images an image-mode command reads. */
 export const imageApi =
-    ({ ghost = { '6-next-alpine': '6.67.0' }, legacy = [], manager, pulls }: ImageApi = {}) =>
+    ({
+        ghost = { '6-next-alpine': '6.67.0' },
+        legacy = [],
+        digests = {},
+        manager,
+        pulls,
+    }: ImageApi = {}) =>
     ({ method, path, query }: DockerRequest): DockerResponse | undefined => {
         if (method === 'POST' && path === '/images/create') {
             const tag = query?.tag ?? '';
@@ -222,9 +230,10 @@ export const imageApi =
         }
         const tag = /^\/images\/ghost:(.+)\/json$/.exec(path)?.[1];
         if (method === 'GET' && tag !== undefined && tag in ghost) {
+            const digest = digests[tag] ?? INDEX;
             return json(200, {
-                Id: INDEX,
-                RepoDigests: [REFERENCE],
+                Id: digest,
+                RepoDigests: [`ghost@${digest}`],
                 Config: {
                     Env: [
                         `GHOST_VERSION=${ghost[tag]}`,

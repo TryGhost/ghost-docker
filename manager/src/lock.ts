@@ -1,6 +1,5 @@
 // The site lock (docs/architecture.md#recovery): one operation that changes a running site at a
-// time. self-update, backup, restore and `config set` take it; Ghost upgrades
-// will when they land.
+// time. self-update, update, backup, restore and `config set` take it.
 //
 // A file in the site directory, created exclusively, naming the operation and
 // when it started. A run that crashes leaves it behind, and nothing removes it
