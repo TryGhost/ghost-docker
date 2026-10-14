@@ -89,6 +89,8 @@ backups/
 # A bundle import in progress: its marker and its private staging copy
 .ghost-docker-import
 .import/
+# The upgrade supervisor's own records of its jobs
+.ghost-docker-supervisor/
 # The site's Caddy routes, and operator Caddy files
 caddy/sites/*
 !caddy/sites/.gitignore

@@ -34,7 +34,7 @@ import { loadContext, type Context } from '../context.ts';
 import * as env from '../env.ts';
 import { CliError, describeError, EXIT, UsageError } from '../errors.ts';
 import { atomicWrite, PRIVATE } from '../fs.ts';
-import { resolveGhost, type ResolvedGhost } from '../ghost.ts';
+import { hasUpgradeAdapter, resolveGhost, UPGRADE_ADAPTER, type ResolvedGhost } from '../ghost.ts';
 import { clearUnfinishedImport, Importing, importConflict } from '../import.ts';
 import type { Io, Prompter } from '../io.ts';
 import { isoSeconds, SCHEMA_VERSION, writeMetadata } from '../meta.ts';
@@ -70,6 +70,7 @@ import {
     type Requested,
 } from './common.ts';
 import { collect } from './doctor.ts';
+import { refuseUnsupportedDaemon } from './supervisor.ts';
 
 /** Where a local site's port search starts, and how far it goes. */
 export const DEFAULT_PORT = 2368;
@@ -80,7 +81,7 @@ const PRODUCTION_PORTS = { http: 80, https: 443 } as const;
 /** Compose waits this long for health checks; pulls and builds come before it. */
 
 /** The services `--with` can name. */
-const OPTIONAL_SERVICES = ['activitypub', 'mailpit'];
+const OPTIONAL_SERVICES = ['activitypub', 'mailpit', 'supervisor'];
 
 /** `--with a,b`: each service once. Whether it suits the site's mode is plan's to say. */
 const services = z.string().transform((list, ctx) => {
@@ -173,7 +174,7 @@ const options = z
         with: services
             .default([])
             .describe(
-                'Optional per-site services: activitypub for a production site, mailpit for a local one.',
+                'Optional per-site services: activitypub for a production site, mailpit for a local one, and supervisor (Ghost updates from Admin; docs/upgrade-supervisor.md) for either.',
             ),
         import: z
             .string()
@@ -419,6 +420,9 @@ async function prepare(
     // Asked only now, so nobody answers questions to be told the directory is taken.
     const intent = importing === null ? await plan(flags, io.prompt) : imported(importing, flags);
     await preflight(io, context);
+    if (intent.services.includes('supervisor')) {
+        await refuseUnsupportedDaemon(io, context);
+    }
     const { port, mailpitPort } = await sitePorts(
         io,
         intent.mode,
@@ -613,6 +617,16 @@ function writeEnv(site: Site, created: Created) {
         ['DATABASE_PASSWORD', secret()],
         ['DATABASE_ROOT_PASSWORD', secret()],
     ];
+    if (intent.services.includes('supervisor')) {
+        // It runs as whoever installed the site, on the manager the launcher is pinned to.
+        settings.push(
+            ['SUPERVISOR_UPDATES', 'minor'],
+            ['SUPERVISOR_UID', String(site.context.caller.uid)],
+            ['SUPERVISOR_GID', String(site.context.caller.gid)],
+            ['MANAGER_IMAGE_REF', site.pin ?? 'ghost-docker:checkout'],
+            ['DOCKER_SOCKET', io.env.GD_HOST_SOCKET || '/var/run/docker.sock'],
+        );
+    }
     if (production) {
         settings.push(
             ['HTTP_PORT', String(PRODUCTION_PORTS.http)],
@@ -637,7 +651,7 @@ function writeEnv(site: Site, created: Created) {
 }
 
 async function writeGhostEnv(
-    { io, dir, project, intent }: Site,
+    { io, dir, project, intent, ghost }: Site,
     created: Created,
     importing: Importing | null,
 ) {
@@ -647,7 +661,11 @@ async function writeGhostEnv(
     // with Mailpit, without the source's mail transport.
     const carried = await importing?.ghostEnv(mailpit);
     created.file(path);
-    atomicWrite(path, ghostEnvTemplate(project, intent.services) + (carried?.text ?? ''), PRIVATE);
+    atomicWrite(
+        path,
+        ghostEnvTemplate(project, intent.services, ghost.version) + (carried?.text ?? ''),
+        PRIVATE,
+    );
     ok(io, GHOST_ENV_FILE, carried?.detail ?? 'Ghost application settings');
     for (const { key, reason } of carried?.skipped ?? []) {
         printChecks(io, [{ status: 'note', label: 'not carried', detail: `${key}: ${reason}` }]);
@@ -839,6 +857,13 @@ function printSummary(site: Site, importing: Importing | null) {
                 ? []
                 : [`  Mailpit      http://127.0.0.1:${site.mailpitPort}, the mail Ghost sends`]),
             ...(importing === null ? [] : [`  Imported     ${importing.description}`]),
+            ...(intent.services.includes('supervisor')
+                ? [
+                      hasUpgradeAdapter(ghost.version)
+                          ? '  Supervisor   running; Ghost Admin offers updates within SUPERVISOR_UPDATES in .env'
+                          : `  Supervisor   running, but Ghost ${ghost.version} cannot use it yet: ask for updates with ./ghost-docker supervisor request`,
+                  ]
+                : []),
             '',
             '.env and ghost.env hold the credentials; back them up.',
             ...next,
@@ -853,7 +878,11 @@ function printSummary(site: Site, importing: Importing | null) {
  * way that looks like a Ghost bug. With Mailpit, mail goes to it; the
  * operator owns these lines afterwards.
  */
-export function ghostEnvTemplate(project: string, services: readonly string[]): string {
+export function ghostEnvTemplate(
+    project: string,
+    services: readonly string[],
+    ghostVersion = '',
+): string {
     const mailpit = services.includes('mailpit');
     return [
         `# Ghost application settings for ${project}; see ghost.env.example.`,
@@ -865,6 +894,9 @@ export function ghostEnvTemplate(project: string, services: readonly string[]): 
         // ActivityPub (and analytics, added later) need Ghost's public API.
         ...(services.includes('activitypub') ? [env.serialize('labs__publicAPI', 'true')] : []),
         ...(mailpit ? mailpitMail(project).map(([key, value]) => env.serialize(key, value)) : []),
+        ...(services.includes('supervisor') && hasUpgradeAdapter(ghostVersion)
+            ? UPGRADE_ADAPTER.map(([key, value]) => env.serialize(key, value))
+            : []),
         '',
     ].join('\n');
 }

@@ -123,6 +123,16 @@ not SMTP, so Mailpit never sees them. A production site cannot select it:
 rejects `mailpit` beside `production` in `COMPOSE_PROFILES`, because it would
 catch the site's real mail.
 
+`--with supervisor` runs the upgrade supervisor, which performs Ghost updates
+asked for in Ghost Admin, within the policy you set in `.env`
+(`SUPERVISOR_UPDATES`: `minor`, the default, or `patch`). Every update it runs
+is `update` with a checked backup first, and majors and stack updates always
+stay on the host. It holds the Docker socket and runs as you. Ghost's side,
+`FileDropUpgradeAdapter`, is enabled in `ghost.env` only for a Ghost release
+that ships it; before that, make requests by hand (see [update](#update)). It is
+refused under rootless Docker and user-namespace remapping. The protocol,
+ownership and recovery rules are in [upgrade-supervisor.md](upgrade-supervisor.md).
+
 Analytics, for a production site, is set up after installation: its Tinybird
 login is interactive, in a browser, and Ghost waits for the Tinybird jobs to
 finish, so a site cannot start with it before that login. Add it to an installed site: set the tokens with
@@ -788,6 +798,28 @@ another update is refused while it is there.
 
 Exit statuses: `0` updated, or nothing to update; `1` refused or failed; `2` a
 usage error.
+
+### From Ghost Admin: the upgrade supervisor
+
+A site installed `--with supervisor` runs these updates on Ghost Admin's
+request, one at a time, refusing anything outside `SUPERVISOR_UPDATES`. Each
+job reports the same outcomes, and needs the same recovery, as `update` above.
+To see and drive it from the host, as Ghost does:
+
+```bash
+./ghost-docker supervisor status
+./ghost-docker supervisor request ghost 6.72.0
+./ghost-docker supervisor job <id>
+```
+
+A request while a job runs, or while another command holds the lock, is
+refused rather than queued. If the supervisor, Docker or the host stops during
+a job, the supervisor reports that job **interrupted** when it starts again and
+leaves the site lock, so nothing else runs until you have checked the site. The
+job's details say what to do, in order: `./ghost-docker check`, remove
+`.ghost-docker.lock`, then start the site or restore the backup the job names,
+and once `check` passes, remove `.ghost-docker-update/`. Logs:
+`docker compose logs supervisor`.
 
 ## backup and restore
 

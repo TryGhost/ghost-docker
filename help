@@ -9,6 +9,7 @@ MANAGER COMMANDS:
   ./ghost-docker check              # Diagnose this site
   ./ghost-docker update             # Update Ghost within its major version
   ./ghost-docker self-update        # Update the stack: its files and manager
+  ./ghost-docker supervisor status  # What the upgrade supervisor offers Ghost Admin
 
 DAILY OPERATION (Docker Compose, from the site directory):
   docker compose up -d
@@ -35,6 +36,7 @@ DOCUMENTATION:
   docs/configuration.md           Env files, profiles, overrides and image pins
   docs/caddy.md                   Route edits
   docs/bundle-v1.md               Migration bundle contract
+  docs/upgrade-supervisor.md      Ghost updates from Admin: the supervisor's protocol
   docs/architecture.md            Manager invariants and state ownership
   docs/ghost-cli-replacement.md   Remaining work and release gates
 

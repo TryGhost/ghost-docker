@@ -241,8 +241,23 @@ automatically put the old site back. Instructions name only copies that exist.
 The set-aside site is removed only after verification succeeds.
 
 There is no automatic crash resume, maintenance ingress, or backup retention
-policy. The supervisor must run Ghost updates through `src/update.ts`; its
-remaining requirements belong in the roadmap.
+policy.
+
+### Upgrade supervisor
+
+`src/supervisor/` runs Ghost updates on Ghost Admin's behalf, as
+[upgrade-supervisor.md](upgrade-supervisor.md) specifies; that document owns the
+protocol, ownership and recovery rules. It is a caller of `src/update.ts`
+through the same Ghost plan as `update` (`ghostUpdatePlan`), with two
+additions the executor offers only it: a stage callback, recorded before each
+stage's side effects, and services to leave alone, so recovery stops the site
+without stopping the supervisor running it. Its private records in
+`.ghost-docker-supervisor/` are the only journal: a job found unfinished on
+start is marked interrupted, never resumed, and the site lock it held stays
+for the operator. The protocol's message schemas copy Ghost's
+`@tryghost/adapter-base-upgrade` until that package is published; the
+fixtures in `manager/test/fixtures/upgrade-supervisor/` are shared with
+Ghost's adapter tests.
 
 ## Releases and compatibility
 

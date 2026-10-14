@@ -9,6 +9,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import {
     closeSync,
     constants,
+    fchmodSync,
     fstatSync,
     fsyncSync,
     linkSync,
@@ -269,6 +270,8 @@ function writeTemporary(dir: string, content: string, mode: number): string {
     const temporary = join(dir, `.tmp-${randomBytes(8).toString('hex')}`);
     const fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, mode);
     try {
+        // Whatever the umask: the other end reads it through these bits.
+        fchmodSync(fd, mode);
         writeSync(fd, Buffer.from(content, 'utf8'));
         fsyncSync(fd);
     } catch (error) {

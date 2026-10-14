@@ -124,8 +124,8 @@ anything.
 
 | Volume | Owner, mode | Ghost (`ghost` service) | Supervisor |
 | --- | --- | --- | --- |
-| `upgrade-requests` | Ghost's uid : operator's gid, `0770` | `/run/ghost-upgrade/requests`, read-write | `/run/ghost-upgrade/requests`, read-write |
-| `upgrade-status` | operator's uid : operator's gid, `0755` | `/run/ghost-upgrade/status`, **read-only** | `/run/ghost-upgrade/status`, read-write |
+| `upgrade_requests` | Ghost's uid : operator's gid, `2770` | `/run/ghost-upgrade/requests`, read-write | `/run/ghost-upgrade/requests`, read-write |
+| `upgrade_status` | operator's uid : operator's gid, `0755` | `/run/ghost-upgrade/status`, **read-only** | `/run/ghost-upgrade/status`, read-write |
 
 The supervisor's private state is in the site directory, in
 `.ghost-docker-supervisor/` (operator-owned, `0700`). Ghost never mounts it. That
@@ -141,8 +141,8 @@ record the interrupted-on-start rule reads.
 
 ### Ownership
 
-Ghost can write only `upgrade-requests`. Everything Ghost reads but must not
-change is in `upgrade-status`, a separate volume. Ghost mounts it read-only and
+Ghost can write only `upgrade_requests`. Everything Ghost reads but must not
+change is in `upgrade_status`, a separate volume. Ghost mounts it read-only and
 does not own it. A writable parent directory therefore never contains
 supervisor-owned files.
 
@@ -186,7 +186,9 @@ Rules for each side:
   Ghost uses `link` followed by `unlink`, so a request never replaces one that
   already exists. The directory is `fsync`ed afterwards.
 - **Permissions:** the supervisor writes files `0644`. Ghost's requests are
-  `0640`, so the supervisor reads them through the group.
+  `0640`, set with `fchmod` whatever Ghost's umask. The requests directory is
+  setgid, so a request takes the operator's group rather than Ghost's, and the
+  supervisor reads it through that group.
 
 ## Messages
 
@@ -412,18 +414,24 @@ Rules while a job runs:
 
 ### Supervisor: starting
 
-1. **Mark unfinished jobs interrupted.** Any private record that is not final is
+1. **Set ownership.** Check the volumes' ownership and set it if needed.
+2. **Mark unfinished jobs interrupted.** Any private record that is not final is
    rewritten as `interrupted`. Its diagnostic names the stage it reached, the
-   backup (if one was taken), whether it held the lock, and the operator's steps:
+   backup (if one was taken), whether it held the lock, and the operator's
+   steps, in an order that works:
    - run `./ghost-docker check`;
-   - then `./ghost-docker restore <backup>`, or `./ghost-docker update` again;
-   - then remove the lock.
+   - remove the lock, since `restore` and `update` refuse while it is held;
+   - for a job past `backing-up`: fix and start the new Ghost, or
+     `./ghost-docker restore --yes <backup>`. For a job in `backing-up`:
+     `docker compose up -d`, because the writers may be paused;
+   - once `check` passes, remove `.ghost-docker-update/`.
 
    A lock naming an interrupted job is left in place. While it is held, status is
    `unavailable`.
-2. **Remove duplicates.** Any request whose ID already has a record is removed.
-3. **Set ownership, discover and publish.** Set the volumes' ownership, run
-   discovery, and publish status.
+3. **Publish, then discover.** Publish status from the last discovery at once,
+   so the heartbeat starts before the slow image pulls, then run discovery and
+   publish again. A request whose ID already has a record is removed on the
+   first scan.
 
 ## Retention
 

@@ -133,6 +133,8 @@ export class Supervisor {
             this.interrupt(record);
         }
         this.discovery = this.records.discovery();
+        // At once, from the last discovery: a check pulls images, which is slow.
+        this.publish();
         await this.rediscover();
     }
 
@@ -143,13 +145,33 @@ export class Supervisor {
             lock.state === 'held' &&
             lock.holder.operation === operationOf(record.job.id, record.job.toVersion);
         const reached = record.stage ?? 'starting';
+        // Once startup may have been attempted, Ghost may have migrated the data.
+        const started =
+            record.stage === 'restarting' ||
+            record.stage === 'verifying' ||
+            record.stage === 'restoring';
         const steps = [
             'In the site directory:',
             '  ./ghost-docker check',
-            record.backup === null
-                ? `  then ./ghost-docker update ${record.job.toVersion} if it is still wanted`
-                : `  then either ./ghost-docker restore --yes ${record.backup} (discarding anything written since), or ./ghost-docker update ${record.job.toVersion}`,
-            ...(holding ? ['  then remove the lock: rm .ghost-docker.lock'] : []),
+            ...(holding ? ['  rm .ghost-docker.lock'] : []),
+            ...(started
+                ? [
+                      `  Ghost ${record.job.toVersion} may have started and migrated the database. Either find why it did not finish`,
+                      '  (docker compose logs ghost), fix it, then docker compose up -d,',
+                      ...(record.backup === null
+                          ? []
+                          : [
+                                `  or put the site back as it was, discarding anything written since: ./ghost-docker restore --yes ${record.backup}`,
+                            ]),
+                  ]
+                : record.stage === 'backing-up'
+                  ? [
+                        '  Nothing was changed yet, but Ghost may be stopped for the backup: docker compose up -d',
+                    ]
+                  : ['  Nothing was changed.']),
+            ...(record.stage === null || record.stage === 'pulling'
+                ? []
+                : ['  Once ./ghost-docker check passes: rm -rf .ghost-docker-update']),
         ];
         const message =
             `The upgrade supervisor stopped while this job was ${reached}. It is never resumed.` +
