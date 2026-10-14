@@ -58,7 +58,7 @@ import {
     type SiteMode,
 } from '../site.ts';
 import { takenPorts } from '../ports.ts';
-import { knownProjects, projectName, refuseForeignProject } from '../project.ts';
+import { knownProjects, PROJECT_NAME, projectName, refuseForeignProject } from '../project.ts';
 import { Created } from '../undo.ts';
 import { verifySite } from '../verify.ts';
 import {
@@ -140,6 +140,18 @@ const options = z
             .optional()
             .describe(
                 'The ACME account email Let’s Encrypt sends expiry and incident notices to. Production only.',
+            ),
+        name: z
+            .string()
+            .regex(
+                PROJECT_NAME,
+                refused(
+                    'must be lowercase letters, digits and dashes, starting with a letter or digit, at most 45 characters',
+                ),
+            )
+            .optional()
+            .describe(
+                "The site's Compose project name, used as given. Default: ghost-<domain> in production, ghost-local-<directory>-<adjective>-<animal> locally.",
             ),
         port: z
             .string()
@@ -414,8 +426,10 @@ async function prepare(
         ? null
         : await io.busy('Resolving the manager image', () => managerPin(io, context));
 
-    const project = projectName(intent.mode, intent.domain, dir, await knownProjects(io));
-    // A production name is the domain's: another directory may already have it.
+    const project =
+        flags.name ?? projectName(intent.mode, intent.domain, dir, await knownProjects(io));
+    // A production name is the domain's, and --name is the operator's: another
+    // directory may already have either.
     await refuseForeignProject(io, project, dir);
 
     const production = intent.mode === 'production';

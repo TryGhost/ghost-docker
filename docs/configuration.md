@@ -185,6 +185,7 @@ independent of the directory name. `install` chooses it once: the domain's in
 production, and locally the directory's name and a random pair
 (`ghost-local-blog-secondary-roadrunner`) that no project on the daemon has,
 so two local sites in directories of the same name never share one.
+`install --name acme-theme` uses the given name instead, in either mode.
 
 Compose finds a project's containers by its name alone, so two directories
 with one name would each act on the other's containers. Before `install`,

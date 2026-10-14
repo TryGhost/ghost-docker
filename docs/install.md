@@ -56,9 +56,9 @@ directory, and day-to-day operation is plain `docker compose`.
 ```text
 ghost-docker install [--local | --domain example.com [--admin-domain admin.example.com]
                                 [--email ops@example.com]]
-                     [--port 2368] [--version 6.61.0] [--with activitypub,mailpit]
+                     [--name NAME] [--port 2368] [--version 6.61.0] [--with activitypub,mailpit]
                      [--channel stable|beta | --release vX.Y.Z] [--no-prompt] [--no-start]
-ghost-docker install --import BUNDLE [--port 2368] [--with mailpit] [--no-prompt] [--no-start]
+ghost-docker install --import BUNDLE [--name NAME] [--port 2368] [--with mailpit] [--no-prompt] [--no-start]
 ghost-docker install --import BUNDLE [--domain DOMAIN] [--admin-domain DOMAIN] [--email EMAIL] [--no-start]
 ```
 
@@ -68,6 +68,7 @@ ghost-docker install --import BUNDLE [--domain DOMAIN] [--admin-domain DOMAIN] [
 | `--domain DOMAIN` | The production site's domain: Ghost, MySQL and Caddy with HTTPS on it. Production is the default; asked for at a terminal when omitted. |
 | `--admin-domain DOMAIN` | A separate Ghost Admin domain. Production only. |
 | `--email EMAIL` | The ACME account email. Production only; see below. |
+| `--name NAME` | The site's `COMPOSE_PROJECT_NAME`, used as given in either mode: lowercase letters, digits and dashes, at most 45 characters. Omitted: chosen as described under [Identity and secrets](#what-installation-does). |
 | `--port PORT` | The loopback port Ghost is published on, in both modes. Omitted: the first at or above 2368 that is free (see [Ports](#ports-and-your-existing-proxy)). |
 | `--version VERSION` | A Ghost version (`6.61.0`, which means `6.61.0-next-alpine`) or a full image tag (`6-next-alpine`). Resolved to an exact digest. Only the `next` variants' layout runs: an image installed by Ghost-CLI, such as the `-alpine` tags, is refused. |
 | `--with LIST` | `activitypub`, and `mailpit` for a local site. `analytics` is added after installation; see below. |
@@ -152,10 +153,10 @@ with it before that login. Add it to an installed site: set the tokens with
 5. **Identity and secrets.** A stable `COMPOSE_PROJECT_NAME` — `ghost-example-com`
    in production, `ghost-local-<directory>-<adjective>-<animal>` locally
    (`ghost-local-blog-secondary-roadrunner`), chosen so that no project on the
-   daemon has it — kept in `.env` and independent of the directory name
-   afterwards. Two local sites in directories of the same name are two
-   projects. A production name another directory's containers already have is
-   refused: Compose would take them for this site's. Fresh database passwords of
+   daemon has it, or exactly what `--name` gives (`--name acme-theme`) — kept in
+   `.env` and independent of the directory name afterwards. Two local sites in directories of the same name are two
+   projects. A production name or `--name` another directory's containers
+   already have is refused: Compose would take them for this site's. Fresh database passwords of
    192 bits each; nothing has a default credential.
 6. **Configuration.** `.env` in one atomic write, and a fresh `ghost.env`,
    both mode `0600`, through the one encoder (see

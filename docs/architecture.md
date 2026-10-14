@@ -82,7 +82,7 @@ ordering, and `composeOverrides` derives additional overrides from that list.
 
 `src/project.ts` chooses a stable project name at install. Local names include
 a random adjective/animal pair unused on the daemon; production names derive
-from the domain. Compose addresses containers by project name alone, so commands
+from the domain. `install --name` replaces either with the operator's own. Compose addresses containers by project name alone, so commands
 that operate on a site refuse containers belonging to another working directory
 (`com.docker.compose.project.working_dir`).
 
