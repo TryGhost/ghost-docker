@@ -205,7 +205,12 @@ export interface ExchangeRead {
  * not a symlink, and within `bound` bytes. Read at most `bound + 1` bytes, so
  * an oversize file is never read whole. Undefined when it does not exist.
  */
-export function readExchangeFile(path: string, bound: number): ExchangeRead | undefined {
+export function readExchangeFile(
+    path: string,
+    bound: number,
+    /** A request mid-write has two links for an instant: its writer's own reads allow it. */
+    links: 'one' | 'any' = 'one',
+): ExchangeRead | undefined {
     let fd: number;
     try {
         fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -224,7 +229,7 @@ export function readExchangeFile(path: string, bound: number): ExchangeRead | un
         if (!stats.isFile()) {
             throw new ExchangeFileError(`${path} is not a regular file`);
         }
-        if (stats.nlink !== 1) {
+        if (links === 'one' && stats.nlink !== 1) {
             throw new ExchangeFileError(`${path} has ${stats.nlink} links`);
         }
         if (stats.size > bound) {

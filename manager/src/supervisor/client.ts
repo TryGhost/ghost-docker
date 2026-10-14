@@ -91,12 +91,19 @@ export class ExchangeClient {
     private job(id: string): UpgradeJob | undefined {
         const path = join(this.jobs, `${id}.json`);
         const read = readExchangeFile(path, BOUNDS.job);
-        return read === undefined ? undefined : parseExchangeFile(jobFileSchema, read, path).job;
+        if (read === undefined) {
+            return undefined;
+        }
+        const { job } = parseExchangeFile(jobFileSchema, read, path);
+        if (job.id !== id) {
+            throw new ExchangeFileError(`${path} holds job ${job.id}`);
+        }
+        return job;
     }
 
     private pending(id: string): { request: UpgradeRequest; mtimeMs: number } | undefined {
         const path = join(this.requests, `${id}.json`);
-        const read = readExchangeFile(path, BOUNDS.request);
+        const read = readExchangeFile(path, BOUNDS.request, 'any');
         return read === undefined
             ? undefined
             : {
@@ -145,7 +152,15 @@ export class ExchangeClient {
     }
 
     createRequest(request: UpgradeRequest): RequestResult {
+        const id = jobIdOf(request.idempotencyKey);
         const status = this.readStatus();
+        const pruned = 'file' in status ? status.file.prunedJobIds : [];
+        // A replay is answered before availability or policy: a retry after a
+        // lost answer must learn its job, even while that job runs.
+        const earlier = this.earlier(id, request, pruned);
+        if (earlier !== undefined) {
+            return earlier;
+        }
         if (status.availability !== 'ready') {
             return {
                 rejected: status.availability === 'busy' ? 'busy' : 'unavailable',
@@ -163,13 +178,7 @@ export class ExchangeClient {
                 reason: `${request.component} ${request.toVersion} is not offered as a one-click update`,
             };
         }
-        const id = jobIdOf(request.idempotencyKey);
-        const pruned = status.file.prunedJobIds;
         for (;;) {
-            const earlier = this.earlier(id, request, pruned);
-            if (earlier !== undefined) {
-                return earlier;
-            }
             const at = this.now();
             if (
                 createExchangeFile(
@@ -182,6 +191,10 @@ export class ExchangeClient {
                 return { accepted: this.pendingJob(id, request, at) };
             }
             // An identical request raced this one: read it back.
+            const raced = this.earlier(id, request, pruned);
+            if (raced !== undefined) {
+                return raced;
+            }
         }
     }
 

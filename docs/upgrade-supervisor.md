@@ -177,10 +177,13 @@ the host, as every manager command does.
 Rules for each side:
 
 - **Reading:** both ends open with `O_NOFOLLOW`, then `fstat` the descriptor.
-  The file must be a regular file with `nlink === 1` and within its bound.
-  Reading stops at the bound plus one byte, so an oversize file is refused
-  without being read in full. Directories are never traversed: a reader opens
-  only names it constructed.
+  The file must be a regular file within its bound, and status and job files
+  must have `nlink === 1`. A request has two links for an instant while Ghost
+  writes it (between `link` and `unlink`), so Ghost tolerates that when reading
+  its own requests, and the supervisor leaves such a request for its next scan
+  rather than claiming it. Reading stops at the bound plus one byte, so an
+  oversize file is refused without being read in full. Directories are never
+  traversed: a reader opens only names it constructed.
 - **Writing:** both ends write a temporary file (`.tmp-<random>`) in the target
   directory, `fsync` it, then move it into place. The supervisor uses `rename`.
   Ghost uses `link` followed by `unlink`, so a request never replaces one that
@@ -324,19 +327,23 @@ repeated key always names the same job.
 
 ### Ghost: create a request
 
-1. **Read status.** If it is not `ready`, reject with `unavailable` (for
-   unavailable, stale or incompatible) or `busy`.
-2. **Check the target.** If `{component, toVersion}` is not in `oneClick`, reject
-   with `target-unapproved`.
-3. **Compute the job ID.**
-4. **Look for an earlier request with the same key:**
+A replay is answered before any availability or policy check, so a retry
+after a lost answer learns its job even while that job runs, or once its update
+is no longer offered.
+
+1. **Compute the job ID**, and read status for its `prunedJobIds`.
+2. **Look for an earlier request with the same key:**
    - If `status/jobs/<id>.json` exists: return its job when `component` and
      `toVersion` match, otherwise reject with `idempotency-conflict`.
    - If `requests/<id>.json` exists: compare it the same way, and return a
      `pending` job.
    - If the ID is in `prunedJobIds`: reject with `request-expired`.
-5. **Write `requests/<id>.json`** with `link`. If the name already exists, step 4
-   was raced by an identical request: run step 4 again.
+3. **Check status.** If it is not `ready`, reject with `unavailable` (for
+   unavailable, stale or incompatible) or `busy`.
+4. **Check the target.** If `{component, toVersion}` is not in `oneClick`, reject
+   with `target-unapproved`.
+5. **Write `requests/<id>.json`** with `link`. If the name already exists, an
+   identical request raced this one: run step 2 again.
 6. **Return** `{id, state: 'pending', component, toVersion, createdAt, updatedAt}`.
    Both timestamps are the time of writing.
 
@@ -344,7 +351,8 @@ repeated key always names the same job.
 
 Check, in order, and return the first that applies:
 
-1. `status/jobs/<id>.json` exists: return its `job`.
+1. `status/jobs/<id>.json` exists: return its `job`. A job file whose `job.id`
+   is not its file name is refused as malformed.
 2. `requests/<id>.json` exists, and its mtime is under 10 minutes old: return
    `pending`.
 3. The ID is in `prunedJobIds`, or the request is older than 10 minutes:
@@ -358,7 +366,9 @@ as `stale`.
 ### Supervisor: claiming
 
 Every 2 seconds, the supervisor reads up to 32 entries of `requests/`. It takes
-only names of the form `<uuid>.json`, oldest mtime first. For each:
+only names of the form `<uuid>.json`, oldest mtime first, and leaves alone any
+with more than one link, which Ghost is still writing (removed only once more
+than 10 minutes old). For each:
 
 1. **Check for a duplicate.** If a private record for that ID already exists, the
    request is a duplicate that the adapter's look-up raced: remove it and do

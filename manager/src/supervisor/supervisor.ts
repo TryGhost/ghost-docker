@@ -260,6 +260,15 @@ export class Supervisor {
         }
     }
 
+    /** A request with more than one link: still being written, or not Ghost's doing. */
+    private linked(name: string): boolean {
+        try {
+            return lstatSync(join(this.exchange.requests, name)).nlink !== 1;
+        } catch {
+            return false;
+        }
+    }
+
     private unlinkRequest(name: string): void {
         rmSync(join(this.exchange.requests, name), { force: true, recursive: false });
     }
@@ -313,6 +322,12 @@ export class Supervisor {
     }
 
     private async claim(id: string, name: string): Promise<void> {
+        if (this.linked(name)) {
+            // Mid-write: Ghost links the file into place, then unlinks its
+            // temporary. Left for the next scan, never claimed and refused.
+            this.removeStray(name);
+            return;
+        }
         if (this.records.has(id)) {
             // Claimed already: a duplicate the adapter's look-up raced.
             this.unlinkRequest(name);

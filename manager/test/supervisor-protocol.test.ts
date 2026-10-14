@@ -105,6 +105,12 @@ describe('exchange files', () => {
         });
     });
 
+    test('a hard link is allowed where the writer reads its own requests', () => {
+        writeFileSync(join(dir, 'target.json'), '{}');
+        linkSync(join(dir, 'target.json'), join(dir, 'hard.json'));
+        assert.equal(readExchangeFile(join(dir, 'hard.json'), BOUNDS.request, 'any')?.text, '{}');
+    });
+
     test('a file over its bound is refused', () => {
         writeFileSync(join(dir, 'big.json'), 'x'.repeat(BOUNDS.request + 1));
         assert.throws(

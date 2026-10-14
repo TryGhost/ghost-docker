@@ -5,9 +5,11 @@
 import assert from 'node:assert/strict';
 import {
     existsSync,
+    linkSync,
     mkdirSync,
     mkdtempSync,
     readdirSync,
+    readFileSync,
     rmSync,
     symlinkSync,
     utimesSync,
@@ -167,8 +169,8 @@ describe('a request made by hand', () => {
             toVersion: '6.71.0',
             idempotencyKey: key,
         });
-        // Not offered, so refused before the key is looked at.
-        assert.ok('rejected' in other && other.rejected === 'target-unapproved');
+        // The key is looked at first: it named another update.
+        assert.ok('rejected' in other && other.rejected === 'idempotency-conflict');
     });
 
     test('a key reused for another offered update is an idempotency conflict', async () => {
@@ -215,6 +217,72 @@ describe('a request made by hand', () => {
         assert.equal(runs, 0);
         assert.deepEqual(readdirSync(join(exchangeRoot, 'requests')), []);
         assert.equal(lookup(job.id).state, 'done');
+    });
+});
+
+describe('Ghost mid-write and Ghost retrying', () => {
+    test('a request with two links is left for the next scan, then claimed', async () => {
+        const running = supervisor();
+        await running.start();
+        const key = randomIdempotencyKey();
+        const id = jobIdOf(key);
+        const temporary = join(exchangeRoot, 'requests', `.tmp-e2e`);
+        writeFileSync(
+            temporary,
+            JSON.stringify({
+                protocol: PROTOCOL,
+                request: { component: 'ghost', toVersion: TO, idempotencyKey: key },
+            }),
+        );
+        // Between Ghost's link() and its unlink() of the temporary.
+        linkSync(temporary, join(exchangeRoot, 'requests', `${id}.json`));
+        await running.tick();
+        assert.equal(lookup(id).state, 'pending');
+        assert.equal(new Records(dir).has(id), false);
+
+        rmSync(temporary);
+        await running.tick();
+        await settle(running);
+        assert.equal(lookup(id).state, 'done');
+    });
+
+    test('a replay while its job runs returns the job, not busy', async () => {
+        const running = supervisor();
+        await running.start();
+        let release!: (outcome: JobOutcome) => void;
+        execute = ({ stage }) => {
+            stage('pulling');
+            return new Promise((resolve) => (release = resolve));
+        };
+        const key = randomIdempotencyKey();
+        const job = ask(TO, key);
+        await running.tick();
+        assert.equal(client().readStatus().availability, 'busy');
+        const replay = ask(TO, key);
+        assert.equal(replay.id, job.id);
+        assert.equal(replay.state, 'pulling');
+        release({ state: 'done', diagnostics: [] });
+        await settle(running);
+    });
+
+    test('a replay once its update is no longer offered still returns its job', async () => {
+        const running = supervisor();
+        await running.start();
+        const key = randomIdempotencyKey();
+        await running.tick();
+        const job = ask(TO, key);
+        await running.tick();
+        await settle(running);
+        // As after the update: nothing is offered any more.
+        writeFileSync(
+            join(exchangeRoot, 'status', 'status.json'),
+            readFileSync(join(exchangeRoot, 'status', 'status.json'), 'utf8').replace(
+                /"oneClick":\[[^\]]*\]/,
+                '"oneClick":[]',
+            ),
+        );
+        assert.equal(ask(TO, key).id, job.id);
+        assert.equal(ask(TO, key).state, 'done');
     });
 });
 
