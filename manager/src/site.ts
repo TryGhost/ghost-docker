@@ -16,6 +16,8 @@ export const LOCK_FILE = '.ghost-docker.lock';
 export const UPDATE_DIR = '.ghost-docker-update';
 /** Where `backup` writes, one directory per backup; kept until the operator removes them. */
 export const BACKUPS_DIR = 'backups';
+/** The upgrade supervisor's own records, which Ghost never sees (docs/upgrade-supervisor.md). */
+export const SUPERVISOR_DIR = '.ghost-docker-supervisor';
 /** What a restore over a site keeps of it until the restore is verified. */
 export const RESTORE_DIR = '.ghost-docker-restore';
 /**
@@ -48,7 +50,7 @@ export type ConfigFile = (typeof CONFIG_FILES)[number];
 export const SITE_MODES = ['local', 'production'] as const;
 export type SiteMode = (typeof SITE_MODES)[number];
 
-/** Additive, per-site. `supervisor` is reserved and defines no service yet. */
+/** Additive, per-site. `supervisor` runs the upgrade supervisor (docs/upgrade-supervisor.md). */
 export const OPTIONAL_PROFILES = ['analytics', 'activitypub', 'mailpit', 'supervisor'] as const;
 
 /**

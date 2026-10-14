@@ -237,8 +237,16 @@ export const composeUp = (
  * own words, then `hint`. Docker names a port it could not bind; its wording
  * changes between versions, so it is quoted, not parsed.
  */
-export async function upAndWait(io: Io, dir: string, spinner: string, hint = ''): Promise<void> {
-    const up = await io.busy(spinner, () => composeUp(io, dir));
+export async function upAndWait(
+    io: Io,
+    dir: string,
+    spinner: string,
+    hint = '',
+    except: readonly string[] = [],
+): Promise<void> {
+    const up = await io.busy(spinner, async () =>
+        composeUp(io, dir, except.length > 0 ? await servicesExcept(io, dir, except) : []),
+    );
     if (up.exitCode !== 0) {
         const said = composeError(up, 8)
             .split('\n')
@@ -248,6 +256,27 @@ export async function upAndWait(io: Io, dir: string, spinner: string, hint = '')
             `${up.timedOut ? 'the services did not finish starting before the deadline' : 'the services did not start and become healthy'}. Compose said:\n${said}${hint ? `\n${hint}` : ''}`,
         );
     }
+}
+
+/**
+ * The services the profiles select, without `except`: what `up` or `stop`
+ * names so that it leaves those alone. Naming a service starts it whatever its
+ * profile, so the list comes from Compose rather than from compose.yml.
+ */
+export async function servicesExcept(
+    io: Io,
+    dir: string,
+    except: readonly string[],
+    profiles?: string,
+): Promise<string[]> {
+    const result = await compose(io, { dir, profiles })`config --services`;
+    if (result.exitCode !== 0) {
+        throw new CliError(`Compose could not list the services: ${composeError(result, 2)}`);
+    }
+    return result.stdout
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((service) => service !== '' && !except.includes(service));
 }
 
 /** Compose's own last words: the final non-empty lines of its stderr. */

@@ -1,0 +1,11 @@
+{
+  "protocol": 1,
+  "job": {
+    "id": "96525598-8933-5537-8f86-a9f36f13b60e",
+    "state": "queued",
+    "component": "ghost",
+    "toVersion": "6.72.0",
+    "createdAt": "2026-10-14T20:01:02Z",
+    "updatedAt": "2026-10-14T20:01:02Z"
+  }
+}

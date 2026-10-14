@@ -21,7 +21,7 @@ import { describeServices } from '../recovery.ts';
 import { resolveSite } from '../resolved.ts';
 import { heading, ok } from '../report.ts';
 import { ENV_FILE, META_FILE, UPDATE_DIR, type SiteFacts } from '../site.ts';
-import { runUpdate, type UpdateOutcome } from '../update.ts';
+import { runUpdate, type UpdateOutcome, type UpdatePlan } from '../update.ts';
 import { installedSite } from './common.ts';
 import { z } from 'zod';
 
@@ -35,14 +35,14 @@ const options = z.object({
 });
 
 /** The Ghost a site runs, as its metadata records it. */
-interface Pin {
+export interface Pin {
     readonly image: string;
     readonly tag: string;
     readonly version: string;
     readonly digest: string;
 }
 
-const reference = (pin: Pin): string => `${pin.image}@${pin.digest}`;
+export const reference = (pin: Pin): string => `${pin.image}@${pin.digest}`;
 
 /** What `update` was asked for: the newest of the site's major, or one version. */
 function requestedVersion(positionals: string[]): string | null {
@@ -57,10 +57,10 @@ function requestedVersion(positionals: string[]): string | null {
     return bare;
 }
 
-type Direction = 'newer' | 'rebuilt' | 'current';
+export type Direction = 'newer' | 'rebuilt' | 'current';
 
 /** Where the target is from the site's Ghost; a CliError for what update never does. */
-function direction(from: Pin, to: ResolvedGhost): Direction {
+export function direction(from: Pin, to: ResolvedGhost): Direction {
     if (to.digest === from.digest) {
         return 'current';
     }
@@ -88,7 +88,7 @@ function direction(from: Pin, to: ResolvedGhost): Direction {
     return order === 0 ? 'rebuilt' : 'newer';
 }
 
-interface GhostUpdate {
+export interface GhostUpdate {
     readonly io: Io;
     readonly site: SiteFacts;
     readonly metadata: Metadata;
@@ -183,12 +183,19 @@ function report({ io, from, to }: GhostUpdate, decided: Direction): number {
     return EXIT.ok;
 }
 
-async function apply(update: GhostUpdate, backup: boolean): Promise<number> {
-    const { io, site, metadata, from, to } = update;
+/**
+ * The update of a site's Ghost, as the executor runs it: for `update` and the
+ * supervisor alike. `extra` is what each caller adds: whether to back up
+ * first, and for the supervisor, the services to leave alone and where to
+ * record each stage.
+ */
+export function ghostUpdatePlan(
+    update: GhostUpdate,
+    extra: Pick<UpdatePlan, 'backup' | 'except' | 'onStage' | 'onBackup'> = {},
+): UpdatePlan {
+    const { io, site, metadata, to } = update;
     const dir = site.dir;
-    io.stdout(`Updating Ghost from ${from.version} to ${to.version}\n`);
-
-    const outcome = await runUpdate({
+    return {
         io,
         site,
         metadata,
@@ -199,7 +206,7 @@ async function apply(update: GhostUpdate, backup: boolean): Promise<number> {
         kept: 'the configuration and the metadata, which name the Ghost the site runs',
         failing: `The update to Ghost ${to.version} did not complete.`,
         afterStartup: 'keep',
-        backup,
+        ...extra,
         async write() {
             heading(io, 'Pinning the new Ghost');
             // Together, and before startup: they describe the same image.
@@ -242,7 +249,15 @@ async function apply(update: GhostUpdate, backup: boolean): Promise<number> {
         },
         // Pulled before the site stopped.
         async pull() {},
-    });
+    };
+}
+
+async function apply(update: GhostUpdate, backup: boolean): Promise<number> {
+    const { io, site, from, to } = update;
+    const dir = site.dir;
+    io.stdout(`Updating Ghost from ${from.version} to ${to.version}\n`);
+
+    const outcome = await runUpdate(ghostUpdatePlan(update, { backup }));
     if (outcome.state !== 'done') {
         return failed(update, outcome);
     }
