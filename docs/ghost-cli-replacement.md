@@ -56,104 +56,25 @@ image and the deploy succeeds. It needs a Tinybird login, so it is run by hand.
 
 ### S8 — Supervisor command, protocol, and installer integration
 
-Repo: ghost-docker. Deps: S9; S13 if it has shipped. Write
-`docs/upgrade-supervisor.md` with the exact schemas, transitions, ownership, policy, and
-recovery rules below, then implement the supervisor as a long-running command of the
-manager image. Run updates through `src/update.ts`, as `update` does. Wire `--with supervisor` and request submission/status
-tooling. Scope: one active job, durable status, `interrupted` for work found unfinished,
-a 20-job history; no queue and no resuming.
+Repo: ghost-docker. The protocol is [upgrade-supervisor.md](upgrade-supervisor.md), the
+contract `FileDropUpgradeAdapter` in Ghost core (S9) is built against. Implement the
+supervisor as a long-running command of the manager image, running updates through
+`src/update.ts` as `update` does; wire `--with supervisor`, the exchange volumes, and
+the request/status tooling the protocol describes.
 
 Acceptance: handwritten requests work before Ghost gains an adapter; duplicate and
 malformed requests, permission violations, and stale status behave correctly; a request
 while a job is active, or while the CLI holds the lock, is refused; a supervisor killed
 mid-job reports that job `interrupted` on its next start, with its backup, and leaves
 the lock for the operator; history stays within its bound. Verify actual exchange
-permissions as Ghost's runtime uid. Installer must not enable an incompatible Ghost
-adapter.
-
-#### Supervisor protocol requirements
-
-The supervisor is a command of the manager image, enabled per site; it is not a second
-image. The Docker socket is host-privileged; non-root process execution does not remove
-that authority. The host operator explicitly enables self-upgrades and controls policy.
-Ghost owner/admin authorization permits requests only within that host-defined policy.
-
-The supervisor sees the site directory at the same absolute host path for Compose bind
-resolution. Define supported local Docker contexts and socket paths; reject remote
-daemons or unsupported rootless setups clearly. Avoid broad writable mounts beyond what
-execution requires. Supervisor behavior follows [recovery
-invariants](architecture.md#recovery) rather than inventing a second upgrade/recovery
-algorithm.
-
-**Execution.** The supervisor is the host
-command run on Ghost's behalf, not a job system: the same executor as
-`./ghost-docker update` (`src/update.ts`) and the shared recovery rules, with a file exchange in
-front of it. So it has:
-
-- **One active job.** A job starts only when no job is active and the
-  site lock is free. A request that arrives while one is active, or while the
-  CLI holds the lock, is claimed and refused at once (`refused`, naming what
-  holds the site), as the CLI refuses a second operation. There is no queue:
-  Admin shows the active job and offers the request again when it ends.
-- **Durable status.** Every stage boundary of a job, and the supervisor's
-  heartbeat, is written atomically to its own file before the side effect
-  that follows it. That record is all the journal there is: it says where a
-  job stopped and which backup it took, and nothing replays it.
-- **An explicit interrupted state.** A job the supervisor finds unfinished when
-  it starts (it, Docker or the host was stopped mid-job) is marked
-  `interrupted`, with the stage it reached, the backup's path and the lock it
-  left. It is never resumed or retried: what the executor had done is exactly
-  what a crashed CLI operation leaves, and the operator resolves it the same
-  way, with `check` and then `restore` or the command again. The lock stays
-  held until then, so no new job starts over a half-changed site.
-- **Bounded history.** The active job and the 20 most recent finished ones are
-  kept, so Admin can show the last outcome after a restart; older job files
-  are removed when a new request is claimed. That is the whole retention rule.
-
-Outside this scope: queues, more than one job, resuming or retrying interrupted work,
-scheduled or unattended upgrades, and configurable retention. Each would need a
-requirement the above cannot meet.
-
-The protocol document must replace these design requirements before either side is
-implemented. It must include:
-
-- Versioned JSON schemas for status, requests, and jobs; exact version/image fields;
-  timestamps/heartbeat; supported capabilities; bounded error details.
-- Available updates in the status, in two lists. **One-click**: what the
-  supervisor can perform within the host's policy, which Admin offers to run.
-  **Manual**: what needs steps on the host, with the reason and the steps, which
-  Admin shows as a notice. Each entry names its component (`ghost`, `stack`, and
-  any added later) and its from/to versions; Admin renders both lists without
-  component-specific rules. Stack updates are always manual: the stack update
-  replaces the supervisor's own image and can change `compose.yml`, so it stays
-  a host command (`./ghost-docker self-update`). A Ghost upgrade the host's policy
-  forbids, or one that needs a newer stack, is manual too and says why.
-- Job states and their legal transitions: the executor's stages (backing-up,
-  pulling, restarting, verifying, restoring), then one final state: `done`,
-  `restored`, `needs-operator` (automatic recovery is unsafe or failed; the backup's path and what to do), `refused` (policy, lock, another active job, or a malformed request) or
-  `interrupted` (found unfinished on start). No queued state.
-- UUID validation, bounded file sizes, no symlink following, exclusive request
-  claiming (an atomic rename, so one request is claimed once and a duplicate
-  ID is refused), the interrupted-on-start rule, the 20-job history bound, and
-  polling backoff.
-- Separate request-write and status/job-read permissions for Ghost. A shared writable
-  parent directory must not let Ghost replace supervisor-owned status or job files.
-  Define initialization/uid ownership and mount layout explicitly.
-- A POST can return
-  an accepted job ID before the supervisor claims it; distinguish pending, unknown,
-  expired, stale supervisor, and protocol mismatch rather than treating all 404s as
-  a restart indefinitely.
-- Strict target allowlisting, argument-array subprocess invocation, no shell input,
-  host-enforced major/backup policy, and the shared site operation lock.
-
-Version discovery must handle registry pagination, rate limits, stale cache, semver
-ordering, image architecture, and compatibility requirements. A valid Docker tag alone
-is not evidence that an upgrade path is supported.
+permissions as Ghost's runtime uid. Installer must not enable the adapter on a Ghost
+that does not ship it.
 
 ### S9 — Ghost upgrade adapter and Admin API
 
-Repo: Ghost core. Deps: S8 protocol contract. Follow repository adapter/API guidance.
-Implement `NoopUpgradeAdapter` and `FileDropUpgradeAdapter`, permission-checked status/
+Repo: Ghost core. Deps: S8 protocol contract ([upgrade-supervisor.md](upgrade-supervisor.md)).
+Follow repository adapter/API guidance. Implement `NoopUpgradeAdapter` and, against the
+protocol, `FileDropUpgradeAdapter`, permission-checked status/
 request/job APIs, rate limiting, capability reporting, and update-notification metadata.
 Noop is default; missing/stale supervisor and malformed protocol data produce useful
 status without making unrelated Ghost startup depend on supervisor availability.
