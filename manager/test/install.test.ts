@@ -506,6 +506,36 @@ describe('the project name', () => {
         assert.match(result.stdout, new RegExp(`Project +${project} `));
     });
 
+    test('--name is used as given, in either mode', async () => {
+        const result = await install('--local', '--name', 'acme-theme', '--no-start');
+        assert.equal(result.code, 0, result.stderr);
+        assert.equal(
+            env.get(readFileSync(join(h.dir, '.env'), 'utf8'), 'COMPOSE_PROJECT_NAME'),
+            'acme-theme',
+        );
+        assert.equal(
+            JSON.parse(readFileSync(join(h.dir, '.ghost-docker.json'), 'utf8')).site.project,
+            'acme-theme',
+        );
+    });
+
+    test('a --name Compose or DNS would not take is refused before anything is written', async () => {
+        for (const name of ['Acme', '_acme', 'acme_theme', 'a'.repeat(46)]) {
+            const result = await install('--local', '--name', name, '--no-start');
+            assert.equal(result.code, 2, name);
+            assert.match(result.stderr, /--name .*lowercase letters, digits and dashes/);
+            assert.deepEqual(siteFiles(), []);
+        }
+    });
+
+    test('a --name another directory has containers for is refused', async () => {
+        h.daemon.containers = [containerOf('acme-theme', '/srv/other')];
+        const result = await install('--local', '--name', 'acme-theme', '--no-start');
+        assert.equal(result.code, 1);
+        assert.match(result.stderr, /the Compose project acme-theme belongs to \/srv\/other/);
+        assert.deepEqual(siteFiles(), []);
+    });
+
     test('a production name another directory has containers for is refused', async () => {
         h.daemon.containers = [containerOf('ghost-example-com', '/srv/other')];
         const result = await install('--domain', 'example.com', '--no-start');

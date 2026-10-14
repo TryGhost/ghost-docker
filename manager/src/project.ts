@@ -26,6 +26,14 @@ export const slug = (value: string): string =>
         .replace(/[^a-z0-9]+/g, '-')
         .replace(/^-+|-+$/g, '');
 
+/**
+ * A project name `install --name` accepts. Compose's own rule, less the
+ * underscore, and short enough that the longest network alias,
+ * `traffic-analytics-<name>`, is still one DNS label: the name is part of
+ * every service's hostname.
+ */
+export const PROJECT_NAME = /^[a-z0-9][a-z0-9-]{0,44}$/;
+
 /** How much of a directory's name a local project keeps, so container names stay readable. */
 const DIRECTORY_CHARACTERS = 24;
 
