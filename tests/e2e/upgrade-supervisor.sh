@@ -138,8 +138,7 @@ ok "write requests, read status; status, jobs and records are the supervisor's a
 
 step "A malformed request is refused"
 key=$(printf 'malformed' | shasum -a 256 | cut -d' ' -f1)
-id=$(docker run --rm --entrypoint node "$MANAGER" -e \
-    "import('/opt/ghost-docker/manager/src/supervisor/protocol.ts').then(p => console.log(p.jobIdOf('$key')))")
+id=$key
 as_ghost "printf 'not json' > /run/ghost-upgrade/requests/$id.json"
 wait_for refused 30 job_state "$id"
 gd supervisor job "$id" --json | jq -e '.diagnostics[0].code == "malformed"' >/dev/null || fail "not refused as malformed"
@@ -149,8 +148,7 @@ step "A request while the CLI holds the lock is refused"
 printf '{"operation":"backup","startedAt":"2026-10-14T00:00:00Z"}\n' >"$S/.ghost-docker.lock"
 wait_for busy 30 availability
 key=$(printf 'locked' | shasum -a 256 | cut -d' ' -f1)
-id=$(docker run --rm --entrypoint node "$MANAGER" -e \
-    "import('/opt/ghost-docker/manager/src/supervisor/protocol.ts').then(p => console.log(p.jobIdOf('$key')))")
+id=$key
 handwritten "$key" "$to" "$id.json"
 wait_for refused 30 job_state "$id"
 rm "$S/.ghost-docker.lock"

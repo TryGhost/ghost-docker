@@ -292,9 +292,7 @@ export class Supervisor {
             }
             const { request } = parseExchangeFile(requestFileSchema, read, name);
             if (jobIdOf(request.idempotencyKey) !== id) {
-                throw new ExchangeFileError(
-                    `${name} is not named for the job of its idempotency key`,
-                );
+                throw new ExchangeFileError(`${name} is not named for its idempotency key`);
             }
             const age = this.now().getTime() - read.mtimeMs;
             if (age > REQUEST_MAX_AGE_MS || age < -REQUEST_MAX_SKEW_MS) {

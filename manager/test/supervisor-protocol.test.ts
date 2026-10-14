@@ -20,14 +20,14 @@ import {
     ExchangeFileError,
     jobFileSchema,
     jobIdOf,
-    JOB_ID_NAMESPACE,
+    JOB_FILE_NAME,
+    upgradeJobIdSchema,
     parseExchangeFile,
     publishExchangeFile,
     randomIdempotencyKey,
     readExchangeFile,
     requestFileSchema,
     statusFileSchema,
-    uuidv5,
 } from '../src/supervisor/protocol.ts';
 import { REPO } from './site.ts';
 
@@ -56,25 +56,12 @@ describe('protocol fixtures', () => {
 });
 
 describe('job IDs', () => {
-    test('the namespace is the UUIDv5 of the protocol URL', () => {
-        assert.equal(
-            uuidv5(
-                '6ba7b811-9dad-11d1-80b4-00c04fd430c8',
-                'https://github.com/TryGhost/ghost-docker/blob/next-docker/docs/upgrade-supervisor.md#job-ids',
-            ),
-            JOB_ID_NAMESPACE,
-        );
-    });
-
-    test('match the documented test vector', () => {
-        assert.equal(jobIdOf('0'.repeat(64)), '96525598-8933-5537-8f86-a9f36f13b60e');
-    });
-
-    test('are the same for the same key and differ for another', () => {
+    test('are the idempotency key itself, a valid job ID and file name', () => {
         const key = randomIdempotencyKey();
         assert.match(key, /^[0-9a-f]{64}$/);
-        assert.equal(jobIdOf(key), jobIdOf(key));
-        assert.notEqual(jobIdOf(key), jobIdOf(randomIdempotencyKey()));
+        assert.equal(jobIdOf(key), key);
+        assert.equal(upgradeJobIdSchema.safeParse(key).success, true);
+        assert.match(`${key}.json`, JOB_FILE_NAME);
     });
 });
 

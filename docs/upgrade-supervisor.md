@@ -176,14 +176,17 @@ the host, as every manager command does.
 
 Rules for each side:
 
-- **Reading:** both ends open with `O_NOFOLLOW`, then `fstat` the descriptor.
-  The file must be a regular file within its bound, and status and job files
-  must have `nlink === 1`. A request has two links for an instant while Ghost
-  writes it (between `link` and `unlink`), so Ghost tolerates that when reading
-  its own requests, and the supervisor leaves such a request for its next scan
-  rather than claiming it. Reading stops at the bound plus one byte, so an
-  oversize file is refused without being read in full. Directories are never
-  traversed: a reader opens only names it constructed.
+- **Reading, by the supervisor:** requests come from Ghost, which the host
+  trusts less than itself, so the supervisor opens them with `O_NOFOLLOW`, then
+  `fstat`s the descriptor. A request must be a regular file within its bound,
+  read to the bound plus one byte so an oversize file is refused without being
+  read in full. One with more than one link is left for the next scan rather
+  than claimed: Ghost's own request has two for an instant, between `link` and
+  `unlink`. The supervisor opens only names it constructed and never follows a
+  name out of the exchange.
+- **Reading, by Ghost:** plain reads. Ghost reads only what the supervisor
+  wrote, and its own requests, and the supervisor is the more trusted end, so
+  the checks above would protect nothing there.
 - **Writing:** both ends write a temporary file (`.tmp-<random>`) in the target
   directory, `fsync` it, then move it into place. The supervisor uses `rename`.
   Ghost uses `link` followed by `unlink`, so a request never replaces one that
@@ -300,16 +303,16 @@ of every final state.
 
 ### Job IDs
 
-A job's ID is the lowercase UUIDv5 (RFC 9562) of the request's `idempotencyKey`,
-the 64 hex characters as UTF-8, in the namespace
-`db929a3c-305a-5054-8c02-a790ee3e514a`. That namespace is itself the UUIDv5 of
-`https://github.com/TryGhost/ghost-docker/blob/next-docker/docs/upgrade-supervisor.md#job-ids`
-in the URL namespace. For example, a key of 64 zeros gives
-`96525598-8933-5537-8f86-a9f36f13b60e`.
+A job's ID is the request's `idempotencyKey` itself: 64 lowercase hex
+characters, which the base `upgradeJobIdSchema` (an opaque token) accepts. The
+request file is `requests/<idempotencyKey>.json` and its job
+`status/jobs/<idempotencyKey>.json`. Ghost has the ID before the supervisor has
+seen the request, a repeated key always names the same job, and one intent has
+one file name.
 
-The result matches the base `upgradeJobIdSchema`. Both ends compute the ID, so
-the adapter can return a job ID before the supervisor has seen the request. A
-repeated key always names the same job.
+The key reveals nothing to reuse: Ghost's Admin API hashes the client's key with
+the caller's own user ID, so knowing one lets nobody replay someone else's
+request.
 
 ## What each end does
 
@@ -331,7 +334,7 @@ A replay is answered before any availability or policy check, so a retry
 after a lost answer learns its job even while that job runs, or once its update
 is no longer offered.
 
-1. **Compute the job ID**, and read status for its `prunedJobIds`.
+1. **Take the job ID**, the key, and read status for its `prunedJobIds`.
 2. **Look for an earlier request with the same key:**
    - If `status/jobs/<id>.json` exists: return its job when `component` and
      `toVersion` match, otherwise reject with `idempotency-conflict`.
@@ -366,7 +369,7 @@ as `stale`.
 ### Supervisor: claiming
 
 Every 2 seconds, the supervisor reads up to 32 entries of `requests/`. It takes
-only names of the form `<uuid>.json`, oldest mtime first, and leaves alone any
+only names of the form `<key>.json` (64 hex characters), oldest mtime first, and leaves alone any
 with more than one link, which Ghost is still writing (removed only once more
 than 10 minutes old). For each:
 
@@ -378,8 +381,8 @@ than 10 minutes old). For each:
    to the request file afterwards.
 3. **Validate it.** Read and validate the request. A malformed request is
    `refused` with `malformed`. A request is also malformed when it fails its
-   bound, the file checks, the schema or `protocol`, or when its ID does not
-   derive from its key. A request whose time is out of bounds is refused with
+   bound, the file checks, the schema or `protocol`, or when its file name is not
+   `request.idempotencyKey`. A request whose time is out of bounds is refused with
    `request-expired`.
 4. **Check that the site is free.** If a job is active or the site lock is held,
    the request is `refused` with `busy`, naming the holder.

@@ -344,7 +344,7 @@ export const supervisorJobCommand = defineCommand({
     async run(flags, positionals, io) {
         const [id] = positionals;
         if (!upgradeJobIdSchema.safeParse(id).success) {
-            throw new UsageError('give the job’s ID, a lowercase UUID');
+            throw new UsageError('give the job’s ID, as supervisor request printed it');
         }
         const job = (await asGhost(io, ['job', id!])) as Lookup;
         io.stdout(flags.json ? `${JSON.stringify(job, null, 2)}\n` : describeJob(job));

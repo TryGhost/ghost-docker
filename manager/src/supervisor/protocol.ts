@@ -27,7 +27,8 @@ export const PROTOCOL = 1;
 // --- Ghost's schemas, as they are --------------------------------------------
 
 export const upgradeVersionSchema = z.string().min(1).max(128);
-export const upgradeJobIdSchema = z.uuid().lowercase();
+// An opaque token; this protocol uses the request's idempotency key.
+export const upgradeJobIdSchema = z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/);
 export const upgradeComponentSchema = z.string().regex(/^[a-z][a-z0-9-]{0,31}$/);
 
 const code = z
@@ -164,32 +165,18 @@ export const SOURCE = 'ghost-docker';
 
 // --- Job IDs ------------------------------------------------------------------
 
-/** The UUIDv5 namespace of job IDs: uuidv5(URL, the protocol's #job-ids URL). */
-export const JOB_ID_NAMESPACE = 'db929a3c-305a-5054-8c02-a790ee3e514a';
-
-/** RFC 9562 UUIDv5 of `name` in `namespace`, lowercase. */
-export function uuidv5(namespace: string, name: string): string {
-    const hash = createHash('sha1')
-        .update(Buffer.from(namespace.replaceAll('-', ''), 'hex'))
-        .update(Buffer.from(name, 'utf8'))
-        .digest();
-    const bytes = hash.subarray(0, 16);
-    bytes[6] = (bytes[6]! & 0x0f) | 0x50;
-    bytes[8] = (bytes[8]! & 0x3f) | 0x80;
-    const hex = bytes.toString('hex');
-    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-}
-
-/** The job a request's idempotency key names, on both ends. */
-export const jobIdOf = (idempotencyKey: string): string => uuidv5(JOB_ID_NAMESPACE, idempotencyKey);
+/**
+ * The job a request's idempotency key names: the key itself, so a replay
+ * finds its job and one intent has one file name (docs/upgrade-supervisor.md#job-ids).
+ */
+export const jobIdOf = (idempotencyKey: string): string => idempotencyKey;
 
 /** A key as Ghost makes one: a sha256 in lowercase hex. Used for requests made by hand. */
 export const randomIdempotencyKey = (): string =>
     createHash('sha256').update(randomBytes(32)).digest('hex');
 
-/** `<uuid>.json`: the only names either end reads in the exchange. */
-export const JOB_FILE_NAME =
-    /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.json$/;
+/** `<key>.json`, a sha256 in hex: the only names either end reads in the exchange. */
+export const JOB_FILE_NAME = /^([0-9a-f]{64})\.json$/;
 
 // --- Reading and writing the exchange -----------------------------------------
 
