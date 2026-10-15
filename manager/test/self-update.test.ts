@@ -174,6 +174,16 @@ describe('an update between releases', () => {
         assert.ok(!existsSync(join(h.dir, '.ghost-docker.lock')));
     });
 
+    test('--no-backup takes none, and stops nothing before the release starts', async () => {
+        const result = await update('--no-backup');
+        assert.equal(result.code, 0, result.stderr);
+        assert.equal(pinnedImage(), SECOND);
+        assert.equal(metadata().stack.version, 'v0.1.0-beta.2');
+        assert.ok(!existsSync(join(h.dir, 'backups')));
+        assert.ok(!compose.some((args) => args[0] === 'stop'));
+        assert.match(result.stdout, /Backup +none, as --no-backup asked/);
+    });
+
     test('replaces untouched files, keeps edited ones with the release’s beside them', async () => {
         // The operator edits one file the release changes, and one it does not.
         appendFileSync(join(h.dir, 'compose.yml'), '# mine\n');

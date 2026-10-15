@@ -8,7 +8,7 @@ import { compose, composeConfig, composeError } from '../compose.ts';
 import { z } from 'zod';
 import { defineCommand, flag } from '../command.ts';
 import { findingErrors, validate } from '../config.ts';
-import { CliError, EXIT } from '../errors.ts';
+import { CliError, EXIT, UsageError } from '../errors.ts';
 import { atomicWrite } from '../fs.ts';
 import type { Io } from '../io.ts';
 import { acquireLock } from '../lock.ts';
@@ -55,6 +55,7 @@ const options = z
             'Update to the newest release on this channel, stable or beta, and follow it from now on. Default: the channel the site follows.',
         ),
         to: releaseOption('Update to this release, vX.Y.Z or vX.Y.Z-beta.N.'),
+        noBackup: flag('Take no backup before the update.'),
     })
     .refine((flags) => flags.channel === undefined || flags.to === undefined, {
         error: 'choose --channel or --to, not both',
@@ -273,6 +274,11 @@ export const selfUpdateCommand = defineCommand({
         // An installation of the released main layout has no metadata: this is
         // how it moves onto this one (legacy.ts).
         if (readMetadata(dir).state === 'absent' && isReleasedMainLayout(site.settings)) {
+            if (flags.noBackup) {
+                throw new UsageError(
+                    '--no-backup: moving from the released main layout always backs the site up first',
+                );
+            }
             return migrateReleasedMain(io, context, site, requested, flags.check);
         }
         const metadata = requireMetadata(dir, 'update cannot tell which files are its own');
@@ -341,7 +347,7 @@ export const selfUpdateCommand = defineCommand({
 
         const lock = acquireLock(dir, `update to ${describeStack(to)}`);
         try {
-            return await apply(update);
+            return await apply(update, !flags.noBackup);
         } finally {
             lock.release();
         }
@@ -384,7 +390,7 @@ function report({ io, from, to, payload, metadata }: Update, direction: Directio
     return EXIT.ok;
 }
 
-async function apply(update: Update): Promise<number> {
+async function apply(update: Update, backup: boolean): Promise<number> {
     const { io, site, from, to, stack, payload } = update;
     const dir = site.dir;
     io.stdout(`Updating from ${describeStack(from)} to ${describeStack(to)}\n`);
@@ -423,6 +429,7 @@ async function apply(update: Update): Promise<number> {
         kept: 'the configuration, the metadata and the files this update writes',
         failing: `The update to ${describeStack(to)} did not complete. Putting ${describeStack(from)}'s files back`,
         afterStartup: 'restore',
+        backup,
         async write() {
             heading(io, 'Writing the stack');
             writePayloadChanges(io, dir, stack, payload);
@@ -522,7 +529,7 @@ function failed(
                 ...(servicesChanged
                     ? [
                           `${describeStack(to)}'s services started before the update failed, so they may have changed`,
-                          'the databases and content, and Ghost may have accepted writes, since the backup.',
+                          `the databases and content, and Ghost may have accepted writes${backup === null ? '' : ', since the backup'}.`,
                           'Nothing was loaded over them: the data is as the update left it.',
                       ]
                     : []),
@@ -569,7 +576,7 @@ function failed(
     throw new CliError(`the update failed; ${describeStack(from)} was restored.`);
 }
 
-function summarize({ io, site, from, to, metadata, payload }: Update, backup: string): void {
+function summarize({ io, site, from, to, metadata, payload }: Update, backup: string | null): void {
     const kept = payload.changes.filter((change) => change.action === 'keep');
     io.stdout(
         [
@@ -578,7 +585,9 @@ function summarize({ io, site, from, to, metadata, payload }: Update, backup: st
             '',
             `  Ghost        ${metadata.ghost.version}, ${metadata.ghost.image}@${metadata.ghost.digest}, unchanged`,
             `  Manager      ${to.image}`,
-            `  Backup       ${relative(site.dir, backup)}, of the site before the update; kept until you remove it`,
+            backup === null
+                ? '  Backup       none, as --no-backup asked'
+                : `  Backup       ${relative(site.dir, backup)}, of the site before the update; kept until you remove it`,
             ...(kept.length > 0
                 ? [
                       '',

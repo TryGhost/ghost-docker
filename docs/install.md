@@ -572,7 +572,7 @@ checks still run when Docker is unreachable, which is when they matter most.
 ## self-update
 
 ```text
-ghost-docker self-update [--check] [--channel stable|beta | --to vX.Y.Z]
+ghost-docker self-update [--check] [--no-backup] [--channel stable|beta | --to vX.Y.Z]
 ```
 
 Moves a site installed from the image to a newer release of ghost-docker: the
@@ -594,6 +594,7 @@ site's launcher starts that image, not the one it is pinned to.
 | `--check` | Whether there is an update, and what it would change. Changes nothing. |
 | `--channel CHANNEL` | The newest release on `stable` or `beta`, which the site then follows. |
 | `--to vX.Y.Z` | Exactly that release. |
+| `--no-backup` | Take no backup first. Not allowed when [moving from the released main layout](#moving-from-the-released-main-layout). |
 
 The update refuses downgrades, incompatible Ghost versions, absent metadata
 (except for [the released main layout](#moving-from-the-released-main-layout)),
@@ -601,6 +602,11 @@ checkouts, another operation's lock and an unfinished update snapshot. It pulls
 images before the outage where possible, keeps a file snapshot in
 `.ghost-docker-update/`, then pauses Ghost and ActivityPub and takes a consistent
 backup. The site is unavailable until the release starts and verifies.
+
+With `--no-backup` nothing is paused or backed up: the site keeps running until
+the release's services start in its place. This suits a local site whose data
+you can lose or have backed up yourself; a failure before startup is still
+restored from the snapshot, but after startup there is no backup to go back to.
 
 Untouched managed files are replaced. Edited files stay beside the release's
 `<file>.new`; compare and merge them. Removed managed files are deleted only if
@@ -721,7 +727,7 @@ self-update. Compose files you used with `-f` by hand, such as
 ## update
 
 ```text
-ghost-docker update [--check] [<version> | latest]
+ghost-docker update [--check] [--no-backup] [<version> | latest]
 ```
 
 Moves the site's Ghost to a newer release of the same major version, in an
@@ -733,6 +739,7 @@ newer Ghost and which, and changes nothing; it pulls the image to find out.
 | Option | Meaning |
 | --- | --- |
 | `--check` | Whether there is a newer Ghost, and which. Changes nothing. |
+| `--no-backup` | Take no backup first. Going back to the earlier Ghost then needs a backup of your own. |
 | `<version>` | Exactly that Ghost, such as `6.68.0`. Omitted, or `latest`: the newest of the site's major. |
 
 The update refuses another major version, an older Ghost, a tag that is not the
@@ -745,6 +752,12 @@ consistent backup. It writes the new pin to `.env` (`GHOST_IMAGE_REF`, with
 then starts the site and verifies it. Ghost, and Tinybird sync with analytics,
 run the new image. The site is unavailable from the backup until Ghost has
 migrated and become healthy.
+
+With `--no-backup` nothing is paused or backed up: the site keeps running on
+the earlier Ghost until the new one starts in its place. This suits a local
+site whose data you can lose or have backed up yourself. A failure before
+startup is still restored from the snapshot, but the newer Ghost's migrations
+cannot be undone without a backup.
 
 On success the snapshot is removed and the backup stays in `backups/` until you
 remove it. Going back to the earlier Ghost means restoring that backup, which

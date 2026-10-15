@@ -45,10 +45,17 @@ export interface UpdatePlan {
      * be the target's (Ghost's migrations), and switching back does not undo that.
      */
     readonly afterStartup: 'restore' | 'keep';
+    /**
+     * Whether to take a consistent backup first. Without one, nothing is
+     * paused: the site keeps running until startup recreates it, and recovery
+     * before startup still has the snapshot. Default: true.
+     */
+    readonly backup?: boolean;
 }
 
 export type UpdateOutcome =
-    | { readonly state: 'done'; readonly backup: string }
+    /** `backup` is null when the update was asked to take none. */
+    | { readonly state: 'done'; readonly backup: string | null }
     /** Failed before startup; the files are back and the paused writers running again. */
     | {
           readonly state: 'restored';
@@ -88,9 +95,17 @@ export async function runUpdate(plan: UpdatePlan): Promise<UpdateOutcome> {
     let servicesChanged = false;
     let backup: string | null = null;
     try {
-        heading(io, 'Backing up the site');
-        backup = await takeBackup({ io, site, metadata: plan.metadata, consistent: true, pause });
-        ok(io, 'backup', `${relative(dir, backup)}, checked`);
+        if (plan.backup ?? true) {
+            heading(io, 'Backing up the site');
+            backup = await takeBackup({
+                io,
+                site,
+                metadata: plan.metadata,
+                consistent: true,
+                pause,
+            });
+            ok(io, 'backup', `${relative(dir, backup)}, checked`);
+        }
 
         await plan.write();
 

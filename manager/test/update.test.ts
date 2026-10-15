@@ -112,6 +112,19 @@ describe('an update to a newer Ghost', () => {
         assert.match(result.stdout, /Backup +backups\//);
     });
 
+    test('--no-backup takes none, and never stops Ghost before it is started on the new pin', async () => {
+        const result = await update('--no-backup');
+        assert.equal(result.code, 0, result.stderr);
+        assert.equal(setting('GHOST_IMAGE_REF'), `ghost@${NEWER}`);
+        assert.equal(metadata().ghost.version, '6.68.0');
+        assert.deepEqual(backups(), []);
+        assert.ok(!compose.some((args) => args[0] === 'stop'));
+        assert.equal(started(), 1);
+        assert.doesNotMatch(result.stdout, /Backing up the site/);
+        assert.match(result.stdout, /Backup +none, as --no-backup asked/);
+        assert.match(result.stdout, /going back to it needs a backup of your own/);
+    });
+
     test('a named version, of the variant the site runs', async () => {
         ghost['6.68.0-next-alpine'] = '6.68.0';
         digests['6.68.0-next-alpine'] = NEWER;
@@ -288,6 +301,15 @@ describe('a failed update', () => {
         assert.ok(!existsSync(join(h.dir, '.ghost-docker.lock')));
         const again = await update();
         assert.match(again.stderr, /left from an update that did not finish/);
+    });
+
+    test('with --no-backup, a Ghost that fails to start names no backup to restore', async () => {
+        site.ups = [failed(1, 'container ghost is unhealthy')];
+        const result = await update('--no-backup');
+        assert.equal(result.code, 1);
+        assert.match(result.stderr, /the site needs the operator/);
+        assert.doesNotMatch(result.stderr, /restore --yes|since the backup/);
+        assert.deepEqual(backups(), []);
     });
 
     test('services that cannot be stopped are reported, and nothing is put back over them', async () => {

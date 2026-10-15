@@ -220,6 +220,13 @@ beforeEach(() => {
 afterEach(() => h.cleanup());
 
 describe('migrating the released main layout', () => {
+    test('--no-backup is refused: the move always backs the site up first', async () => {
+        const result = await migrate('--no-backup');
+        assert.equal(result.code, 2, result.stderr);
+        assert.match(result.stderr, /always backs the site up first/);
+        assert.ok(!existsSync(join(h.dir, '.ghost-docker.json')));
+    });
+
     test('moves the site onto this layout, keeping its project, credentials and Ghost', async () => {
         const result = await migrate();
         assert.equal(result.code, 0, result.stderr);
