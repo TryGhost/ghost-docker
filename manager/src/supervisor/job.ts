@@ -5,8 +5,8 @@
 import { relative } from 'node:path';
 import { refuseDrift } from '../backup.ts';
 import {
-    direction,
     ghostUpdatePlan,
+    order,
     recoveryAdvice,
     reference,
     type GhostUpdate,
@@ -70,7 +70,7 @@ export const ghostJob =
             );
         }
         try {
-            if (direction(from, to) !== 'newer') {
+            if ((await order(io, from, to)) !== 'newer') {
                 return refused('not-newer', `This site already runs Ghost ${from.version}.`);
             }
             await refuseDrift(io, await resolveSite(io, dir));

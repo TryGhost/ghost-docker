@@ -176,6 +176,23 @@ jobs:
       - name: Upgrade supervisor end to end
         run: tests/e2e/upgrade-supervisor.sh
 
+  # Ghost's nightly channel on Docker Engine: a site installed on an older
+  # nightly build and moved to the latest by the upgrade supervisor.
+  ghost-nightly-linux:
+    name: Ghost nightly channel on Linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: ./.github/actions/docker-hub
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Ghost nightly end to end
+        run: tests/e2e/ghost-nightly.sh
+
   # An installation of the released main layout, migrated by the served
   # launcher: refusals before any change, recovery after a failed start, and
   # the migration keeping its project, data, routes and overrides.
@@ -302,6 +319,7 @@ jobs:
       - self-update-linux
       - ghost-update-linux
       - upgrade-supervisor-linux
+      - ghost-nightly-linux
       - migrate-main-linux
       - backup-linux
       - import-linux
