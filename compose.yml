@@ -69,12 +69,10 @@ services:
       tinybird__stats__endpoint: ${TINYBIRD_API_URL:-https://api.tinybird.co}
     volumes:
       - ${UPLOAD_LOCATION:-./data/ghost}:${GHOST_CONTENT_PATH:-/home/ghost/content}
-      # The upgrade supervisor's exchange (docs/upgrade-supervisor.md#the-exchange).
-      # Ghost writes requests in one and only reads status and jobs from the
-      # other, so it can never replace a file the supervisor owns. Both stay
-      # empty, and unread, unless the supervisor runs.
-      - upgrade_requests:/run/ghost-upgrade/requests
-      - upgrade_status:/run/ghost-upgrade/status:ro
+      # The upgrade supervisor's socket (docs/upgrade-supervisor.md#the-socket),
+      # read-only: Ghost connects to it and can never replace it. Empty, and
+      # unused, unless the supervisor runs.
+      - upgrade:/run/ghost-upgrade:ro
     # A real readiness probe: Ghost has booted and is serving its Admin API.
     # A running container or a redirect is not readiness.
     healthcheck:
@@ -175,17 +173,16 @@ services:
     volumes:
       - ${PROJECT_DIR:-/nonexistent}:${PROJECT_DIR:-/nonexistent}
       - ${DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
-      - upgrade_requests:/run/ghost-upgrade/requests
-      - upgrade_status:/run/ghost-upgrade/status
-    # Healthy while it keeps its heartbeat: what Ghost reads as a live supervisor.
+      - upgrade:/run/ghost-upgrade
+    # Healthy while it answers on its socket, as Ghost would ask it.
     healthcheck:
       test:
         - CMD
         - node
         - -e
         - >-
-          const s = JSON.parse(require('fs').readFileSync('/run/ghost-upgrade/status/status.json'));
-          process.exit(Date.now() - Date.parse(s.heartbeatAt) < 60000 ? 0 : 1)
+          require('http').get({socketPath: '/run/ghost-upgrade/supervisor.sock', path: '/v1/status', timeout: 5000},
+          r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))
       interval: 30s
       timeout: 10s
       start_period: 300s
@@ -420,8 +417,7 @@ services:
     tty: true
 
 volumes:
-  upgrade_requests:
-  upgrade_status:
+  upgrade:
   caddy_data:
   caddy_config:
   tinybird_files:

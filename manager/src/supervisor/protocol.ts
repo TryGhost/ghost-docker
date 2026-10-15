@@ -1,28 +1,25 @@
-// The upgrade supervisor's file-drop protocol, version 1: docs/upgrade-supervisor.md.
+// The upgrade supervisor's HTTP protocol, version 1: docs/upgrade-supervisor.md.
 //
 // The bodies are Ghost's own upgrade schemas (@tryghost/adapter-base-upgrade,
 // packages/adapters/upgrade-base/src/schemas.ts in Ghost), copied field for
 // field until that package is published and the manager can depend on it.
-// The protocol adds only the envelope around them. Keep the copy exact: a
-// field that differs here is a file Ghost's adapter refuses.
+// Keep the copy exact: a field that differs here is a body Ghost's adapter
+// refuses. The protocol adds only the transport: the socket, the paths and
+// the status codes.
 import { createHash, randomBytes } from 'node:crypto';
-import {
-    closeSync,
-    constants,
-    fchmodSync,
-    fstatSync,
-    fsyncSync,
-    linkSync,
-    openSync,
-    readSync,
-    renameSync,
-    rmSync,
-    writeSync,
-} from 'node:fs';
-import { join } from 'node:path';
 import { z } from 'zod';
 
 export const PROTOCOL = 1;
+
+/** Where the supervisor listens, in the volume Ghost mounts read-only. */
+export const SOCKET_DIR = '/run/ghost-upgrade';
+export const SOCKET_PATH = `${SOCKET_DIR}/supervisor.sock`;
+
+/** The largest request body either end sends or accepts. */
+export const BODY_MAX = 4 * 1024;
+
+/** How long Ghost, and the hand tooling, wait for an answer. */
+export const CLIENT_TIMEOUT_MS = 5_000;
 
 // --- Ghost's schemas, as they are --------------------------------------------
 
@@ -95,6 +92,46 @@ export const upgradeJobSchema = z.object({
     diagnostics: upgradeDiagnosticsSchema.optional(),
 });
 
+export const upgradeStatusSchema = z.discriminatedUnion('supported', [
+    z.object({
+        supported: z.literal(false),
+        reason: z.enum(['not-configured', 'not-supported']),
+    }),
+    z
+        .object({
+            supported: z.literal(true),
+            availability: z.enum(['ready', 'busy', 'unavailable', 'stale', 'incompatible']),
+            backupRequired: z.boolean().optional(),
+            currentVersion: upgradeVersionSchema.optional(),
+            oneClick: z.array(oneClickUpdateSchema).max(50).default([]),
+            manual: z.array(manualUpdateSchema).max(50).default([]),
+            activeJobId: upgradeJobIdSchema.nullable().optional(),
+            pollAfterMs: z.int().min(1000).max(60000).optional(),
+            diagnostics: upgradeDiagnosticsSchema.optional(),
+        })
+        .refine(
+            (status) => status.availability !== 'ready' || status.backupRequired !== undefined,
+            {
+                message: 'A ready host must report its backup policy.',
+                path: ['backupRequired'],
+            },
+        ),
+]);
+
+export const upgradeJobResultSchema = z.union([
+    upgradeJobSchema,
+    z.object({ id: upgradeJobIdSchema, state: z.enum(['unknown', 'expired']) }),
+]);
+
+export const upgradeErrorCodeSchema = z.enum([
+    'unsupported',
+    'unavailable',
+    'busy',
+    'target-unapproved',
+    'idempotency-conflict',
+    'request-expired',
+]);
+
 export type UpgradeDiagnostic = z.infer<typeof upgradeDiagnosticSchema>;
 export type OneClickUpdate = z.infer<typeof oneClickUpdateSchema>;
 export type ManualUpdate = z.infer<typeof manualUpdateSchema>;
@@ -102,13 +139,14 @@ export type UpgradeRequest = z.infer<typeof createUpgradeRequestSchema>;
 export type UpgradeJob = z.infer<typeof upgradeJobSchema>;
 export type UpgradeState = UpgradeJob['state'];
 export type FinalState = (typeof finalUpgradeStates)[number];
+export type UpgradeJobResult = z.infer<typeof upgradeJobResultSchema>;
 
 export const isFinal = (state: UpgradeState): state is FinalState =>
     (finalUpgradeStates as readonly string[]).includes(state);
 
-// --- The envelope -------------------------------------------------------------
+// --- What the supervisor answers ------------------------------------------------
 
-/** What the supervisor writes of Ghost's status: never `stale` or `incompatible`, which Ghost decides. */
+/** Ghost's status as the supervisor reports it: never `stale` or `incompatible`, which Ghost decides. */
 export const supervisorStatusSchema = z.object({
     supported: z.literal(true),
     availability: z.enum(['ready', 'busy', 'unavailable']),
@@ -122,44 +160,39 @@ export const supervisorStatusSchema = z.object({
 });
 export type SupervisorStatus = z.infer<typeof supervisorStatusSchema>;
 
+export const handshakeSchema = z.object({ protocol: z.literal(PROTOCOL) });
+
+/** The codes of error responses: Ghost's, and the transport's own. */
+export const errorCodeSchema = z.union([
+    upgradeErrorCodeSchema,
+    z.enum(['malformed', 'not-found', 'method-not-allowed', 'too-large']),
+]);
+export type ErrorCode = z.infer<typeof errorCodeSchema>;
+
+export const errorBodySchema = z.object({
+    error: z.object({ code: errorCodeSchema, diagnostics: upgradeDiagnosticsSchema.optional() }),
+});
+export type ErrorBody = z.infer<typeof errorBodySchema>;
+
+/** The status each error code answers with (docs/upgrade-supervisor.md#the-api). */
+export const ERROR_STATUS: Record<ErrorCode, number> = {
+    malformed: 400,
+    'not-found': 404,
+    'method-not-allowed': 405,
+    busy: 409,
+    'idempotency-conflict': 409,
+    'request-expired': 410,
+    'too-large': 413,
+    'target-unapproved': 422,
+    unavailable: 503,
+    unsupported: 501,
+};
+
+/** IDs of pruned jobs kept, so a lookup or replay of one answers `expired`. */
 export const PRUNED_KEPT = 50;
-
-export const requestFileSchema = z
-    .object({ protocol: z.literal(PROTOCOL), request: createUpgradeRequestSchema })
-    .strict();
-export const jobFileSchema = z
-    .object({ protocol: z.literal(PROTOCOL), job: upgradeJobSchema })
-    .strict();
-export const statusFileSchema = z
-    .object({
-        protocol: z.literal(PROTOCOL),
-        heartbeatAt: timestamp,
-        status: supervisorStatusSchema,
-        prunedJobIds: z.array(upgradeJobIdSchema).max(PRUNED_KEPT),
-    })
-    .strict();
-
-export type RequestFile = z.infer<typeof requestFileSchema>;
-export type JobFile = z.infer<typeof jobFileSchema>;
-export type StatusFile = z.infer<typeof statusFileSchema>;
-
-/** The size each file may be; a reader refuses anything larger without reading it all. */
-export const BOUNDS = {
-    request: 4 * 1024,
-    job: 64 * 1024,
-    status: 256 * 1024,
-} as const;
 
 /** Diagnostics the supervisor writes per job or status, under Ghost's bound of 200. */
 export const DIAGNOSTICS_KEPT = 10;
-
-/** How old an unclaimed request may be, and how far in the future its time may be. */
-export const REQUEST_MAX_AGE_MS = 10 * 60_000;
-export const REQUEST_MAX_SKEW_MS = 60_000;
-
-/** After this long without a heartbeat, Ghost reports the supervisor `stale`. */
-export const STALE_AFTER_MS = 60_000;
-export const HEARTBEAT_MS = 15_000;
 
 export const SOURCE = 'ghost-docker';
 
@@ -167,169 +200,10 @@ export const SOURCE = 'ghost-docker';
 
 /**
  * The job a request's idempotency key names: the key itself, so a replay
- * finds its job and one intent has one file name (docs/upgrade-supervisor.md#job-ids).
+ * finds its job (docs/upgrade-supervisor.md#job-ids).
  */
 export const jobIdOf = (idempotencyKey: string): string => idempotencyKey;
 
 /** A key as Ghost makes one: a sha256 in lowercase hex. Used for requests made by hand. */
 export const randomIdempotencyKey = (): string =>
     createHash('sha256').update(randomBytes(32)).digest('hex');
-
-/** `<key>.json`, a sha256 in hex: the only names either end reads in the exchange. */
-export const JOB_FILE_NAME = /^([0-9a-f]{64})\.json$/;
-
-// --- Reading and writing the exchange -----------------------------------------
-
-export class ExchangeFileError extends Error {}
-
-export interface ExchangeRead {
-    readonly text: string;
-    readonly mtimeMs: number;
-}
-
-/**
- * A file of the exchange, refused unless it is a regular file with one link,
- * not a symlink, and within `bound` bytes. Read at most `bound + 1` bytes, so
- * an oversize file is never read whole. Undefined when it does not exist.
- */
-export function readExchangeFile(
-    path: string,
-    bound: number,
-    /** A request mid-write has two links for an instant: its writer's own reads allow it. */
-    links: 'one' | 'any' = 'one',
-): ExchangeRead | undefined {
-    let fd: number;
-    try {
-        fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-    } catch (error) {
-        const errno = (error as NodeJS.ErrnoException).code;
-        if (errno === 'ENOENT') {
-            return undefined;
-        }
-        if (errno === 'ELOOP') {
-            throw new ExchangeFileError(`${path} is a symbolic link`);
-        }
-        throw error;
-    }
-    try {
-        const stats = fstatSync(fd);
-        if (!stats.isFile()) {
-            throw new ExchangeFileError(`${path} is not a regular file`);
-        }
-        if (links === 'one' && stats.nlink !== 1) {
-            throw new ExchangeFileError(`${path} has ${stats.nlink} links`);
-        }
-        if (stats.size > bound) {
-            throw new ExchangeFileError(`${path} is larger than ${bound} bytes`);
-        }
-        const buffer = Buffer.alloc(bound + 1);
-        let length = 0;
-        for (;;) {
-            const read = readSync(fd, buffer, length, buffer.length - length, null);
-            if (read === 0) {
-                break;
-            }
-            length += read;
-            if (length > bound) {
-                throw new ExchangeFileError(`${path} is larger than ${bound} bytes`);
-            }
-        }
-        return { text: buffer.subarray(0, length).toString('utf8'), mtimeMs: stats.mtimeMs };
-    } finally {
-        closeSync(fd);
-    }
-}
-
-/** `schema` parsed from a file's JSON, or an ExchangeFileError saying why not. */
-export function parseExchangeFile<T>(schema: z.ZodType<T>, read: ExchangeRead, path: string): T {
-    let value: unknown;
-    try {
-        value = JSON.parse(read.text);
-    } catch {
-        throw new ExchangeFileError(`${path} is not JSON`);
-    }
-    const result = schema.safeParse(value);
-    if (!result.success) {
-        const issue = result.error.issues[0];
-        throw new ExchangeFileError(
-            `${path} does not match protocol ${PROTOCOL}: ${issue?.path.join('.') || '(root)'} ${issue?.message ?? ''}`.trim(),
-        );
-    }
-    return result.data;
-}
-
-function writeTemporary(dir: string, content: string, mode: number): string {
-    const temporary = join(dir, `.tmp-${randomBytes(8).toString('hex')}`);
-    const fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, mode);
-    try {
-        // Whatever the umask: the other end reads it through these bits.
-        fchmodSync(fd, mode);
-        writeSync(fd, Buffer.from(content, 'utf8'));
-        fsyncSync(fd);
-    } catch (error) {
-        closeSync(fd);
-        rmSync(temporary, { force: true });
-        throw error;
-    }
-    closeSync(fd);
-    return temporary;
-}
-
-function syncDirectory(dir: string): void {
-    const fd = openSync(dir, constants.O_RDONLY);
-    try {
-        fsyncSync(fd);
-    } finally {
-        closeSync(fd);
-    }
-}
-
-const serialize = (value: unknown, bound: number, name: string): string => {
-    const content = `${JSON.stringify(value)}\n`;
-    if (Buffer.byteLength(content) > bound) {
-        throw new ExchangeFileError(`${name} would be larger than its ${bound}-byte bound`);
-    }
-    return content;
-};
-
-/** The supervisor's write: replace `dir/name` atomically, readable by Ghost. */
-export function publishExchangeFile(
-    dir: string,
-    name: string,
-    value: unknown,
-    bound: number,
-): void {
-    const temporary = writeTemporary(dir, serialize(value, bound, name), 0o644);
-    try {
-        renameSync(temporary, join(dir, name));
-    } catch (error) {
-        rmSync(temporary, { force: true });
-        throw error;
-    }
-    syncDirectory(dir);
-}
-
-/**
- * Ghost's write, also used for requests made by hand: create `dir/name`
- * only if it does not exist. False when it does.
- */
-export function createExchangeFile(
-    dir: string,
-    name: string,
-    value: unknown,
-    bound: number,
-): boolean {
-    const temporary = writeTemporary(dir, serialize(value, bound, name), 0o640);
-    try {
-        linkSync(temporary, join(dir, name));
-    } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
-            return false;
-        }
-        throw error;
-    } finally {
-        rmSync(temporary, { force: true });
-    }
-    syncDirectory(dir);
-    return true;
-}

@@ -127,8 +127,8 @@ Adding one never changes the site mode:
 `supervisor` reads `SUPERVISOR_UPDATES`, `SUPERVISOR_UID`, `SUPERVISOR_GID`,
 `MANAGER_IMAGE_REF` and `DOCKER_SOCKET` from `.env`, which `install --with
 supervisor` writes and `self-update` keeps on the release it installs. Every
-site's Ghost mounts the two exchange volumes, `upgrade_requests` and
-`upgrade_status`; they stay empty without the supervisor.
+site's Ghost mounts the `upgrade` volume read-only, where the supervisor's
+socket is; it stays empty without the supervisor.
 
 `mailpit` is for local sites only: validation rejects it beside `production`,
 where it would catch the site's real mail. `analytics` and `activitypub` are

@@ -1,145 +1,83 @@
-// The file-drop protocol's messages and file rules (docs/upgrade-supervisor.md),
-// against the fixtures Ghost's adapter tests share.
+// The protocol's bodies (docs/upgrade-supervisor.md), against the fixtures
+// Ghost's adapter tests share.
 import assert from 'node:assert/strict';
-import {
-    linkSync,
-    mkdtempSync,
-    readdirSync,
-    readFileSync,
-    rmSync,
-    statSync,
-    symlinkSync,
-    writeFileSync,
-} from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, test } from 'node:test';
+import { describe, test } from 'node:test';
+import type { z } from 'zod';
 import {
-    BOUNDS,
-    createExchangeFile,
-    ExchangeFileError,
-    jobFileSchema,
+    createUpgradeRequestSchema,
+    errorBodySchema,
+    handshakeSchema,
     jobIdOf,
-    JOB_FILE_NAME,
-    upgradeJobIdSchema,
-    parseExchangeFile,
-    publishExchangeFile,
     randomIdempotencyKey,
-    readExchangeFile,
-    requestFileSchema,
-    statusFileSchema,
+    supervisorStatusSchema,
+    upgradeJobIdSchema,
+    upgradeJobResultSchema,
+    upgradeJobSchema,
+    upgradeStatusSchema,
 } from '../src/supervisor/protocol.ts';
 import { REPO } from './site.ts';
 
 const FIXTURES = join(REPO, 'manager', 'test', 'fixtures', 'upgrade-supervisor');
 
-const schemaFor = (name: string) =>
-    name.startsWith('request')
-        ? requestFileSchema
-        : name.startsWith('job')
-          ? jobFileSchema
-          : statusFileSchema;
+const SCHEMAS: Record<string, z.ZodType> = {
+    request: createUpgradeRequestSchema,
+    status: upgradeStatusSchema,
+    job: upgradeJobSchema,
+    lookup: upgradeJobResultSchema,
+    handshake: handshakeSchema,
+    error: errorBodySchema,
+};
+
+const schemaFor = (name: string): z.ZodType => {
+    const schema = SCHEMAS[name.split(/[-.]/)[0]!];
+    assert.ok(schema, `${name} names no body`);
+    return schema;
+};
+
+const fixture = (kind: string, name: string): unknown =>
+    JSON.parse(readFileSync(join(FIXTURES, kind, name), 'utf8'));
 
 describe('protocol fixtures', () => {
     for (const name of readdirSync(join(FIXTURES, 'valid'))) {
         test(`valid/${name} parses`, () => {
-            const value = JSON.parse(readFileSync(join(FIXTURES, 'valid', name), 'utf8'));
-            assert.equal(schemaFor(name).safeParse(value).success, true);
+            const result = schemaFor(name).safeParse(fixture('valid', name));
+            assert.equal(result.success, true, JSON.stringify(result.error?.issues));
         });
     }
     for (const name of readdirSync(join(FIXTURES, 'invalid'))) {
         test(`invalid/${name} is refused`, () => {
-            const value = JSON.parse(readFileSync(join(FIXTURES, 'invalid', name), 'utf8'));
-            assert.equal(schemaFor(name).safeParse(value).success, false);
+            assert.equal(schemaFor(name).safeParse(fixture('invalid', name)).success, false);
         });
     }
+
+    test('the ready status is one the supervisor reports, not only one Ghost reads', () => {
+        assert.equal(
+            supervisorStatusSchema.safeParse(fixture('valid', 'status-ready.json')).success,
+            true,
+        );
+    });
+
+    test('the job fixtures are the jobs of the request fixture', () => {
+        const { idempotencyKey } = fixture('valid', 'request.json') as { idempotencyKey: string };
+        for (const name of ['job-done.json', 'job-interrupted.json', 'lookup-expired.json']) {
+            assert.equal((fixture('valid', name) as { id: string }).id, jobIdOf(idempotencyKey));
+        }
+    });
 });
 
 describe('job IDs', () => {
-    test('are the idempotency key itself, a valid job ID and file name', () => {
+    test('are the idempotency key itself, a valid job ID', () => {
         const key = randomIdempotencyKey();
         assert.match(key, /^[0-9a-f]{64}$/);
         assert.equal(jobIdOf(key), key);
         assert.equal(upgradeJobIdSchema.safeParse(key).success, true);
-        assert.match(`${key}.json`, JOB_FILE_NAME);
-    });
-});
-
-describe('exchange files', () => {
-    let dir: string;
-    beforeEach(() => {
-        dir = mkdtempSync(join(tmpdir(), 'gd-exchange-'));
-    });
-    afterEach(() => rmSync(dir, { recursive: true, force: true }));
-
-    test('a missing file reads as undefined', () => {
-        assert.equal(readExchangeFile(join(dir, 'absent.json'), BOUNDS.request), undefined);
     });
 
-    test('a symbolic link is refused, not followed', () => {
-        writeFileSync(join(dir, 'target.json'), '{}');
-        symlinkSync(join(dir, 'target.json'), join(dir, 'link.json'));
-        assert.throws(() => readExchangeFile(join(dir, 'link.json'), BOUNDS.request), {
-            message: /symbolic link/,
-        });
-    });
-
-    test('a hard link is refused', () => {
-        writeFileSync(join(dir, 'target.json'), '{}');
-        linkSync(join(dir, 'target.json'), join(dir, 'hard.json'));
-        assert.throws(() => readExchangeFile(join(dir, 'hard.json'), BOUNDS.request), {
-            message: /2 links/,
-        });
-    });
-
-    test('a hard link is allowed where the writer reads its own requests', () => {
-        writeFileSync(join(dir, 'target.json'), '{}');
-        linkSync(join(dir, 'target.json'), join(dir, 'hard.json'));
-        assert.equal(readExchangeFile(join(dir, 'hard.json'), BOUNDS.request, 'any')?.text, '{}');
-    });
-
-    test('a file over its bound is refused', () => {
-        writeFileSync(join(dir, 'big.json'), 'x'.repeat(BOUNDS.request + 1));
-        assert.throws(
-            () => readExchangeFile(join(dir, 'big.json'), BOUNDS.request),
-            ExchangeFileError,
-        );
-    });
-
-    test('a directory is refused', () => {
-        assert.throws(() => readExchangeFile(dir, BOUNDS.request), ExchangeFileError);
-    });
-
-    test('a malformed file says why', () => {
-        writeFileSync(join(dir, 'bad.json'), '{"protocol":1}');
-        const read = readExchangeFile(join(dir, 'bad.json'), BOUNDS.request)!;
-        assert.throws(() => parseExchangeFile(requestFileSchema, read, 'bad.json'), {
-            message: /does not match protocol 1: request/,
-        });
-    });
-
-    test('publishing replaces a file, readable by Ghost, leaving no temporary', () => {
-        publishExchangeFile(dir, 'status.json', { a: 1 }, BOUNDS.status);
-        publishExchangeFile(dir, 'status.json', { a: 2 }, BOUNDS.status);
-        assert.deepEqual(JSON.parse(readFileSync(join(dir, 'status.json'), 'utf8')), { a: 2 });
-        assert.equal(statSync(join(dir, 'status.json')).mode & 0o777, 0o644);
-        assert.deepEqual(readdirSync(dir), ['status.json']);
-    });
-
-    test('publishing refuses what would exceed the bound', () => {
-        assert.throws(
-            () => publishExchangeFile(dir, 'job.json', 'x'.repeat(BOUNDS.job), BOUNDS.job),
-            ExchangeFileError,
-        );
-        assert.deepEqual(readdirSync(dir), []);
-    });
-
-    test('creating never replaces an existing request', () => {
-        assert.equal(createExchangeFile(dir, 'r.json', { first: true }, BOUNDS.request), true);
-        assert.equal(createExchangeFile(dir, 'r.json', { first: false }, BOUNDS.request), false);
-        assert.deepEqual(JSON.parse(readFileSync(join(dir, 'r.json'), 'utf8')), { first: true });
-        assert.deepEqual(readdirSync(dir), ['r.json']);
-        const read = readExchangeFile(join(dir, 'r.json'), BOUNDS.request);
-        assert.ok(read);
+    test('refuse anything that could leave a path', () => {
+        for (const id of ['../status', 'a/b', 'A', '', 'x'.repeat(65)]) {
+            assert.equal(upgradeJobIdSchema.safeParse(id).success, false, id);
+        }
     });
 });

@@ -1,8 +1,0 @@
-{
-  "protocol": 2,
-  "request": {
-    "component": "ghost",
-    "toVersion": "6.72.0",
-    "idempotencyKey": "0000000000000000000000000000000000000000000000000000000000000000"
-  }
-}

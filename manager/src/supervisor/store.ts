@@ -1,10 +1,10 @@
-// The supervisor's files: its private records in the site directory, and the
-// exchange it shares with Ghost (docs/upgrade-supervisor.md#the-exchange).
+// The supervisor's private records, in the site directory
+// (docs/upgrade-supervisor.md#what-the-supervisor-keeps).
 //
-// A private record is the job as published plus what only the host needs:
+// A record is the job as the API answers it plus what only the host needs:
 // the stage reached, the backup, whether it holds the lock. It is created
-// exclusively, which is the claim, and it is what the interrupted-on-start
-// rule reads. The published job file is derived from it and never read back.
+// exclusively when a request is accepted, and it is what the
+// interrupted-on-start rule reads.
 import {
     closeSync,
     constants,
@@ -20,34 +20,22 @@ import { z } from 'zod';
 import { atomicWrite, PRIVATE, readIfExists } from '../fs.ts';
 import { SUPERVISOR_DIR } from '../site.ts';
 import {
-    BOUNDS,
     isFinal,
-    JOB_FILE_NAME,
-    jobFileSchema,
     manualUpdateSchema,
     oneClickUpdateSchema,
-    PROTOCOL,
     PRUNED_KEPT,
-    publishExchangeFile,
-    statusFileSchema,
     upgradeDiagnosticSchema,
     upgradeJobIdSchema,
     upgradeJobSchema,
     upgradeVersionSchema,
-    type StatusFile,
-    type SupervisorStatus,
-    type UpgradeJob,
 } from './protocol.ts';
-
-/** Where Ghost and the supervisor mount the exchange's two volumes. */
-export const EXCHANGE = '/run/ghost-upgrade';
-export const REQUESTS = 'requests';
-export const STATUS = 'status';
-export const JOBS = 'jobs';
-export const STATUS_FILE = 'status.json';
 
 /** The Compose service the supervisor runs as, which its jobs leave alone. */
 export const SUPERVISOR_SERVICE = 'supervisor';
+
+const JOBS = 'jobs';
+/** `<key>.json`: a record's file name. */
+const RECORD_NAME = /^([0-9a-f]{64})\.json$/;
 
 /** Finished jobs kept, besides the active one. */
 export const HISTORY = 20;
@@ -161,7 +149,7 @@ export class Records {
             }
         }
         for (const name of names) {
-            const match = JOB_FILE_NAME.exec(name);
+            const match = RECORD_NAME.exec(name);
             if (!match) {
                 continue;
             }
@@ -217,42 +205,6 @@ export class Records {
             `${JSON.stringify(discoverySchema.parse(discovery))}\n`,
             PRIVATE,
         );
-    }
-}
-
-/** The exchange as the supervisor sees it: where requests arrive, and what it publishes. */
-export class Exchange {
-    readonly requests: string;
-    readonly status: string;
-    readonly jobs: string;
-
-    constructor(root = EXCHANGE) {
-        this.requests = join(root, REQUESTS);
-        this.status = join(root, STATUS);
-        this.jobs = join(root, STATUS, JOBS);
-    }
-
-    ensureJobs(): void {
-        mkdirSync(this.jobs, { recursive: true, mode: 0o755 });
-    }
-
-    publishJob(job: UpgradeJob): void {
-        const file = jobFileSchema.parse({ protocol: PROTOCOL, job });
-        publishExchangeFile(this.jobs, `${job.id}.json`, file, BOUNDS.job);
-    }
-
-    removeJob(id: string): void {
-        rmSync(join(this.jobs, `${upgradeJobIdSchema.parse(id)}.json`), { force: true });
-    }
-
-    publishStatus(status: SupervisorStatus, heartbeatAt: string, prunedJobIds: string[]): void {
-        const file: StatusFile = statusFileSchema.parse({
-            protocol: PROTOCOL,
-            heartbeatAt,
-            status,
-            prunedJobIds,
-        });
-        publishExchangeFile(this.status, STATUS_FILE, file, BOUNDS.status);
     }
 }
 

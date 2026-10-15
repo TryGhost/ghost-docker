@@ -128,7 +128,7 @@ asked for in Ghost Admin, within the policy you set in `.env`
 (`SUPERVISOR_UPDATES`: `minor`, the default, or `patch`). Every update it runs
 is `update` with a checked backup first, and majors and stack updates always
 stay on the host. It holds the Docker socket and runs as you. Ghost's side,
-`FileDropUpgradeAdapter`, is enabled in `ghost.env` only for a Ghost release
+`HttpUpgradeAdapter`, is enabled in `ghost.env` only for a Ghost release
 that ships it; before that, make requests by hand (see [update](#update)). It is
 refused under rootless Docker and user-namespace remapping. The protocol,
 ownership and recovery rules are in [upgrade-supervisor.md](upgrade-supervisor.md).

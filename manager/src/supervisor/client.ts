@@ -1,216 +1,210 @@
-// Ghost's end of the exchange, as docs/upgrade-supervisor.md#what-each-end-does
-// describes it: reading status, making a request and looking up a job.
+// Ghost's end of the protocol, as docs/upgrade-supervisor.md#ghost-reaching-the-supervisor
+// describes it: the API over the socket, and what Ghost reports when it
+// cannot be reached or does not speak protocol 1.
 //
-// FileDropUpgradeAdapter in Ghost core is the real client. This is the same
-// algorithm for requests made by hand (`supervisor request`), run as Ghost's
-// uid with the exchange mounted as Ghost mounts it, so the hand tooling
-// exercises Ghost's permissions rather than the operator's.
-import { join } from 'node:path';
+// HttpUpgradeAdapter in Ghost core is the real client. This one is for
+// requests made by hand (`supervisor request`), run as Ghost's uid with the
+// volume mounted as Ghost mounts it, so the hand tooling exercises Ghost's
+// access rather than the operator's; and it drives the supervisor's tests.
+import { request as httpRequest } from 'node:http';
+import type { z } from 'zod';
 import {
-    BOUNDS,
-    createExchangeFile,
-    ExchangeFileError,
-    jobFileSchema,
-    jobIdOf,
-    parseExchangeFile,
-    PROTOCOL,
-    readExchangeFile,
-    REQUEST_MAX_AGE_MS,
-    requestFileSchema,
-    STALE_AFTER_MS,
-    statusFileSchema,
-    type StatusFile,
+    CLIENT_TIMEOUT_MS,
+    errorBodySchema,
+    handshakeSchema,
+    upgradeJobResultSchema,
+    upgradeJobSchema,
+    upgradeStatusSchema,
+    type ErrorCode,
     type UpgradeJob,
+    type UpgradeJobResult,
     type UpgradeRequest,
 } from './protocol.ts';
-import { JOBS, REQUESTS, STATUS, STATUS_FILE } from './store.ts';
 
-export type Availability = 'ready' | 'busy' | 'unavailable' | 'stale' | 'incompatible';
+type Status = z.output<typeof upgradeStatusSchema>;
 
 export type StatusRead =
-    | { readonly availability: 'unavailable'; readonly reason: string }
-    | { readonly availability: 'incompatible'; readonly reason: string }
-    | { readonly availability: 'stale'; readonly file: StatusFile }
-    | { readonly availability: 'ready' | 'busy' | 'unavailable'; readonly file: StatusFile };
+    | { readonly availability: 'unavailable' | 'incompatible'; readonly reason: string }
+    | { readonly availability: 'ready' | 'busy' | 'unavailable'; readonly status: Status };
 
 export type RequestResult =
-    | { readonly accepted: UpgradeJob }
-    | {
-          readonly rejected:
-              | 'unavailable'
-              | 'busy'
-              | 'target-unapproved'
-              | 'idempotency-conflict'
-              | 'request-expired';
-          readonly reason: string;
-      };
+    | { readonly accepted: UpgradeJob; readonly replay: boolean }
+    | { readonly rejected: ErrorCode | 'incompatible'; readonly reason: string };
 
-export type Lookup = UpgradeJob | { readonly id: string; readonly state: 'unknown' | 'expired' };
+export type Lookup = UpgradeJobResult | { readonly failed: string };
 
-export class ExchangeClient {
-    private readonly requests: string;
-    private readonly status: string;
-    private readonly jobs: string;
-    private readonly now: () => Date;
+interface Response {
+    readonly status: number;
+    readonly body: unknown;
+}
 
-    constructor(root: string, now = () => new Date()) {
-        this.requests = join(root, REQUESTS);
-        this.status = join(root, STATUS);
-        this.jobs = join(root, STATUS, JOBS);
-        this.now = now;
+class Unreachable extends Error {}
+class Incompatible extends Error {}
+
+export class SupervisorClient {
+    private readonly socketPath: string;
+    private checked = false;
+
+    constructor(socketPath: string) {
+        this.socketPath = socketPath;
     }
 
-    readStatus(): StatusRead {
-        const path = join(this.status, STATUS_FILE);
-        let file: StatusFile;
+    private call(method: 'GET' | 'POST', path: string, body?: unknown): Promise<Response> {
+        const payload = body === undefined ? undefined : JSON.stringify(body);
+        return new Promise((resolve, reject) => {
+            const request = httpRequest(
+                {
+                    socketPath: this.socketPath,
+                    // A connection per call: a kept-alive one outlives a
+                    // supervisor restart and fails the next call with EPIPE.
+                    agent: false,
+                    method,
+                    path,
+                    timeout: CLIENT_TIMEOUT_MS,
+                    headers:
+                        payload === undefined
+                            ? {}
+                            : {
+                                  'content-type': 'application/json',
+                                  'content-length': Buffer.byteLength(payload),
+                              },
+                },
+                (response) => {
+                    const chunks: Buffer[] = [];
+                    response.on('data', (chunk: Buffer) => chunks.push(chunk));
+                    response.on('end', () => {
+                        const text = Buffer.concat(chunks).toString('utf8');
+                        try {
+                            resolve({ status: response.statusCode ?? 0, body: JSON.parse(text) });
+                        } catch {
+                            reject(
+                                new Incompatible(
+                                    `${path} answered ${response.statusCode} with something that is not JSON`,
+                                ),
+                            );
+                        }
+                    });
+                },
+            );
+            request.on('timeout', () =>
+                request.destroy(new Unreachable(`no answer within ${CLIENT_TIMEOUT_MS} ms`)),
+            );
+            request.on('error', (error: NodeJS.ErrnoException) =>
+                reject(
+                    error instanceof Unreachable || error instanceof Incompatible
+                        ? error
+                        : new Unreachable(error.code ?? error.message),
+                ),
+            );
+            request.end(payload);
+        });
+    }
+
+    /** GET /v1, once per client, and again after any failure. */
+    private async handshake(): Promise<void> {
+        if (this.checked) {
+            return;
+        }
+        const answer = await this.call('GET', '/v1');
+        if (answer.status !== 200 || !handshakeSchema.safeParse(answer.body).success) {
+            throw new Incompatible(`GET /v1 answered ${answer.status}, not protocol 1`);
+        }
+        this.checked = true;
+    }
+
+    private async guarded<T>(
+        work: () => Promise<T>,
+        failed: (kind: 'unavailable' | 'incompatible', reason: string) => T,
+    ): Promise<T> {
         try {
-            const read = readExchangeFile(path, BOUNDS.status);
-            if (read === undefined) {
-                return {
-                    availability: 'unavailable',
-                    reason: 'the supervisor has not published a status',
-                };
-            }
-            file = parseExchangeFile(statusFileSchema, read, path);
+            await this.handshake();
+            return await work();
         } catch (error) {
-            if (error instanceof ExchangeFileError) {
-                return { availability: 'incompatible', reason: error.message };
+            this.checked = false;
+            if (error instanceof Unreachable) {
+                return failed('unavailable', `the supervisor cannot be reached: ${error.message}`);
             }
-            if ((error as NodeJS.ErrnoException).code === 'EACCES') {
-                return { availability: 'unavailable', reason: `${path} cannot be read` };
+            if (error instanceof Incompatible) {
+                return failed('incompatible', error.message);
             }
             throw error;
         }
-        const age = this.now().getTime() - Date.parse(file.heartbeatAt);
-        if (age > STALE_AFTER_MS || age < -STALE_AFTER_MS) {
-            return { availability: 'stale', file };
-        }
-        return { availability: file.status.availability, file };
     }
 
-    private job(id: string): UpgradeJob | undefined {
-        const path = join(this.jobs, `${id}.json`);
-        const read = readExchangeFile(path, BOUNDS.job);
-        if (read === undefined) {
-            return undefined;
-        }
-        const { job } = parseExchangeFile(jobFileSchema, read, path);
-        if (job.id !== id) {
-            throw new ExchangeFileError(`${path} holds job ${job.id}`);
-        }
-        return job;
-    }
-
-    private pending(id: string): { request: UpgradeRequest; mtimeMs: number } | undefined {
-        const path = join(this.requests, `${id}.json`);
-        const read = readExchangeFile(path, BOUNDS.request, 'any');
-        return read === undefined
-            ? undefined
-            : {
-                  request: parseExchangeFile(requestFileSchema, read, path).request,
-                  mtimeMs: read.mtimeMs,
-              };
-    }
-
-    private pendingJob(id: string, request: UpgradeRequest, at: Date): UpgradeJob {
-        return {
-            id,
-            state: 'pending',
-            component: request.component,
-            toVersion: request.toVersion,
-            createdAt: at.toISOString(),
-            updatedAt: at.toISOString(),
-        };
-    }
-
-    /** An earlier request with this key, if there is one: Ghost's step 4. */
-    private earlier(
-        id: string,
-        request: UpgradeRequest,
-        pruned: readonly string[],
-    ): RequestResult | undefined {
-        const same = (other: { component: string; toVersion: string }) =>
-            other.component === request.component && other.toVersion === request.toVersion;
-        const conflict: RequestResult = {
-            rejected: 'idempotency-conflict',
-            reason: 'this idempotency key was used for another update',
-        };
-        const job = this.job(id);
-        if (job !== undefined) {
-            return same(job) ? { accepted: job } : conflict;
-        }
-        const pending = this.pending(id);
-        if (pending !== undefined) {
-            return same(pending.request)
-                ? { accepted: this.pendingJob(id, pending.request, new Date(pending.mtimeMs)) }
-                : conflict;
-        }
-        if (pruned.includes(id)) {
-            return { rejected: 'request-expired', reason: 'the job of this key has been pruned' };
-        }
-        return undefined;
-    }
-
-    createRequest(request: UpgradeRequest): RequestResult {
-        const id = jobIdOf(request.idempotencyKey);
-        const status = this.readStatus();
-        const pruned = 'file' in status ? status.file.prunedJobIds : [];
-        // A replay is answered before availability or policy: a retry after a
-        // lost answer must learn its job, even while that job runs.
-        const earlier = this.earlier(id, request, pruned);
-        if (earlier !== undefined) {
-            return earlier;
-        }
-        if (status.availability !== 'ready') {
-            return {
-                rejected: status.availability === 'busy' ? 'busy' : 'unavailable',
-                reason:
-                    'reason' in status ? status.reason : `the supervisor is ${status.availability}`,
-            };
-        }
-        const offered = status.file.status.oneClick.some(
-            (entry) =>
-                entry.component === request.component && entry.toVersion === request.toVersion,
+    readStatus(): Promise<StatusRead> {
+        return this.guarded<StatusRead>(
+            async () => {
+                const answer = await this.call('GET', '/v1/status');
+                if (answer.status === 503) {
+                    return { availability: 'unavailable', reason: 'the supervisor answered 503' };
+                }
+                const status = upgradeStatusSchema.safeParse(answer.body);
+                if (answer.status !== 200 || !status.success || !status.data.supported) {
+                    throw new Incompatible(
+                        `GET /v1/status answered ${answer.status} with a body that is not a status`,
+                    );
+                }
+                const { availability } = status.data;
+                if (
+                    availability !== 'ready' &&
+                    availability !== 'busy' &&
+                    availability !== 'unavailable'
+                ) {
+                    throw new Incompatible(
+                        `the supervisor reported ${availability}, which only Ghost decides`,
+                    );
+                }
+                return { availability, status: status.data };
+            },
+            (availability, reason) => ({ availability, reason }),
         );
-        if (!offered) {
-            return {
-                rejected: 'target-unapproved',
-                reason: `${request.component} ${request.toVersion} is not offered as a one-click update`,
-            };
-        }
-        for (;;) {
-            const at = this.now();
-            if (
-                createExchangeFile(
-                    this.requests,
-                    `${id}.json`,
-                    { protocol: PROTOCOL, request },
-                    BOUNDS.request,
-                )
-            ) {
-                return { accepted: this.pendingJob(id, request, at) };
-            }
-            // An identical request raced this one: read it back.
-            const raced = this.earlier(id, request, pruned);
-            if (raced !== undefined) {
-                return raced;
-            }
-        }
     }
 
-    lookup(id: string): Lookup {
-        const job = this.job(id);
-        if (job !== undefined) {
-            return job;
-        }
-        const pending = this.pending(id);
-        const fresh =
-            pending !== undefined && this.now().getTime() - pending.mtimeMs < REQUEST_MAX_AGE_MS;
-        if (pending !== undefined && fresh) {
-            return this.pendingJob(id, pending.request, new Date(pending.mtimeMs));
-        }
-        const status = this.readStatus();
-        const pruned = 'file' in status ? status.file.prunedJobIds : [];
-        return { id, state: pending !== undefined || pruned.includes(id) ? 'expired' : 'unknown' };
+    createRequest(request: UpgradeRequest): Promise<RequestResult> {
+        return this.guarded<RequestResult>(
+            async () => {
+                const answer = await this.call('POST', '/v1/requests', request);
+                if (answer.status === 200 || answer.status === 202) {
+                    const job = upgradeJobSchema.safeParse(answer.body);
+                    if (!job.success) {
+                        throw new Incompatible(
+                            'POST /v1/requests answered with a body that is not a job',
+                        );
+                    }
+                    return { accepted: job.data, replay: answer.status === 200 };
+                }
+                const error = errorBodySchema.safeParse(answer.body);
+                if (!error.success) {
+                    throw new Incompatible(
+                        `POST /v1/requests answered ${answer.status} without an error body`,
+                    );
+                }
+                const { code, diagnostics } = error.data.error;
+                return { rejected: code, reason: diagnostics?.[0]?.message ?? code };
+            },
+            (kind, reason) => ({ rejected: kind, reason }),
+        );
+    }
+
+    lookup(id: string): Promise<Lookup> {
+        return this.guarded<Lookup>(
+            async () => {
+                const answer = await this.call('GET', `/v1/jobs/${encodeURIComponent(id)}`);
+                const result = upgradeJobResultSchema.safeParse(answer.body);
+                if (answer.status === 200 && result.success) {
+                    return result.data;
+                }
+                const error = errorBodySchema.safeParse(answer.body);
+                if (error.success) {
+                    return {
+                        failed: error.data.error.diagnostics?.[0]?.message ?? error.data.error.code,
+                    };
+                }
+                throw new Incompatible(
+                    `GET /v1/jobs answered ${answer.status} with a body that is not a job`,
+                );
+            },
+            (_kind, reason) => ({ failed: reason }),
+        );
     }
 }

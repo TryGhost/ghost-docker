@@ -158,7 +158,7 @@ jobs:
       - name: Ghost update end to end
         run: tests/e2e/ghost-update.sh
 
-  # The upgrade supervisor on Docker Engine: the exchange's permissions as
+  # The upgrade supervisor on Docker Engine: its socket's access as
   # Ghost's uid, refusals, a supervisor killed mid-job, and a request by hand
   # that updates Ghost.
   upgrade-supervisor-linux:

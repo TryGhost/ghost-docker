@@ -1,35 +1,21 @@
-// The supervisor's claiming, refusals, jobs, interruption and retention
-// (docs/upgrade-supervisor.md), with Ghost's end played by ExchangeClient,
-// the reference of what FileDropUpgradeAdapter does. Jobs run a scripted
-// executor: what the real one does is update.test.ts.
+// The supervisor's API over a real Unix socket (docs/upgrade-supervisor.md):
+// requests, refusals, jobs, interruption and retention, with Ghost's end
+// played by SupervisorClient, the reference of what HttpUpgradeAdapter does.
+// Jobs run a scripted executor: what the real one does is update.test.ts.
 import assert from 'node:assert/strict';
-import {
-    existsSync,
-    linkSync,
-    mkdirSync,
-    mkdtempSync,
-    readdirSync,
-    readFileSync,
-    rmSync,
-    symlinkSync,
-    utimesSync,
-    writeFileSync,
-} from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, statSync } from 'node:fs';
+import { createServer, request as httpRequest, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, test } from 'node:test';
 import type { Io } from '../src/io.ts';
 import { acquireLock, readLock } from '../src/lock.ts';
 import type { Metadata } from '../src/meta.ts';
-import { ExchangeClient } from '../src/supervisor/client.ts';
+import { SupervisorClient, type RequestResult } from '../src/supervisor/client.ts';
 import type { Discoverer, Policy } from '../src/supervisor/discovery.ts';
-import {
-    jobIdOf,
-    PROTOCOL,
-    randomIdempotencyKey,
-    type UpgradeJob,
-} from '../src/supervisor/protocol.ts';
-import { Exchange, HISTORY, Records } from '../src/supervisor/store.ts';
+import { randomIdempotencyKey, type UpgradeJob } from '../src/supervisor/protocol.ts';
+import { listen, supervisorServer } from '../src/supervisor/server.ts';
+import { HISTORY, Records } from '../src/supervisor/store.ts';
 import { Supervisor, type Executor, type JobOutcome } from '../src/supervisor/supervisor.ts';
 
 const FROM = '6.68.0';
@@ -37,12 +23,11 @@ const TO = '6.72.0';
 
 let root: string;
 let dir: string;
-let exchangeRoot: string;
+let socket: string;
 let logged: string[];
-let clock: Date;
 let policy: Policy | null;
 let execute: Executor;
-let discoveries: number;
+let servers: Server[];
 
 const io = {
     stdout: (text: string) => void logged.push(text),
@@ -51,17 +36,14 @@ const io = {
 
 const metadata = () => ({ ghost: { version: FROM } }) as unknown as Metadata;
 
-const discover: Discoverer = async ({ now }) => {
-    discoveries += 1;
-    return {
-        checkedAt: now.toISOString(),
-        currentVersion: FROM,
-        oneClick: [{ component: 'ghost', fromVersion: FROM, toVersion: TO }],
-        manual: [],
-        succeededAt: { ghost: now.toISOString() },
-        diagnostics: [],
-    };
-};
+const discover: Discoverer = async ({ now }) => ({
+    checkedAt: now.toISOString(),
+    currentVersion: FROM,
+    oneClick: [{ component: 'ghost', fromVersion: FROM, toVersion: TO }],
+    manual: [],
+    succeededAt: { ghost: now.toISOString() },
+    diagnostics: [],
+});
 
 const done: Executor = async ({ stage, backup }) => {
     stage('pulling');
@@ -72,385 +54,227 @@ const done: Executor = async ({ stage, backup }) => {
     return { state: 'done', diagnostics: [] };
 };
 
-const supervisor = () =>
-    new Supervisor({
+/** A supervisor serving on the socket, as `supervisor run` starts one. */
+async function serve(): Promise<Supervisor> {
+    const supervisor = new Supervisor({
         io,
         dir,
-        exchange: new Exchange(exchangeRoot),
         records: new Records(dir),
         execute: (context) => execute(context),
         discover,
         metadata,
         policy: () => policy,
-        now: () => clock,
     });
+    supervisor.start();
+    const server = supervisorServer(supervisor, io.stderr);
+    servers.push(server);
+    await listen(server, socket);
+    await supervisor.rediscover();
+    return supervisor;
+}
 
-const client = () => new ExchangeClient(exchangeRoot, () => clock);
+async function stop(server: Server | undefined): Promise<void> {
+    if (server?.listening) {
+        server.closeAllConnections();
+        await new Promise((resolve) => server.close(resolve));
+    }
+}
 
-const ask = (toVersion = TO, key = randomIdempotencyKey()) => {
-    const result = client().createRequest({ component: 'ghost', toVersion, idempotencyKey: key });
+const client = () => new SupervisorClient(socket);
+
+const ask = async (toVersion = TO, key = randomIdempotencyKey()): Promise<RequestResult> =>
+    client().createRequest({ component: 'ghost', toVersion, idempotencyKey: key });
+
+const accepted = async (toVersion = TO, key = randomIdempotencyKey()): Promise<UpgradeJob> => {
+    const result = await ask(toVersion, key);
     assert.ok('accepted' in result, JSON.stringify(result));
     return result.accepted;
 };
 
-const lookup = (id: string) => client().lookup(id) as UpgradeJob;
+const rejected = async (toVersion = TO, key = randomIdempotencyKey()): Promise<string> => {
+    const result = await ask(toVersion, key);
+    assert.ok('rejected' in result, JSON.stringify(result));
+    return result.rejected;
+};
 
-/** Settles the job a tick started. */
-async function settle(running: Supervisor): Promise<void> {
-    await running.job;
-}
+const lookup = async (id: string) => client().lookup(id) as Promise<UpgradeJob>;
+const availability = async () => (await client().readStatus()).availability;
 
-/** A request file written by hand, bypassing the client's checks. */
-function drop(name: string, content: string): void {
-    writeFileSync(join(exchangeRoot, 'requests', name), content);
+/** A raw call, for what Ghost's client would never send. */
+function raw(method: string, path: string, body?: string): Promise<{ status: number; body: any }> {
+    return new Promise((resolve, reject) => {
+        const request = httpRequest({ socketPath: socket, method, path }, (response) => {
+            const chunks: Buffer[] = [];
+            response.on('data', (chunk: Buffer) => chunks.push(chunk));
+            response.on('end', () =>
+                resolve({
+                    status: response.statusCode ?? 0,
+                    body: JSON.parse(Buffer.concat(chunks).toString('utf8')),
+                }),
+            );
+        });
+        request.on('error', reject);
+        request.end(body);
+    });
 }
 
 beforeEach(() => {
-    root = mkdtempSync(join(tmpdir(), 'gd-supervisor-'));
+    // Short: a Unix socket's path is limited to about 100 bytes.
+    root = mkdtempSync(join(tmpdir(), 'gds-'));
     dir = join(root, 'site');
-    exchangeRoot = join(root, 'exchange');
     mkdirSync(dir);
-    mkdirSync(join(exchangeRoot, 'requests'), { recursive: true });
-    mkdirSync(join(exchangeRoot, 'status'), { recursive: true });
+    socket = join(root, 's.sock');
     logged = [];
-    clock = new Date();
     policy = 'minor';
     execute = done;
-    discoveries = 0;
+    servers = [];
 });
-afterEach(() => rmSync(root, { recursive: true, force: true }));
+afterEach(async () => {
+    for (const server of servers) {
+        await stop(server);
+    }
+    rmSync(root, { recursive: true, force: true });
+});
+
+describe('the API', () => {
+    test('answers the handshake, and refuses what it does not serve', async () => {
+        await serve();
+        assert.deepEqual(await raw('GET', '/v1'), { status: 200, body: { protocol: 1 } });
+        assert.equal((await raw('GET', '/v2/status')).status, 404);
+        assert.equal((await raw('GET', '/v1/requests')).status, 405);
+        assert.equal((await raw('POST', '/v1/status')).status, 405);
+        assert.equal(statSync(socket).mode & 0o777, 0o666);
+    });
+
+    test('refuses malformed and oversize requests', async () => {
+        await serve();
+        const key = randomIdempotencyKey();
+        const malformed = [
+            'not json',
+            JSON.stringify({ component: 'ghost', toVersion: TO, idempotencyKey: key, image: 'x' }),
+            JSON.stringify({ component: 'ghost', toVersion: TO, idempotencyKey: 'not-a-hash' }),
+            JSON.stringify({ component: '../ghost', toVersion: TO, idempotencyKey: key }),
+        ];
+        for (const body of malformed) {
+            const answer = await raw('POST', '/v1/requests', body);
+            assert.equal(answer.status, 400, body);
+            assert.equal(answer.body.error.code, 'malformed');
+        }
+        const big = await raw('POST', '/v1/requests', 'x'.repeat(5000)).catch(() => ({
+            status: 413,
+            body: {},
+        }));
+        assert.equal(big.status, 413);
+        assert.equal((await raw('GET', '/v1/jobs/..%2Fstatus')).status, 400);
+        assert.equal(readLock(dir).state, 'free');
+    });
+});
 
 describe('a request made by hand', () => {
-    test('runs to done, through every stage, and releases the lock', async () => {
-        const running = supervisor();
-        await running.start();
-        assert.equal(client().readStatus().availability, 'ready');
+    test('runs to done, through every stage, holding the lock, and releases it', async () => {
+        const running = await serve();
+        assert.equal(await availability(), 'ready');
 
-        const pending = ask();
-        assert.equal(pending.state, 'pending');
-        assert.equal(lookup(pending.id).state, 'pending');
-
+        let release!: () => void;
+        const gate = new Promise<void>((resolve) => (release = resolve));
         const seen: string[] = [];
+        let id = '';
         execute = async (context) => {
+            await gate;
             for (const stage of ['pulling', 'backing-up', 'restarting', 'verifying'] as const) {
                 context.stage(stage);
-                seen.push(lookup(pending.id).state);
+                seen.push((await lookup(id)).state);
                 assert.equal(readLock(dir).state, 'held');
-                assert.equal(client().readStatus().availability, 'busy');
+                assert.equal(await availability(), 'busy');
             }
             return { state: 'done', diagnostics: [] };
         };
-        await running.tick();
-        await settle(running);
+        const job = await accepted();
+        id = job.id;
+        assert.equal(job.state, 'pending');
+        assert.equal(job.fromVersion, FROM);
+        release();
+        await running.job;
 
         assert.deepEqual(seen, ['pulling', 'backing-up', 'restarting', 'verifying']);
-        const job = lookup(pending.id);
-        assert.equal(job.state, 'done');
-        assert.equal(job.fromVersion, FROM);
+        assert.equal((await lookup(id)).state, 'done');
         assert.equal(readLock(dir).state, 'free');
-        assert.deepEqual(readdirSync(join(exchangeRoot, 'requests')), []);
-        const status = client().readStatus();
+        const status = await client().readStatus();
+        assert.ok('status' in status && status.status.supported);
         assert.equal(status.availability, 'ready');
-        assert.ok('file' in status && status.file.status.activeJobId === null);
+        assert.equal(status.status.activeJobId, null);
+        assert.equal(status.status.backupRequired, true);
     });
 
-    test('the same key returns the original job; another target with it conflicts', async () => {
-        const running = supervisor();
-        await running.start();
-        const key = randomIdempotencyKey();
-        const first = ask(TO, key);
-        assert.equal(ask(TO, key).id, first.id);
-        await running.tick();
-        await settle(running);
-        assert.equal(ask(TO, key).state, 'done');
-
-        const other = client().createRequest({
-            component: 'ghost',
-            toVersion: '6.71.0',
-            idempotencyKey: key,
-        });
-        // The key is looked at first: it named another update.
-        assert.ok('rejected' in other && other.rejected === 'idempotency-conflict');
-    });
-
-    test('a key reused for another offered update is an idempotency conflict', async () => {
-        const running = supervisor();
-        await running.start();
-        const key = randomIdempotencyKey();
-        const id = jobIdOf(key);
-        drop(
-            `${id}.json`,
-            JSON.stringify({
-                protocol: PROTOCOL,
-                request: { component: 'ghost', toVersion: '6.70.0', idempotencyKey: key },
-            }),
-        );
-        const result = client().createRequest({
-            component: 'ghost',
-            toVersion: TO,
-            idempotencyKey: key,
-        });
-        assert.ok('rejected' in result && result.rejected === 'idempotency-conflict');
-    });
-
-    test('a duplicate of a claimed request is removed without a second job', async () => {
-        const running = supervisor();
-        await running.start();
-        const key = randomIdempotencyKey();
-        const job = ask(TO, key);
-        await running.tick();
-        await settle(running);
-        let runs = 0;
-        execute = async () => {
-            runs += 1;
-            return { state: 'done', diagnostics: [] };
-        };
-        drop(
-            `${job.id}.json`,
-            JSON.stringify({
-                protocol: PROTOCOL,
-                request: { component: 'ghost', toVersion: TO, idempotencyKey: key },
-            }),
-        );
-        await running.tick();
-        await settle(running);
-        assert.equal(runs, 0);
-        assert.deepEqual(readdirSync(join(exchangeRoot, 'requests')), []);
-        assert.equal(lookup(job.id).state, 'done');
-    });
-});
-
-describe('Ghost mid-write and Ghost retrying', () => {
-    test('a request with two links is left for the next scan, then claimed', async () => {
-        const running = supervisor();
-        await running.start();
-        const key = randomIdempotencyKey();
-        const id = jobIdOf(key);
-        const temporary = join(exchangeRoot, 'requests', `.tmp-e2e`);
-        writeFileSync(
-            temporary,
-            JSON.stringify({
-                protocol: PROTOCOL,
-                request: { component: 'ghost', toVersion: TO, idempotencyKey: key },
-            }),
-        );
-        // Between Ghost's link() and its unlink() of the temporary.
-        linkSync(temporary, join(exchangeRoot, 'requests', `${id}.json`));
-        await running.tick();
-        assert.equal(lookup(id).state, 'pending');
-        assert.equal(new Records(dir).has(id), false);
-
-        rmSync(temporary);
-        await running.tick();
-        await settle(running);
-        assert.equal(lookup(id).state, 'done');
-    });
-
-    test('a replay while its job runs returns the job, not busy', async () => {
-        const running = supervisor();
-        await running.start();
+    test('a replay returns the original job, while it runs and once it is no longer offered', async () => {
+        const running = await serve();
         let release!: (outcome: JobOutcome) => void;
         execute = ({ stage }) => {
             stage('pulling');
             return new Promise((resolve) => (release = resolve));
         };
         const key = randomIdempotencyKey();
-        const job = ask(TO, key);
-        await running.tick();
-        assert.equal(client().readStatus().availability, 'busy');
-        const replay = ask(TO, key);
-        assert.equal(replay.id, job.id);
-        assert.equal(replay.state, 'pulling');
+        const job = await accepted(TO, key);
+        const during = await ask(TO, key);
+        assert.ok('accepted' in during && during.replay && during.accepted.id === job.id);
+        assert.equal(during.accepted.state, 'pulling');
         release({ state: 'done', diagnostics: [] });
-        await settle(running);
+        await running.job;
+        // The update is gone from oneClick once done; the replay still finds its job.
+        const after = await ask(TO, key);
+        assert.ok('accepted' in after && after.accepted.state === 'done');
     });
 
-    test('a replay once its update is no longer offered still returns its job', async () => {
-        const running = supervisor();
-        await running.start();
+    test('a key reused for another update is an idempotency conflict', async () => {
+        const running = await serve();
         const key = randomIdempotencyKey();
-        await running.tick();
-        const job = ask(TO, key);
-        await running.tick();
-        await settle(running);
-        // As after the update: nothing is offered any more.
-        writeFileSync(
-            join(exchangeRoot, 'status', 'status.json'),
-            readFileSync(join(exchangeRoot, 'status', 'status.json'), 'utf8').replace(
-                /"oneClick":\[[^\]]*\]/,
-                '"oneClick":[]',
-            ),
-        );
-        assert.equal(ask(TO, key).id, job.id);
-        assert.equal(ask(TO, key).state, 'done');
+        await accepted(TO, key);
+        await running.job;
+        assert.equal(await rejected('6.71.0', key), 'idempotency-conflict');
     });
 });
 
 describe('refusals', () => {
-    const refusalOf = (id: string) => {
-        const job = lookup(id);
-        assert.equal(job.state, 'refused');
-        return job.diagnostics?.[0]?.code;
-    };
-
-    test('malformed requests: not JSON, extra fields, oversize, symlinked, misnamed', async () => {
-        const running = supervisor();
-        await running.start();
-        const key = randomIdempotencyKey();
-        const ids = [
-            jobIdOf(randomIdempotencyKey()),
-            jobIdOf(randomIdempotencyKey()),
-            jobIdOf(randomIdempotencyKey()),
-            jobIdOf(randomIdempotencyKey()),
-            jobIdOf(randomIdempotencyKey()),
-        ];
-        drop(`${ids[0]}.json`, 'not json');
-        drop(
-            `${ids[1]}.json`,
-            JSON.stringify({
-                protocol: PROTOCOL,
-                request: { component: 'ghost', toVersion: TO, idempotencyKey: key, image: 'x' },
-            }),
-        );
-        drop(`${ids[2]}.json`, 'x'.repeat(5000));
-        writeFileSync(join(root, 'outside.json'), '{}');
-        symlinkSync(join(root, 'outside.json'), join(exchangeRoot, 'requests', `${ids[3]}.json`));
-        // A real request, under a name that is not its key's job.
-        drop(
-            `${ids[4]}.json`,
-            JSON.stringify({
-                protocol: PROTOCOL,
-                request: { component: 'ghost', toVersion: TO, idempotencyKey: key },
-            }),
-        );
-        let runs = 0;
-        execute = async () => {
-            runs += 1;
-            return { state: 'done', diagnostics: [] };
-        };
-        await running.tick();
-        assert.equal(runs, 0);
-        for (const id of ids) {
-            assert.equal(refusalOf(id), 'malformed');
-        }
-        assert.deepEqual(readdirSync(join(exchangeRoot, 'requests')), []);
-        assert.equal(lookup(ids[1]!).component, 'ghost');
+    test('a target not offered is refused, whatever it says', async () => {
+        await serve();
+        assert.equal(await rejected('6.71.0'), 'target-unapproved');
+        assert.equal(await rejected('7.0.0; rm -rf /'), 'target-unapproved');
+        assert.equal(readLock(dir).state, 'free');
     });
 
-    test('a request of another protocol is malformed', async () => {
-        const running = supervisor();
-        await running.start();
-        const key = randomIdempotencyKey();
-        drop(
-            `${jobIdOf(key)}.json`,
-            JSON.stringify({
-                protocol: 2,
-                request: { component: 'ghost', toVersion: TO, idempotencyKey: key },
-            }),
-        );
-        await running.tick();
-        assert.equal(refusalOf(jobIdOf(key)), 'malformed');
-    });
-
-    test('a target not offered is refused, even written by hand', async () => {
-        const running = supervisor();
-        await running.start();
-        const key = randomIdempotencyKey();
-        drop(
-            `${jobIdOf(key)}.json`,
-            JSON.stringify({
-                protocol: PROTOCOL,
-                request: { component: 'ghost', toVersion: '7.0.0; rm -rf /', idempotencyKey: key },
-            }),
-        );
-        await running.tick();
-        assert.equal(refusalOf(jobIdOf(key)), 'target-unapproved');
-    });
-
-    test('an old request is refused as expired', async () => {
-        const running = supervisor();
-        await running.start();
-        const key = randomIdempotencyKey();
-        const name = `${jobIdOf(key)}.json`;
-        drop(
-            name,
-            JSON.stringify({
-                protocol: PROTOCOL,
-                request: { component: 'ghost', toVersion: TO, idempotencyKey: key },
-            }),
-        );
-        const old = new Date(clock.getTime() - 11 * 60_000);
-        utimesSync(join(exchangeRoot, 'requests', name), old, old);
-        await running.tick();
-        assert.equal(refusalOf(jobIdOf(key)), 'request-expired');
-    });
-
-    test('a request while a job is active is claimed and refused at once', async () => {
-        const running = supervisor();
-        await running.start();
+    test('a request while a job is active is refused as busy', async () => {
+        const running = await serve();
         let release!: (outcome: JobOutcome) => void;
         execute = () => new Promise((resolve) => (release = resolve));
-        const first = ask();
-        await running.tick();
-        assert.equal(client().readStatus().availability, 'busy');
-
-        // The adapter refuses while busy; a request written anyway is refused by the supervisor.
-        const busy = client().createRequest({
-            component: 'ghost',
-            toVersion: TO,
-            idempotencyKey: randomIdempotencyKey(),
-        });
-        assert.ok('rejected' in busy && busy.rejected === 'busy');
-        const key = randomIdempotencyKey();
-        drop(
-            `${jobIdOf(key)}.json`,
-            JSON.stringify({
-                protocol: PROTOCOL,
-                request: { component: 'ghost', toVersion: TO, idempotencyKey: key },
-            }),
-        );
-        await running.tick();
-        assert.equal(refusalOf(jobIdOf(key)), 'busy');
-
+        await accepted();
+        assert.equal(await availability(), 'busy');
+        assert.equal(await rejected(), 'busy');
         release({ state: 'done', diagnostics: [] });
-        await settle(running);
-        assert.equal(lookup(first.id).state, 'done');
+        await running.job;
     });
 
     test('a request while the CLI holds the lock is refused, naming the holder', async () => {
-        const running = supervisor();
-        await running.start();
+        await serve();
         const lock = acquireLock(dir, 'backup');
-        running.publish();
-        assert.equal(client().readStatus().availability, 'busy');
-        const key = randomIdempotencyKey();
-        drop(
-            `${jobIdOf(key)}.json`,
-            JSON.stringify({
-                protocol: PROTOCOL,
-                request: { component: 'ghost', toVersion: TO, idempotencyKey: key },
-            }),
-        );
-        await running.tick();
-        const job = lookup(jobIdOf(key));
-        assert.equal(job.state, 'refused');
-        assert.match(job.diagnostics?.[0]?.message ?? '', /held by backup/);
+        assert.equal(await availability(), 'busy');
+        const result = await ask();
+        assert.ok('rejected' in result && result.rejected === 'busy');
+        assert.match(result.reason, /held by backup/);
         lock.release();
+        assert.equal(await availability(), 'ready');
     });
 
     test('an invalid policy makes the supervisor unavailable', async () => {
         policy = null;
-        const running = supervisor();
-        await running.start();
-        const status = client().readStatus();
-        assert.equal(status.availability, 'unavailable');
+        await serve();
+        assert.equal(await availability(), 'unavailable');
+        assert.equal(await rejected(), 'unavailable');
     });
 });
 
 describe('a supervisor stopped mid-job', () => {
     test('reports the job interrupted on its next start, with its backup, and leaves the lock', async () => {
-        const first = supervisor();
-        await first.start();
+        await serve();
         execute = async ({ stage, backup }) => {
             stage('pulling');
             stage('backing-up');
@@ -459,102 +283,62 @@ describe('a supervisor stopped mid-job', () => {
             // Killed here: never returns.
             return new Promise<JobOutcome>(() => {});
         };
-        const job = ask();
-        await first.tick();
-        assert.equal(lookup(job.id).state, 'restarting');
+        const job = await accepted();
+        assert.equal((await lookup(job.id)).state, 'restarting');
 
         // A new process, as after the container or the host was restarted.
-        const second = supervisor();
-        await second.start();
-        const interrupted = lookup(job.id);
+        await stop(servers.pop());
+        await serve();
+        const interrupted = await lookup(job.id);
         assert.equal(interrupted.state, 'interrupted');
         assert.match(
             interrupted.diagnostics?.[0]?.message ?? '',
             /restarting.*backups\/20261014-200103.*lock is still held/s,
         );
+        assert.match(interrupted.diagnostics?.[0]?.details ?? '', /rm \.ghost-docker\.lock/);
         assert.match(
             interrupted.diagnostics?.[0]?.details ?? '',
             /restore --yes backups\/20261014-200103/,
         );
         assert.equal(readLock(dir).state, 'held');
-
-        const status = client().readStatus();
-        assert.equal(status.availability, 'unavailable');
-        let runs = 0;
-        execute = async () => {
-            runs += 1;
-            return { state: 'done', diagnostics: [] };
-        };
-        const key = randomIdempotencyKey();
-        drop(
-            `${jobIdOf(key)}.json`,
-            JSON.stringify({
-                protocol: PROTOCOL,
-                request: { component: 'ghost', toVersion: TO, idempotencyKey: key },
-            }),
-        );
-        await second.tick();
-        assert.equal(runs, 0);
-        assert.equal(lookup(jobIdOf(key)).state, 'refused');
+        assert.equal(await availability(), 'unavailable');
+        assert.equal(await rejected(), 'unavailable');
     });
 });
 
 describe('retention', () => {
-    test('keeps the 20 newest finished jobs; older ones look up as expired', async () => {
-        const running = supervisor();
-        await running.start();
-        const ids: string[] = [];
+    test('keeps the 20 newest finished jobs; older ones are expired, and their keys refused', async () => {
+        const running = await serve();
+        const keys: string[] = [];
         for (let index = 0; index < HISTORY + 5; index += 1) {
-            clock = new Date(clock.getTime() + 1000);
             const key = randomIdempotencyKey();
-            ids.push(jobIdOf(key));
-            drop(
-                `${jobIdOf(key)}.json`,
-                JSON.stringify({
-                    protocol: PROTOCOL,
-                    request: { component: 'ghost', toVersion: '1.0.0', idempotencyKey: key },
-                }),
-            );
-            await running.tick();
+            keys.push(key);
+            await accepted(TO, key);
+            await running.job;
         }
-        // The last claim prunes down to HISTORY, then adds itself.
-        assert.ok(readdirSync(join(exchangeRoot, 'status', 'jobs')).length <= HISTORY + 1);
-        assert.equal(client().lookup(ids[0]!).state, 'expired');
-        assert.equal(client().lookup(ids.at(-1)!).state, 'refused');
-        assert.equal(client().lookup(jobIdOf(randomIdempotencyKey())).state, 'unknown');
+        const kept = new Records(dir).list().records;
+        assert.ok(kept.length <= HISTORY + 1, `${kept.length} kept`);
+        assert.equal((await lookup(keys[0]!)).state, 'expired');
+        assert.equal(await rejected(TO, keys[0]!), 'request-expired');
+        assert.equal((await lookup(keys.at(-1)!)).state, 'done');
+        assert.equal((await lookup(randomIdempotencyKey())).state, 'unknown');
     });
 });
 
-describe('status', () => {
-    test('is stale once the heartbeat is older than a minute', async () => {
-        const running = supervisor();
-        await running.start();
-        const later = new ExchangeClient(exchangeRoot, () => new Date(clock.getTime() + 61_000));
-        assert.equal(later.readStatus().availability, 'stale');
-        const rejected = later.createRequest({
-            component: 'ghost',
-            toVersion: TO,
-            idempotencyKey: randomIdempotencyKey(),
+describe("Ghost's end, when the supervisor is not there or speaks another protocol", () => {
+    test('a missing socket is unavailable, and so is every request', async () => {
+        assert.deepEqual(await availability(), 'unavailable');
+        assert.equal(await rejected(), 'unavailable');
+    });
+
+    test('a server without /v1 is incompatible', async () => {
+        const other = createServer((_request, response) => {
+            response.writeHead(404, { 'content-type': 'application/json' });
+            response.end('{}');
         });
-        assert.ok('rejected' in rejected && rejected.rejected === 'unavailable');
-    });
-
-    test('is unavailable before the supervisor has published, and incompatible at another protocol', () => {
-        assert.equal(client().readStatus().availability, 'unavailable');
-        writeFileSync(join(exchangeRoot, 'status', 'status.json'), JSON.stringify({ protocol: 2 }));
-        assert.equal(client().readStatus().availability, 'incompatible');
-    });
-
-    test('offers what discovery found, and always promises a backup', async () => {
-        const running = supervisor();
-        await running.start();
-        const status = client().readStatus();
-        assert.ok('file' in status);
-        assert.equal(status.file.status.backupRequired, true);
-        assert.deepEqual(status.file.status.oneClick, [
-            { component: 'ghost', fromVersion: FROM, toVersion: TO },
-        ]);
-        assert.equal(discoveries, 1);
-        assert.ok(existsSync(join(dir, '.ghost-docker-supervisor', 'discovery.json')));
+        servers.push(other);
+        await listen(other, socket);
+        assert.equal(await availability(), 'incompatible');
+        assert.equal(await rejected(), 'incompatible');
     });
 });

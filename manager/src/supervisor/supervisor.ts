@@ -1,11 +1,11 @@
-// The upgrade supervisor: the host command run on Ghost's behalf, with a file
-// exchange in front of it (docs/upgrade-supervisor.md).
+// The upgrade supervisor: the host command run on Ghost's behalf, with a small
+// HTTP API in front of it (docs/upgrade-supervisor.md). server.ts is the
+// transport; this is what each request decides.
 //
-// One job at a time, run by the executor `update` uses. Requests that arrive
-// meanwhile are claimed and refused, never queued. Every stage is recorded
-// before its side effects begin; a job found unfinished on start is marked
+// One job at a time, run by the executor `update` uses. A request that arrives
+// meanwhile is rejected as busy, never queued. Every stage is recorded before
+// its side effects begin; a job found unfinished on start is marked
 // interrupted and never resumed, and the lock it held is left for the operator.
-import { lstatSync, opendirSync, rmSync } from 'node:fs';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { CliError } from '../errors.ts';
@@ -17,27 +17,22 @@ import { diagnostic } from './diagnostics.ts';
 import type { Discoverer, Policy } from './discovery.ts';
 import { DISCOVERY_EVERY_MS } from './discovery.ts';
 import {
-    BOUNDS,
+    createUpgradeRequestSchema,
     DIAGNOSTICS_KEPT,
-    ExchangeFileError,
+    ERROR_STATUS,
     jobIdOf,
-    JOB_FILE_NAME,
-    parseExchangeFile,
     PRUNED_KEPT,
-    readExchangeFile,
-    REQUEST_MAX_AGE_MS,
-    REQUEST_MAX_SKEW_MS,
-    requestFileSchema,
-    upgradeComponentSchema,
-    upgradeVersionSchema,
+    upgradeJobIdSchema,
+    type ErrorBody,
+    type ErrorCode,
     type FinalState,
     type SupervisorStatus,
     type UpgradeDiagnostic,
-    type UpgradeRequest,
+    type UpgradeJob,
+    type UpgradeJobResult,
 } from './protocol.ts';
 import {
     ClaimedAlready,
-    Exchange,
     HISTORY,
     isActive,
     Records,
@@ -46,9 +41,6 @@ import {
     type Stage,
 } from './store.ts';
 
-/** Requests read per scan of the exchange. */
-export const SCAN_LIMIT = 32;
-export const POLL_MS = 2_000;
 export const POLL_ACTIVE_MS = 2_000;
 export const POLL_IDLE_MS = 30_000;
 
@@ -71,7 +63,6 @@ export type Executor = (context: JobContext) => Promise<JobOutcome>;
 export interface SupervisorOptions {
     readonly io: Io;
     readonly dir: string;
-    readonly exchange: Exchange;
     readonly records: Records;
     readonly execute: Executor;
     readonly discover: Discoverer;
@@ -85,21 +76,35 @@ export interface SupervisorOptions {
 const operationOf = (id: string, version: string) =>
     `supervisor job ${id}: update Ghost to ${version}`;
 
-/** What a request says, or why it cannot be run. */
-type Claim =
-    | { readonly ok: true; readonly request: UpgradeRequest }
-    | {
-          readonly ok: false;
-          readonly code: 'malformed' | 'request-expired';
-          readonly message: string;
-          readonly component: string;
-          readonly toVersion: string;
-      };
+/** An answer of the API: its status code and JSON body. */
+export interface Answer {
+    readonly status: number;
+    readonly body: UpgradeJob | UpgradeJobResult | SupervisorStatus | ErrorBody | object;
+}
+
+export const failure = (
+    code: ErrorCode,
+    message: string,
+    diagnostics: UpgradeDiagnostic[] = [],
+): Answer => ({
+    status: ERROR_STATUS[code],
+    body: {
+        error: {
+            code,
+            diagnostics: [diagnostic(code, 'error', message), ...diagnostics].slice(
+                0,
+                DIAGNOSTICS_KEPT,
+            ),
+        },
+    },
+});
+
+/** A copy, so an answer never changes as the job moves on. */
+const snapshot = (job: UpgradeJob): UpgradeJob => structuredClone(job);
 
 export class Supervisor {
     private readonly io: Io;
     private readonly dir: string;
-    private readonly exchange: Exchange;
     private readonly records: Records;
     private readonly options: SupervisorOptions;
     private readonly now: () => Date;
@@ -113,7 +118,6 @@ export class Supervisor {
         this.options = options;
         this.io = options.io;
         this.dir = options.dir;
-        this.exchange = options.exchange;
         this.records = options.records;
         this.now = options.now ?? (() => new Date());
     }
@@ -125,17 +129,16 @@ export class Supervisor {
 
     // --- Starting ------------------------------------------------------------------
 
-    /** The interrupted-on-start rule, duplicates removed, then the first status. */
-    async start(): Promise<void> {
+    /**
+     * The interrupted-on-start rule, and the last discovery to answer with.
+     * The caller listens next, then discovers: a check pulls images, which is slow.
+     */
+    start(): void {
         this.records.ensure();
-        this.exchange.ensureJobs();
         for (const record of this.records.list().records.filter(isActive)) {
             this.interrupt(record);
         }
         this.discovery = this.records.discovery();
-        // At once, from the last discovery: a check pulls images, which is slow.
-        this.publish();
-        await this.rediscover();
     }
 
     private interrupt(record: JobRecord): void {
@@ -186,241 +189,125 @@ export class Supervisor {
         ]);
     }
 
-    // --- Claiming -------------------------------------------------------------------
+    // --- Requests -----------------------------------------------------------------------
 
-    /** One scan of the exchange: each request claimed, then refused or started. */
-    async tick(): Promise<void> {
-        for (const name of this.scan()) {
-            const match = JOB_FILE_NAME.exec(name);
-            if (!match) {
-                this.removeStray(name);
-                continue;
-            }
-            await this.claim(match[1]!, name);
-        }
-        if (
-            this.activeId === null &&
-            this.now().getTime() - this.discoveredAt >= DISCOVERY_EVERY_MS
-        ) {
-            await this.rediscover();
-        }
-    }
-
-    /** Up to SCAN_LIMIT names in the requests directory, oldest first. */
-    private scan(): string[] {
-        const names: { name: string; mtimeMs: number }[] = [];
-        let dir;
-        try {
-            dir = opendirSync(this.exchange.requests);
-        } catch (error) {
-            if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-                return [];
-            }
-            throw error;
-        }
-        try {
-            for (
-                let entry = dir.readSync();
-                entry !== null && names.length < SCAN_LIMIT;
-                entry = dir.readSync()
-            ) {
-                if (entry.name.startsWith('.tmp-') && !this.old(entry.name)) {
-                    continue;
-                }
-                try {
-                    names.push({
-                        name: entry.name,
-                        mtimeMs: lstatSync(join(this.exchange.requests, entry.name)).mtimeMs,
-                    });
-                } catch {
-                    // Gone since it was listed.
-                }
-            }
-        } finally {
-            dir.closeSync();
-        }
-        return names.sort((a, b) => a.mtimeMs - b.mtimeMs).map((entry) => entry.name);
-    }
-
-    private old(name: string): boolean {
-        try {
-            return (
-                this.now().getTime() - lstatSync(join(this.exchange.requests, name)).mtimeMs >
-                REQUEST_MAX_AGE_MS
+    /**
+     * POST /v1/requests, decided in the protocol's order: a replay first, then
+     * availability, then policy. It never yields, so two requests are never
+     * both accepted (docs/upgrade-supervisor.md#supervisor-a-request).
+     */
+    request(body: unknown): Answer {
+        const parsed = createUpgradeRequestSchema.safeParse(body);
+        if (!parsed.success) {
+            const issue = parsed.error.issues[0];
+            return failure(
+                'malformed',
+                `The request does not match protocol 1: ${issue?.path.join('.') || '(body)'} ${issue?.message ?? ''}`.trim(),
             );
-        } catch {
-            return false;
         }
-    }
+        const request = parsed.data;
+        const id = jobIdOf(request.idempotencyKey);
 
-    /** A name that is no request, removed once it is old enough not to be one being written. */
-    private removeStray(name: string): void {
-        if (this.old(name)) {
-            this.unlinkRequest(name);
+        const earlier = this.read(id);
+        if (earlier !== undefined) {
+            return earlier.job.component === request.component &&
+                earlier.job.toVersion === request.toVersion
+                ? { status: 200, body: snapshot(earlier.job) }
+                : failure(
+                      'idempotency-conflict',
+                      'This idempotency key was used for another update.',
+                  );
         }
-    }
+        if (this.records.pruned().includes(id)) {
+            return failure('request-expired', 'The job of this idempotency key is no longer kept.');
+        }
 
-    /** A request with more than one link: still being written, or not Ghost's doing. */
-    private linked(name: string): boolean {
-        try {
-            return lstatSync(join(this.exchange.requests, name)).nlink !== 1;
-        } catch {
-            return false;
-        }
-    }
-
-    private unlinkRequest(name: string): void {
-        rmSync(join(this.exchange.requests, name), { force: true, recursive: false });
-    }
-
-    private read(id: string, name: string): Claim {
-        const path = join(this.exchange.requests, name);
-        let component = 'unknown';
-        let toVersion = 'unknown';
-        try {
-            const read = readExchangeFile(path, BOUNDS.request);
-            if (read === undefined) {
-                throw new ExchangeFileError(`${name} disappeared before it was read`);
-            }
-            // What the refusal can name of a request that is otherwise malformed.
-            try {
-                const loose = JSON.parse(read.text)?.request;
-                component = upgradeComponentSchema.safeParse(loose?.component).data ?? component;
-                toVersion = upgradeVersionSchema.safeParse(loose?.toVersion).data ?? toVersion;
-            } catch {
-                // Not JSON: refused below.
-            }
-            const { request } = parseExchangeFile(requestFileSchema, read, name);
-            if (jobIdOf(request.idempotencyKey) !== id) {
-                throw new ExchangeFileError(`${name} is not named for its idempotency key`);
-            }
-            const age = this.now().getTime() - read.mtimeMs;
-            if (age > REQUEST_MAX_AGE_MS || age < -REQUEST_MAX_SKEW_MS) {
-                return {
-                    ok: false,
-                    code: 'request-expired',
-                    message: `The request was made ${Math.round(age / 1000)} seconds ago, longer than the supervisor accepts. Make it again.`,
-                    component,
-                    toVersion,
-                };
-            }
-            return { ok: true, request };
-        } catch (error) {
-            if (error instanceof ExchangeFileError) {
-                return {
-                    ok: false,
-                    code: 'malformed',
-                    message: `The request was refused: ${error.message}.`,
-                    component,
-                    toVersion,
-                };
-            }
-            throw error;
-        }
-    }
-
-    private async claim(id: string, name: string): Promise<void> {
-        if (this.linked(name)) {
-            // Mid-write: Ghost links the file into place, then unlinks its
-            // temporary. Left for the next scan, never claimed and refused.
-            this.removeStray(name);
-            return;
-        }
-        if (this.records.has(id)) {
-            // Claimed already: a duplicate the adapter's look-up raced.
-            this.unlinkRequest(name);
-            return;
-        }
-        const claim = this.read(id, name);
-        const at = this.now().toISOString();
-        const record: JobRecord = {
-            job: {
-                id,
-                state: 'pending',
-                component: claim.ok ? claim.request.component : claim.component,
-                toVersion: claim.ok ? claim.request.toVersion : claim.toVersion,
-                createdAt: at,
-                updatedAt: at,
-            },
-            stage: null,
-            backup: null,
-            lock: false,
-        };
-        try {
-            this.records.create(record);
-        } catch (error) {
-            if (error instanceof ClaimedAlready) {
-                this.unlinkRequest(name);
-                return;
-            }
-            throw error;
-        }
-        this.prune();
-
-        if (!claim.ok) {
-            this.refuse(record, name, claim.code, claim.message);
-            return;
-        }
-        const refusal = this.refusal(claim.request);
-        if (refusal !== null) {
-            this.refuse(record, name, refusal.code, refusal.message);
-            return;
-        }
-        try {
-            this.lock = acquireLock(this.dir, operationOf(id, claim.request.toVersion), this.now());
-        } catch (error) {
-            if (error instanceof CliError) {
-                this.refuse(
-                    record,
-                    name,
-                    'busy',
-                    `Another operation is changing this site. ${error.message}`,
-                );
-                return;
-            }
-            throw error;
-        }
-        record.lock = true;
-        record.job.fromVersion = this.options.metadata().ghost.version;
-        this.save(record);
-        this.unlinkRequest(name);
-        this.activeId = id;
-        this.publish();
-        this.running = this.run(record);
-    }
-
-    /** Why a well-formed request cannot run now, or null when it can. */
-    private refusal(request: UpgradeRequest): { code: string; message: string } | null {
         const { availability, diagnostics } = this.condition();
-        if (availability === 'busy') {
-            return {
-                code: 'busy',
-                message: diagnostics[0]?.message ?? 'Another job is running on this site.',
-            };
-        }
         if (availability === 'unavailable') {
-            return {
-                code: 'unavailable',
-                message: diagnostics[0]?.message ?? 'The supervisor cannot run updates now.',
-            };
+            return failure('unavailable', 'The supervisor cannot run updates now.', diagnostics);
+        }
+        if (availability === 'busy') {
+            return failure(
+                'busy',
+                diagnostics[0]?.message ?? 'Another job is running on this site.',
+            );
         }
         const offered = (this.discovery?.oneClick ?? []).some(
             (entry) =>
                 entry.component === request.component && entry.toVersion === request.toVersion,
         );
         if (!offered) {
-            return {
-                code: 'target-unapproved',
-                message: `${request.component} ${request.toVersion} is not an update this host offers from Admin.`,
-            };
+            return failure(
+                'target-unapproved',
+                `${request.component} ${request.toVersion} is not an update this host offers from Admin.`,
+            );
         }
-        return null;
+
+        let lock: Lock;
+        try {
+            lock = acquireLock(this.dir, operationOf(id, request.toVersion), this.now());
+        } catch (error) {
+            if (error instanceof CliError) {
+                return failure('busy', `Another operation is changing this site. ${error.message}`);
+            }
+            throw error;
+        }
+        const at = this.now().toISOString();
+        const record: JobRecord = {
+            job: {
+                id,
+                state: 'pending',
+                component: request.component,
+                fromVersion: this.options.metadata().ghost.version,
+                toVersion: request.toVersion,
+                createdAt: at,
+                updatedAt: at,
+            },
+            stage: null,
+            backup: null,
+            lock: true,
+        };
+        try {
+            this.records.create(record);
+        } catch (error) {
+            lock.release();
+            if (error instanceof ClaimedAlready) {
+                return this.request(body);
+            }
+            throw error;
+        }
+        this.lock = lock;
+        this.activeId = id;
+        this.prune();
+        const accepted = snapshot(record.job);
+        this.running = this.run(record);
+        return { status: 202, body: accepted };
     }
 
-    private refuse(record: JobRecord, name: string, code: string, message: string): void {
-        this.finish(record, 'refused', [diagnostic(code, 'error', message)]);
-        this.unlinkRequest(name);
-        this.publish();
+    /** GET /v1/jobs/<id>: the job, or whether it was ever known. */
+    lookup(id: string): Answer {
+        if (!upgradeJobIdSchema.safeParse(id).success) {
+            return failure('malformed', 'That is not a job ID.');
+        }
+        const record = this.read(id);
+        if (record !== undefined) {
+            return { status: 200, body: snapshot(record.job) };
+        }
+        return {
+            status: 200,
+            body: { id, state: this.records.pruned().includes(id) ? 'expired' : 'unknown' },
+        };
+    }
+
+    private read(id: string): JobRecord | undefined {
+        try {
+            return this.records.read(id);
+        } catch (error) {
+            this.io.stderr(
+                `The record of job ${id} could not be read: ${(error as Error).message}\n`,
+            );
+            return undefined;
+        }
     }
 
     // --- Running ----------------------------------------------------------------------
@@ -433,7 +320,6 @@ export class Supervisor {
                 record.job.state = stage;
                 try {
                     this.save(record);
-                    this.publish();
                 } catch (error) {
                     // Recovery is under way and must not stop for a record it could not write.
                     if (stage !== 'restoring') {
@@ -479,7 +365,6 @@ export class Supervisor {
     private save(record: JobRecord): void {
         record.job.updatedAt = this.now().toISOString();
         this.records.write(record);
-        this.exchange.publishJob(record.job);
     }
 
     private finish(record: JobRecord, state: FinalState, diagnostics: UpgradeDiagnostic[]): void {
@@ -501,7 +386,6 @@ export class Supervisor {
             return;
         }
         for (const record of dropped) {
-            this.exchange.removeJob(record.job.id);
             this.records.remove(record.job.id);
         }
         this.records.writePruned(
@@ -589,7 +473,17 @@ export class Supervisor {
         return { availability: 'ready', diagnostics: [] };
     }
 
-    private async rediscover(): Promise<void> {
+    /** Discovery when it is due, and never while a job runs. */
+    async discoverIfDue(): Promise<void> {
+        if (
+            this.activeId === null &&
+            this.now().getTime() - this.discoveredAt >= DISCOVERY_EVERY_MS
+        ) {
+            await this.rediscover();
+        }
+    }
+
+    async rediscover(): Promise<void> {
         const policy = this.options.policy();
         if (policy !== null) {
             try {
@@ -606,11 +500,10 @@ export class Supervisor {
             }
         }
         this.discoveredAt = this.now().getTime();
-        this.publish();
     }
 
-    /** The status, with a fresh heartbeat. */
-    publish(): void {
+    /** GET /v1/status. */
+    status(): SupervisorStatus {
         const { availability, diagnostics } = this.condition();
         const discovery = this.discovery;
         const status: SupervisorStatus = {
@@ -627,6 +520,6 @@ export class Supervisor {
                 DIAGNOSTICS_KEPT,
             ),
         };
-        this.exchange.publishStatus(status, this.now().toISOString(), this.records.pruned());
+        return status;
     }
 }

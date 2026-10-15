@@ -28,7 +28,7 @@ export const MINIMUM_IMPORT_VERSION = '6.61.0';
  * variant (`6.3.1` is `6.3.1-next-alpine`); anything else is a tag already.
  */
 /**
- * The first Ghost release with FileDropUpgradeAdapter, the upgrade
+ * The first Ghost release with HttpUpgradeAdapter, the upgrade
  * supervisor's Ghost end (docs/upgrade-supervisor.md#installation); null
  * until Ghost releases it. Below it, install leaves the adapter off: an older
  * Ghost has no `upgrade` adapter type to load.
@@ -42,8 +42,8 @@ export const hasUpgradeAdapter = (version: string): boolean =>
 
 /** Ghost's settings for the adapter, in ghost.env. */
 export const UPGRADE_ADAPTER: readonly (readonly [string, string])[] = [
-    ['adapters__upgrade__active', 'FileDropUpgradeAdapter'],
-    ['adapters__upgrade__FileDropUpgradeAdapter__exchangePath', '/run/ghost-upgrade'],
+    ['adapters__upgrade__active', 'HttpUpgradeAdapter'],
+    ['adapters__upgrade__HttpUpgradeAdapter__socketPath', '/run/ghost-upgrade/supervisor.sock'],
 ];
 
 export function ghostTag(requested: string | undefined, variant = DEFAULT_VARIANT): string {

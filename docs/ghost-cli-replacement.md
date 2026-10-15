@@ -57,16 +57,16 @@ image and the deploy succeeds. It needs a Tinybird login, so it is run by hand.
 ### S8 — Supervisor command, protocol, and installer integration
 
 Repo: ghost-docker. The protocol is [upgrade-supervisor.md](upgrade-supervisor.md), the
-contract `FileDropUpgradeAdapter` in Ghost core (S9) is built against. Implement the
+contract `HttpUpgradeAdapter` in Ghost core (S9) is built against. Implement the
 supervisor as a long-running command of the manager image, running updates through
-`src/update.ts` as `update` does; wire `--with supervisor`, the exchange volumes, and
+`src/update.ts` as `update` does; wire `--with supervisor`, the socket's volume, and
 the request/status tooling the protocol describes.
 
 Acceptance: handwritten requests work before Ghost gains an adapter; duplicate and
-malformed requests, permission violations, and stale status behave correctly; a request
+malformed requests, permission violations, and an unreachable supervisor behave correctly; a request
 while a job is active, or while the CLI holds the lock, is refused; a supervisor killed
 mid-job reports that job `interrupted` on its next start, with its backup, and leaves
-the lock for the operator; history stays within its bound. Verify actual exchange
+the lock for the operator; history stays within its bound. Verify actual socket
 permissions as Ghost's runtime uid. Installer must not enable the adapter on a Ghost
 that does not ship it.
 
@@ -74,16 +74,15 @@ that does not ship it.
 
 Repo: Ghost core. Deps: S8 protocol contract ([upgrade-supervisor.md](upgrade-supervisor.md)).
 Follow repository adapter/API guidance. Implement `NoopUpgradeAdapter` and, against the
-protocol, `FileDropUpgradeAdapter`, permission-checked status/
+protocol, `HttpUpgradeAdapter`, permission-checked status/
 request/job APIs, rate limiting, capability reporting, and update-notification metadata.
 Noop is default; missing/stale supervisor and malformed protocol data produce useful
 status without making unrelated Ghost startup depend on supervisor availability.
 
-Acceptance: adapter/controller tests, API permission tests, tmp-exchange protocol tests,
+Acceptance: adapter/controller tests, API permission tests, protocol tests against a test socket,
 version compatibility, and initialization ordering. Keep Admin UI separate.
 
-Use adapter type `upgrade` and enable FileDrop only for a compatible Ghost version and
-an initialized exchange. API endpoints are status, create request and fetch job;
+Use adapter type `upgrade` and enable the HTTP adapter only for a compatible Ghost version. API endpoints are status, create request and fetch job;
 owner/admin only, with a rate-limited POST and normal Admin auth.
 
 ### S10 — Admin update experience

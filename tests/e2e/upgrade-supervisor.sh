@@ -4,9 +4,9 @@
 #   tests/e2e/upgrade-supervisor.sh
 #
 # A local site on Ghost 6.61.0 is installed with the supervisor. Inside the
-# Ghost container, as Ghost's own uid, the exchange lets Ghost write requests
-# and read status, and refuses any change to what the supervisor owns. A
-# malformed request and one made while the CLI holds the lock are refused.
+# Ghost container, as Ghost's own uid, Ghost reaches the supervisor's socket
+# through its read-only mount and cannot replace it; another uid cannot reach
+# it. A malformed request and one made while the CLI holds the lock are refused.
 # A supervisor killed mid-job reports the job interrupted when it comes back,
 # leaving the lock for the operator, who follows its steps. Then a request
 # made by hand runs to done: Ghost is on the newest 6.x, backed up first.
@@ -99,10 +99,15 @@ wait_for_any() {
     done
     fail "waited ${seconds}s for $* to match $pattern; it is ${got:-nothing}"
 }
-handwritten() {
-    # A request as Ghost writes one, by hand, with the key it is named for.
-    local key=$1 version=$2 name=$3
-    as_ghost "printf '%s' '{\"protocol\":1,\"request\":{\"component\":\"ghost\",\"toVersion\":\"$version\",\"idempotencyKey\":\"$key\"}}' > /run/ghost-upgrade/requests/.tmp-e2e && chmod 0640 /run/ghost-upgrade/requests/.tmp-e2e && ln /run/ghost-upgrade/requests/.tmp-e2e /run/ghost-upgrade/requests/$name && rm /run/ghost-upgrade/requests/.tmp-e2e"
+# A call to the API from inside Ghost's container, as Ghost's own user.
+as_ghost_http() {
+    local method=$1 path=$2 body=${3:-}
+    as_ghost "node -e '
+const r = require(\"http\").request({socketPath: \"/run/ghost-upgrade/supervisor.sock\", method: \"$method\", path: \"$path\", agent: false},
+  res => { let b = \"\"; res.on(\"data\", d => b += d); res.on(\"end\", () => console.log(res.statusCode + \" \" + b)); });
+r.on(\"error\", e => { console.log(\"error \" + e.code); });
+r.end(process.argv[1] || undefined);
+' '$body'"
 }
 
 step "Build the manager image from this checkout"
@@ -120,40 +125,40 @@ expect_status 0
 [[ $(setting COMPOSE_PROFILES) == local,supervisor ]] || fail "the supervisor profile is not selected"
 grep -q adapters__upgrade "$S/ghost.env" && fail "the adapter was enabled on a Ghost that does not ship it"
 wait_for ready 300 availability
-to=$(status_json | jq -r '.file.status.oneClick[] | select(.component == "ghost") | .toVersion')
+to=$(status_json | jq -r '.status.oneClick[] | select(.component == "ghost") | .toVersion')
 [[ -n $to && $to != "$FROM" ]] || fail "no one-click Ghost update is offered" "$(status_json)"
-[[ $(status_json | jq -r '.file.status.backupRequired') == true ]] || fail "the status does not promise a backup"
+[[ $(status_json | jq -r '.status.backupRequired') == true ]] || fail "the status does not promise a backup"
 ok "ready, offering Ghost $to one-click"
 
-step "As Ghost's uid, the exchange: requests written, status read, nothing of the supervisor's changed"
+step "As Ghost's uid, the socket: reached through a read-only mount, never replaced"
 [[ $(as_ghost 'id -u') == 1000 ]] || fail "Ghost does not run as uid 1000"
-as_ghost 'test -r /run/ghost-upgrade/status/status.json' || fail "Ghost cannot read the status"
-as_ghost 'echo x > /run/ghost-upgrade/status/status.json' 2>/dev/null && fail "Ghost replaced the status"
-as_ghost 'mv /run/ghost-upgrade/status/status.json /run/ghost-upgrade/status/x' 2>/dev/null && fail "Ghost renamed the status"
-as_ghost 'touch /run/ghost-upgrade/status/jobs/forged.json' 2>/dev/null && fail "Ghost wrote a job file"
-as_ghost 'touch /run/ghost-upgrade/requests/.probe && rm /run/ghost-upgrade/requests/.probe' || fail "Ghost cannot write requests"
-compose_in exec -T --user ghost ghost sh -c 'ls /home/ghost' >/dev/null || fail "Ghost cannot run as itself"
+run as_ghost_http GET /v1
+[[ $OUT == '200 {"protocol":1}' ]] || fail "Ghost cannot reach the supervisor" "$OUT"
+as_ghost 'rm -f /run/ghost-upgrade/supervisor.sock' 2>/dev/null && fail "Ghost removed the socket"
+as_ghost 'touch /run/ghost-upgrade/forged' 2>/dev/null && fail "Ghost wrote into the socket's volume"
+run docker run --rm --user 2000:2000 --network none \
+    -v "$(setting COMPOSE_PROJECT_NAME)_upgrade:/run/ghost-upgrade:ro" --entrypoint node "$MANAGER" -e \
+    "require('http').get({socketPath: '/run/ghost-upgrade/supervisor.sock', path: '/v1'}, () => console.log('reached')).on('error', e => console.log(e.code))"
+[[ $OUT == EACCES ]] || fail "a uid other than Ghost's reached the socket" "$OUT"
 [[ -z $(find "$S/.ghost-docker-supervisor" -perm -o=r -type f 2>/dev/null) ]] || fail "the private records are readable by others"
-ok "write requests, read status; status, jobs and records are the supervisor's alone"
+ok "Ghost reaches it and cannot replace it; uid 2000 is refused; the records are private"
 
 step "A malformed request is refused"
-key=$(printf 'malformed' | shasum -a 256 | cut -d' ' -f1)
-id=$key
-as_ghost "printf 'not json' > /run/ghost-upgrade/requests/$id.json"
-wait_for refused 30 job_state "$id"
-gd supervisor job "$id" --json | jq -e '.diagnostics[0].code == "malformed"' >/dev/null || fail "not refused as malformed"
-ok "job $id refused, malformed"
+run as_ghost_http POST /v1/requests 'not json'
+[[ $OUT == 400\ * ]] || fail "a malformed request was not refused with 400" "$OUT"
+jq -e '.error.code == "malformed"' <<<"${OUT#400 }" >/dev/null || fail "not refused as malformed" "$OUT"
+[[ ! -e $S/.ghost-docker.lock ]] || fail "a malformed request took the lock"
+ok "400 malformed, and nothing taken"
 
 step "A request while the CLI holds the lock is refused"
 printf '{"operation":"backup","startedAt":"2026-10-14T00:00:00Z"}\n' >"$S/.ghost-docker.lock"
 wait_for busy 30 availability
-key=$(printf 'locked' | shasum -a 256 | cut -d' ' -f1)
-id=$key
-handwritten "$key" "$to" "$id.json"
-wait_for refused 30 job_state "$id"
+run gd supervisor request ghost "$to" --json
+expect_status 1
+jq -e '.rejected == "busy"' <<<"$OUT" >/dev/null || fail "not refused as busy" "$OUT"
 rm "$S/.ghost-docker.lock"
 wait_for ready 30 availability
-ok "refused while locked; ready again once the lock is gone"
+ok "busy while locked; ready again once the lock is gone"
 
 step "A supervisor killed mid-job reports it interrupted, with the lock left for the operator"
 run gd supervisor request ghost "$to" --json
@@ -187,8 +192,8 @@ wait_for ready 60 availability
 ok "checked, and ready again"
 
 step "A request made by hand runs to done"
-version_now=$(status_json | jq -r '.file.status.currentVersion')
-to=$(status_json | jq -r '.file.status.oneClick[] | select(.component == "ghost") | .toVersion')
+version_now=$(status_json | jq -r '.status.currentVersion')
+to=$(status_json | jq -r '.status.oneClick[] | select(.component == "ghost") | .toVersion')
 [[ -n $to ]] || fail "no update offered after recovery (Ghost $version_now)" "$(status_json)"
 run gd supervisor request ghost "$to" --json
 expect_status 0

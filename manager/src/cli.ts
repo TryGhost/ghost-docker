@@ -12,7 +12,7 @@ import { installCommand } from './commands/install.ts';
 import { checkCommand, infoCommand, listCommand } from './commands/site.ts';
 import { selfUpdateCommand } from './commands/self-update.ts';
 import {
-    supervisorExchangeCommand,
+    supervisorClientCommand,
     supervisorJobCommand,
     supervisorRequestCommand,
     supervisorRunCommand,
@@ -38,7 +38,7 @@ const COMMANDS: Record<string, Command> = {
     'supervisor request': supervisorRequestCommand,
     'supervisor job': supervisorJobCommand,
     'supervisor run': supervisorRunCommand,
-    'supervisor exchange': supervisorExchangeCommand,
+    'supervisor client': supervisorClientCommand,
     backup: backupCommand,
     restore: restoreCommand,
     version: versionCommand,
