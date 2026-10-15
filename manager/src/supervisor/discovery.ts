@@ -61,7 +61,7 @@ async function ghostUpdates(io: Io, metadata: Metadata, policy: Policy): Promise
             found.manual.push({
                 ...entry,
                 reason: 'This host allows patch updates of Ghost from Admin, and this is a minor update.',
-                steps: [`In the site directory, run ./ghost-docker update ${latest.version}`],
+                steps: [`In the site directory, run \`./ghost-docker update ${latest.version}\``],
             });
         } else {
             found.oneClick.push(entry);
@@ -138,7 +138,7 @@ async function stackUpdates(io: Io, metadata: Metadata): Promise<Found> {
                 fromVersion: version,
                 toVersion: newest,
                 reason: 'A stack update replaces the upgrade supervisor itself, so it runs on the host.',
-                steps: ['In the site directory, run ./ghost-docker self-update'],
+                steps: ['In the site directory, run `./ghost-docker self-update`'],
             },
         ],
     };

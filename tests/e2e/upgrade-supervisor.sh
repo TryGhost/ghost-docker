@@ -207,7 +207,7 @@ job_json "$id" | jq -r '.diagnostics[0].details'
 rm "$S/.ghost-docker.lock"
 state=$(job_json "$id" | jq -r '.diagnostics[0].details')
 if grep -q 'restore --yes' <<<"$state"; then
-    backup=$(sed -n 's/.*restore --yes \(backups\/[^ ]*\).*/\1/p' <<<"$state" | head -1)
+    backup=$(sed -n 's/.*restore --yes \(backups\/[^ `]*\).*/\1/p' <<<"$state" | head -1)
     run gd restore --yes "$backup"
     expect_status 0
 else
@@ -234,7 +234,7 @@ answered 200
 wait_for "done" 900 job_state "$id"
 [[ $(compose_in exec -T ghost printenv GHOST_VERSION) == "$to" ]] || fail "Ghost is not $to"
 [[ ! -e $S/.ghost-docker.lock && ! -e $S/.ghost-docker-update ]] || fail "the job left its lock or snapshot"
-job_json "$id" | jq -e '.diagnostics[0].message | test("backed up to backups/")' >/dev/null ||
+job_json "$id" | jq -e '.diagnostics[0].message | test("backed up to `?backups/")' >/dev/null ||
     fail "the job does not name its backup" "$(job_json "$id")"
 [[ $(compose_in ps --format '{{.State}}' supervisor) == running ]] || fail "the job stopped the supervisor"
 run gd check

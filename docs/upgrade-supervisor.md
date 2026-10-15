@@ -227,7 +227,7 @@ A failure is a status code with an error body:
       "fromVersion": "v1.4.0",
       "toVersion": "v1.5.0",
       "reason": "A stack update replaces the upgrade supervisor itself, so it runs on the host.",
-      "steps": ["In the site directory, run ./ghost-docker self-update"]
+      "steps": ["In the site directory, run `./ghost-docker self-update`"]
     }
   ],
   "activeJobId": null,
@@ -274,7 +274,11 @@ Diagnostics are plain text meant for Admin:
 - **`help`:** links to [install.md](install.md)'s recovery sections.
 
 What the operator must do goes in `message` and `details`, and paths are given
-relative to the site directory. The backup a job took is named in the diagnostic
+relative to the site directory.
+
+Text in manual `reason`/`steps` and diagnostic `message`/`details` may mark
+commands, paths and other literals with backticks; Ghost shows them as inline
+code. Text is never interpreted as HTML or Markdown. The backup a job took is named in the diagnostic
 of every final state.
 
 ### Job IDs

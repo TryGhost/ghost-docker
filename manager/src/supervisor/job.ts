@@ -38,7 +38,7 @@ export const ghostJob =
         if (settings.get('GHOST_IMAGE_REF') !== reference(from)) {
             return refused(
                 'pin-mismatch',
-                `.env pins GHOST_IMAGE_REF to something other than the Ghost .ghost-docker.json records (${from.version}).`,
+                `\`.env\` pins \`GHOST_IMAGE_REF\` to something other than the Ghost \`.ghost-docker.json\` records (${from.version}).`,
             );
         }
 
@@ -82,7 +82,7 @@ export const ghostJob =
         );
         const taken = outcome.backup === null ? null : relative(dir, outcome.backup);
         const backedUp =
-            taken === null ? '' : ` Before the update, the site was backed up to ${taken}.`;
+            taken === null ? '' : ` Before the update, the site was backed up to \`${taken}\`.`;
         switch (outcome.state) {
             case 'done':
                 return {
@@ -119,10 +119,10 @@ export const ghostJob =
                     ...(taken === null
                         ? []
                         : [
-                              `  Put the site back on Ghost ${from.version} as it was, discarding anything written since: ./ghost-docker restore --yes ${taken}`,
+                              `  Put the site back on Ghost ${from.version} as it was, discarding anything written since: \`./ghost-docker restore --yes ${taken}\``,
                           ]),
-                    `  Or find why Ghost ${to.version} did not start (docker compose logs ghost), fix it, then docker compose up -d and ./ghost-docker check`,
-                    `The files as they were before the update are in ${relative(dir, outcome.snapshot)}/files; once the site is as it should be, remove ${relative(dir, outcome.snapshot)}.`,
+                    `  Or find why Ghost ${to.version} did not start (\`docker compose logs ghost\`), fix it, then \`docker compose up -d\` and \`./ghost-docker check\``,
+                    `The files as they were before the update are in \`${relative(dir, outcome.snapshot)}/files\`; once the site is as it should be, remove \`${relative(dir, outcome.snapshot)}\`.`,
                 ];
                 return {
                     state: 'needs-operator',

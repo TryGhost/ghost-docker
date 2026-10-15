@@ -155,32 +155,32 @@ export class Supervisor {
             record.stage === 'restoring';
         const steps = [
             'In the site directory:',
-            '  ./ghost-docker check',
-            ...(holding ? ['  rm .ghost-docker.lock'] : []),
+            '  `./ghost-docker check`',
+            ...(holding ? ['  `rm .ghost-docker.lock`'] : []),
             ...(started
                 ? [
                       `  Ghost ${record.job.toVersion} may have started and migrated the database. Either find why it did not finish`,
-                      '  (docker compose logs ghost), fix it, then docker compose up -d,',
+                      '  (`docker compose logs ghost`), fix it, then `docker compose up -d`,',
                       ...(record.backup === null
                           ? []
                           : [
-                                `  or put the site back as it was, discarding anything written since: ./ghost-docker restore --yes ${record.backup}`,
+                                `  or put the site back as it was, discarding anything written since: \`./ghost-docker restore --yes ${record.backup}\``,
                             ]),
                   ]
                 : record.stage === 'backing-up'
                   ? [
-                        '  Nothing was changed yet, but Ghost may be stopped for the backup: docker compose up -d',
+                        '  Nothing was changed yet, but Ghost may be stopped for the backup: `docker compose up -d`',
                     ]
                   : ['  Nothing was changed.']),
             ...(record.stage === null || record.stage === 'pulling'
                 ? []
-                : ['  Once ./ghost-docker check passes: rm -rf .ghost-docker-update']),
+                : ['  Once `./ghost-docker check` passes: `rm -rf .ghost-docker-update`']),
         ];
         const message =
             `The upgrade supervisor stopped while this job was ${reached}. It is never resumed.` +
             (record.backup === null
                 ? ''
-                : ` Before it began, the site was backed up to ${record.backup}.`) +
+                : ` Before it began, the site was backed up to \`${record.backup}\`.`) +
             (holding
                 ? ' The site lock is still held, so nothing else runs until the operator has checked the site.'
                 : '');
@@ -351,7 +351,7 @@ export class Supervisor {
                     diagnostic(
                         'failed',
                         'error',
-                        `The update failed unexpectedly at ${record.stage ?? 'its start'}. Check the site (./ghost-docker check) before anything else.`,
+                        `The update failed unexpectedly at ${record.stage ?? 'its start'}. Check the site (\`./ghost-docker check\`) before anything else.`,
                         (error as Error).stack ?? String(error),
                     ),
                 ],
@@ -416,7 +416,7 @@ export class Supervisor {
                     diagnostic(
                         'policy-invalid',
                         'error',
-                        'SUPERVISOR_UPDATES in .env must be minor or patch, so the supervisor runs no updates.',
+                        '`SUPERVISOR_UPDATES` in `.env` must be `minor` or `patch`, so the supervisor runs no updates.',
                     ),
                 ],
             };
@@ -471,7 +471,7 @@ export class Supervisor {
                     diagnostic(
                         'update-unfinished',
                         'error',
-                        `${UPDATE_DIR} is left from an update that did not finish. Once the site is as it should be (./ghost-docker check), the operator removes it.`,
+                        `\`${UPDATE_DIR}\` is left from an update that did not finish. Once the site is as it should be (\`./ghost-docker check\`), the operator removes it.`,
                     ),
                 ],
             };
