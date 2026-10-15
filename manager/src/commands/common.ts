@@ -28,8 +28,12 @@ export function siteContext(io: Io): Context {
     return context;
 }
 
-/** The launcher's context, and the site in its directory. */
-export function installedSite(io: Io): InstalledSite {
+/**
+ * The launcher's context, and the site in its directory. A site whose .env
+ * names another directory is refused, unless `moved` allows it: `config get`
+ * and `config set` are how a moved site's PROJECT_DIR is put right.
+ */
+export function installedSite(io: Io, { moved = false } = {}): InstalledSite {
     const context = siteContext(io);
     const dir = context.siteDir;
     const settings = readSettings(dir);
@@ -41,7 +45,7 @@ export function installedSite(io: Io): InstalledSite {
     }
     const site = siteFacts(dir, settings);
     const declared = settings.get('PROJECT_DIR');
-    if (declared && declared !== dir) {
+    if (!moved && declared && declared !== dir) {
         throw new CliError(
             `.env says PROJECT_DIR is ${declared}, but the site is at ${dir}.\n` +
                 '  If the site was moved, update PROJECT_DIR (./ghost-docker config set .env PROJECT_DIR ' +
