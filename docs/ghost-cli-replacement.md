@@ -14,7 +14,7 @@ Linear](https://linear.app/ghost/issue/PLA-412).
 | Tagged single-site production | S5e production import, S12 qualification | Existing image self-update, local import, backup and restore |
 | Several sites behind shared Caddy | S13 | Existing backup/restore and released-main migration |
 | Admin-driven Ghost upgrades | S7 analytics acceptance, S8 supervisor, S9 core adapter/API, S10 Admin | Existing `update`; S8 protocol before S9; S9 before S10; S13 integration if shipped |
-| Later extensions | S11 file secrets, S14 service references, S15 nightlies, S16 Redis | See each step |
+| Later extensions | S11 file secrets, S14 service references, S15 nightly transitions, S16 Redis | See each step |
 
 Qualify production on Linux with rootful Docker Engine. Local qualification also covers
 Docker Desktop, OrbStack and WSL2. Rootless Docker is best effort, not part of the
@@ -198,38 +198,24 @@ backup, restore and the supervisor use whatever references the site resolves. Pu
 pulls must work without credentials; dual publishing upstream is welcome but is not a
 ghost-docker requirement.
 
-### S15 — Opt-in Ghost nightly channel on GHCR
+### S15 — Opt-in Ghost nightly channel
 
-Repos: Ghost/image publishing workflow and ghost-docker; Ghost Admin/API if channel or
-build metadata requires extending the existing upgrade interface. Deps: S14 image
-references and existing `update` and S8-S10 upgrade integration. Follow the requirements below. Add
-`--ghost-channel stable|nightly`, with stable as default and nightly explicitly opted
-in. Nightly images are published to GHCR with immutable source/build identities. Keep
-the stack `--channel` independent and do not equate nightly selection with unattended
-upgrades.
+Repo: ghost-docker. `install --ghost-channel nightly` runs Ghost's nightly builds of
+`main` from `ghost/nightly` on Docker Hub, and `update` and the upgrade supervisor move a
+nightly site to newer builds, ordered by build time, as
+[configuration.md](configuration.md#ghost-channel) describes.
+`tests/e2e/ghost-nightly.sh` moves a site from an older build to the latest through the
+supervisor in CI. Remaining:
 
-Acceptance: stable installs never select nightlies; opt-in resolves an exact GHCR build
-on supported architectures; successive builds with identical Ghost semver are
-distinguishable; tinybird-sync uses the selected Ghost artifact. Exercise discovery
-failure, missing images, host major-policy enforcement, backup/recovery, and explicit
-channel transitions. Nightly-to-stable must refuse unsafe schema transitions rather than
-pretending that image selection rolls back the database.
+Explicit, compatibility-checked channel transitions. Stable-to-nightly and
+nightly-to-stable must refuse unsafe schema transitions rather than pretending that image
+selection rolls back the database; returning to stable may mean waiting for a
+compatible release or restoring a checkpoint.
 
-Publish from an identified source commit, with immutable build tags/metadata and an
-optional moving nightly discovery tag. Installation/upgrade resolves discovery to one
-exact build and digest; never persist only a moving tag. Use the same Ghost image for
-tinybird-sync. Record the Ghost-reported version plus commit/build identity: two nightly
-builds may report the same semver. Build discovery and job schemas must handle that
-deliberately, without relaxing trusted image allowlists to arbitrary user-supplied
-references.
-
-Only nightly sites discover nightly updates. Enabling the channel does not bypass host
-major-version policy, backups, writer pauses, compatibility checks, or recovery.
-Stable-to-nightly and nightly-to-stable are explicit compatibility-checked transitions;
-returning to stable may require waiting for a compatible release or restoring a
-checkpoint because schema migrations cannot be undone by changing a tag. Retain exact
-recovery images/build metadata even if registry retention removes old nightly tags. Show
-the channel and build identity in CLI/status/Admin where applicable.
+Recovery images for nightly sites: Hub keeps a limited history, so retain the exact
+build a backup ran, or say clearly at restore that it is gone. Show the channel and the
+build's commit (`org.opencontainers.image.revision`) in `info`, `check` and the
+supervisor's status.
 
 ### S16 — Opt-in per-site Redis caching
 
