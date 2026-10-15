@@ -300,7 +300,10 @@ interface Target {
     /** A checkout of the repository, whose files are used in place. */
     readonly clone: boolean;
     readonly stack: string;
-    /** The payload's files, relative to `stack`; none in a checkout. */
+    /**
+     * The payload's files, relative to `stack`; none in a checkout. Every
+     * file until the mode is known, then those the site's mode uses.
+     */
     readonly files: readonly string[];
 }
 
@@ -435,6 +438,7 @@ async function prepare(
     const production = intent.mode === 'production';
     return {
         ...target,
+        files: clone ? [] : payloadFiles(target.stack, intent.mode),
         flags,
         intent,
         port,
@@ -556,7 +560,11 @@ function writeStack(site: Site, created: Created) {
     }
     writePayload(dir, stack, files, created);
     created.save();
-    ok(io, 'stack files', `compose.yml, caddy/, mysql-init/, tinybird/ from the manager image`);
+    ok(
+        io,
+        'stack files',
+        `compose.yml, ${site.production ? 'caddy/, ' : ''}mysql-init/, tinybird/ from the manager image`,
+    );
     writeLauncher(dir, io.env, { image: pin!, channel: site.release.channel }, created);
     created.save();
     ok(io, 'ghost-docker', `the launcher, pinned to ${pin!}`);

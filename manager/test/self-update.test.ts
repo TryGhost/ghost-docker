@@ -16,6 +16,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, test } from 'node:test';
 import { acquireLock } from '../src/lock.ts';
 import { SCHEMA_VERSION, writeMetadata } from '../src/meta.ts';
+import { sha256 } from '../src/payload.ts';
 import { failed, harness, ok, type Harness, type ProgramResult } from './helpers.ts';
 import {
     imageApi,
@@ -106,7 +107,7 @@ beforeEach(async () => {
     release('v0.1.0-beta.2');
     managerId = SECOND;
     appendFileSync(join(stack, 'compose.ipv6.yml'), '# changed in beta.2\n');
-    writeFileSync(join(stack, 'caddy', 'snippets', 'Added'), '# new in beta.2\n');
+    writeFileSync(join(stack, 'tinybird', 'Added'), '# new in beta.2\n');
 });
 afterEach(() => {
     rmSync(stack, { recursive: true, force: true });
@@ -178,11 +179,11 @@ describe('an update between releases', () => {
         // The operator edits one file the release changes, and one it does not.
         appendFileSync(join(h.dir, 'compose.yml'), '# mine\n');
         appendFileSync(join(stack, 'compose.yml'), '# changed in beta.2\n');
-        appendFileSync(join(h.dir, 'caddy', 'snippets', 'Logging'), '# mine\n');
+        appendFileSync(join(h.dir, 'tinybird', 'getTokens.sh'), '# mine\n');
         // The release drops two files: one untouched, one edited.
-        rmSync(join(stack, 'caddy', 'snippets', 'TrafficAnalytics'));
-        rmSync(join(stack, 'caddy', 'snippets', 'ActivityPub'));
-        appendFileSync(join(h.dir, 'caddy', 'snippets', 'ActivityPub'), '# mine\n');
+        rmSync(join(stack, 'tinybird', 'handleLogin.sh'));
+        rmSync(join(stack, 'tinybird', 'tb-wrapper'));
+        appendFileSync(join(h.dir, 'tinybird', 'tb-wrapper'), '# mine\n');
 
         const result = await update();
         assert.equal(result.code, 0, result.stderr);
@@ -190,7 +191,7 @@ describe('an update between releases', () => {
             readSite('compose.ipv6.yml'),
             readFileSync(join(stack, 'compose.ipv6.yml'), 'utf8'),
         );
-        assert.equal(readSite('caddy/snippets/Added'), '# new in beta.2\n');
+        assert.equal(readSite('tinybird/Added'), '# new in beta.2\n');
 
         assert.match(readSite('compose.yml'), /# mine\n$/);
         assert.equal(readSite('compose.yml.new'), readFileSync(join(stack, 'compose.yml'), 'utf8'));
@@ -201,27 +202,57 @@ describe('an update between releases', () => {
         assert.match(result.stdout, /compose\.yml +compose\.yml\.new/);
 
         // Edited, but the release has not changed it: nothing to write beside it.
-        assert.match(readSite('caddy/snippets/Logging'), /# mine\n$/);
-        assert.ok(!existsSync(join(h.dir, 'caddy', 'snippets', 'Logging.new')));
+        assert.match(readSite('tinybird/getTokens.sh'), /# mine\n$/);
+        assert.ok(!existsSync(join(h.dir, 'tinybird', 'getTokens.sh.new')));
 
-        assert.ok(!existsSync(join(h.dir, 'caddy', 'snippets', 'TrafficAnalytics')));
-        assert.match(readSite('caddy/snippets/ActivityPub'), /# mine\n$/);
+        assert.ok(!existsSync(join(h.dir, 'tinybird', 'handleLogin.sh')));
+        assert.match(readSite('tinybird/tb-wrapper'), /# mine\n$/);
         assert.match(
             result.stdout,
-            /caddy\/snippets\/ActivityPub is no longer part of the stack, but it has been edited/,
+            /tinybird\/tb-wrapper is no longer part of the stack, but it has been edited/,
         );
 
         // What is recorded is the release's: an edited file stays edited, and
         // one replaced by the release's .new is untouched from then on.
         const payload = metadata().payload;
-        assert.ok(!('caddy/snippets/TrafficAnalytics' in payload));
-        assert.ok(!('caddy/snippets/ActivityPub' in payload));
-        assert.ok('caddy/snippets/Added' in payload);
+        assert.ok(!('tinybird/handleLogin.sh' in payload));
+        assert.ok(!('tinybird/tb-wrapper' in payload));
+        assert.ok('tinybird/Added' in payload);
         cpSync(join(h.dir, 'compose.yml.new'), join(h.dir, 'compose.yml'));
         release('v0.1.0-beta.3');
         managerId = `sha256:${'4'.repeat(64)}`;
         const again = await update('--check');
         assert.doesNotMatch(again.stdout, /compose\.yml: edited/);
+    });
+
+    test('a local site installed with caddy/ has it removed, keeping what was edited', async () => {
+        // An earlier release wrote caddy/ into every site.
+        const recorded = metadata();
+        for (const file of [
+            'caddy/Caddyfile',
+            'caddy/snippets/Logging',
+            'caddy/custom/README.md',
+        ]) {
+            mkdirSync(join(h.dir, file, '..'), { recursive: true });
+            cpSync(join(stack, file), join(h.dir, file));
+            recorded.payload[file] = sha256(readFileSync(join(stack, file)));
+        }
+        writeFileSync(join(h.dir, '.ghost-docker.json'), JSON.stringify(recorded));
+        appendFileSync(join(h.dir, 'caddy', 'custom', 'README.md'), '# mine\n');
+
+        const result = await update();
+        assert.equal(result.code, 0, result.stderr);
+        assert.ok(!existsSync(join(h.dir, 'caddy', 'Caddyfile')));
+        assert.ok(!existsSync(join(h.dir, 'caddy', 'snippets')));
+        assert.match(readSite('caddy/custom/README.md'), /# mine\n$/);
+        assert.match(
+            result.stdout,
+            /caddy\/custom\/README\.md is no longer part of the stack, but it has been edited/,
+        );
+        assert.deepEqual(
+            Object.keys(metadata().payload).filter((file) => file.startsWith('caddy/')),
+            [],
+        );
     });
 
     test('an edited launcher is replaced, because it holds the pin, and kept beside it', async () => {
@@ -245,7 +276,7 @@ describe('an update between releases', () => {
         );
         assert.match(result.stdout, /An update is available\. Ghost stays at 6\.67\.0\./);
         assert.match(result.stdout, /compose\.ipv6\.yml: replaced/);
-        assert.match(result.stdout, /caddy\/snippets\/Added: added/);
+        assert.match(result.stdout, /tinybird\/Added: added/);
         assert.match(result.stdout, /compose\.yml: edited, kept/);
         assert.match(result.stdout, new RegExp(`ghost-docker: pinned to ${SECOND}`));
         assert.deepEqual(snapshot(), before);

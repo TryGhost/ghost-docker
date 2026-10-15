@@ -184,7 +184,7 @@ export function imageStack(h: Harness): string {
     for (const file of ['compose.yml', 'compose.ipv6.yml', '.env.example', 'ghost.env.example']) {
         copyFileSync(join(REPO, file), join(stack, file));
     }
-    for (const directory of ['caddy', 'mysql-init']) {
+    for (const directory of ['caddy', 'mysql-init', 'tinybird']) {
         cpSync(join(REPO, directory), join(stack, directory), { recursive: true });
     }
     h.env.GD_STACK_DIR = stack;
