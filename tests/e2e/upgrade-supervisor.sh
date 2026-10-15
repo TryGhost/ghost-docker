@@ -72,35 +72,10 @@ compose_in() { docker compose --project-directory "$S" -f "$S/compose.yml" "$@";
 setting() { gd config get "$1" 2>/dev/null; }
 # As Ghost runs: its own user, in its own container.
 as_ghost() { compose_in exec -T --user ghost ghost sh -c "$1"; }
-# A call to the supervisor's API as Ghost makes one: Ghost's uid, the volume
-# mounted read-only as Ghost mounts it. In a container of its own, because
-# Ghost's is stopped for parts of an update. Prints the status, then the body.
-ghost_http() {
-    docker run --rm --user 1000:1000 --network none \
-        -v "$(setting COMPOSE_PROJECT_NAME)_upgrade:/run/ghost-upgrade:ro" --entrypoint node "$MANAGER" -e '
-const [method, path, body] = process.argv.slice(1);
-const r = require("http").request({socketPath: "/run/ghost-upgrade/supervisor.sock", method, path, agent: false},
-  res => { let b = ""; res.on("data", d => b += d); res.on("end", () => console.log(res.statusCode + " " + b)); });
-r.on("error", e => console.log("error " + e.code));
-r.end(body || undefined);
-' "$1" "$2" "${3:-}"
-}
-# The body of a call that answered 200.
-api() {
-    local out
-    out=$(ghost_http "$@")
-    [[ ${out%% *} == 200 ]] || return 1
-    printf '%s' "${out#* }"
-}
-status_json() { api GET /v1/status; }
-availability() { status_json | jq -r '.availability'; }
-job_json() { api GET "/v1/jobs/$1"; }
-job_state() { job_json "$1" | jq -r '.state'; }
-new_key() { head -c 32 /dev/urandom | shasum -a 256 | cut -d' ' -f1; }
+# shellcheck source=supervisor-api.sh
+source "$ROOT/tests/e2e/supervisor-api.sh"
 # POST /v1/requests for Ghost `$1` with key `$2`; OUT is the status and body.
-request() {
-    run ghost_http POST /v1/requests "{\"component\":\"ghost\",\"toVersion\":\"$1\",\"idempotencyKey\":\"$2\"}"
-}
+request() { run request_update "$1" "$2"; }
 answered() { [[ ${OUT%% *} == "$1" ]] || fail "answered ${OUT%% *}, expected $1" "$OUT"; }
 body() { printf '%s' "${OUT#* }"; }
 # Waits for `what` to print `want`, for up to `seconds`.
@@ -150,6 +125,7 @@ mkdir -p "$S"
 run env GD_IMAGE="$MANAGER" "$ROOT/ghost-docker" --dir "$S" install --local --version "$FROM" \
     --with supervisor --no-prompt
 expect_status 0
+PROJECT=$(setting COMPOSE_PROJECT_NAME)
 [[ $(setting COMPOSE_PROFILES) == local,supervisor ]] || fail "the supervisor profile is not selected"
 # On, whatever the Ghost: one without the upgrade adapter type ignores it.
 grep -q '^adapters__upgrade__active=' "$S/ghost.env" || fail "install did not turn on HttpUpgradeAdapter"

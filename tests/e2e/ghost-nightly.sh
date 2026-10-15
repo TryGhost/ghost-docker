@@ -69,9 +69,8 @@ expect_status() { [[ $RC -eq $1 ]] || fail "exited $RC, expected $1" "$OUT"; }
 gd() { "$S/ghost-docker" --dir "$S" "$@"; }
 compose_in() { docker compose --project-directory "$S" -f "$S/compose.yml" "$@"; }
 setting() { gd config get "$1" 2>/dev/null; }
-status_json() { gd supervisor status --json 2>/dev/null; }
-availability() { status_json | jq -r '.availability'; }
-job_state() { gd supervisor job "$1" --json 2>/dev/null | jq -r '.state'; }
+# shellcheck source=supervisor-api.sh
+source "$ROOT/tests/e2e/supervisor-api.sh"
 wait_for() {
     local want=$1 seconds=$2 got=''
     shift 2
@@ -116,6 +115,7 @@ run env GD_IMAGE="$MANAGER" "$ROOT/ghost-docker" --dir "$S" install --local --gh
 expect_status 0
 grep -qE 'Channel +nightly' <<<"$OUT" ||
     fail "the summary does not say the site is on the nightly channel" "$OUT"
+PROJECT=$(setting COMPOSE_PROJECT_NAME)
 [[ $(setting GHOST_IMAGE) == ghost/nightly ]] || fail "GHOST_IMAGE is not ghost/nightly"
 [[ $(setting GHOST_IMAGE_REF) == ghost/nightly@sha256:* ]] || fail "the build is not pinned by digest"
 from_version=$(compose_in exec -T ghost printenv GHOST_VERSION)
@@ -123,14 +123,14 @@ ok "Ghost $from_version, $(setting GHOST_IMAGE_REF)"
 
 step "The supervisor offers the latest build one-click"
 wait_for ready 300 availability
-to=$(status_json | jq -r '.status.oneClick[] | select(.component == "ghost") | .toVersion')
+to=$(offered_ghost)
 [[ -n $to ]] || fail "no one-click nightly update is offered" "$(status_json)"
 ok "Ghost $to"
 
 step "A request made by hand moves the site to it"
-run gd supervisor request ghost "$to" --json
-expect_status 0
-id=$(jq -r '.accepted.id' <<<"$OUT")
+run request_update "$to"
+[[ ${OUT%% *} == 202 ]] || fail "the request was not accepted" "$OUT"
+id=$(jq -r '.id' <<<"${OUT#* }")
 wait_for "done" 900 job_state "$id"
 [[ $(compose_in exec -T ghost printenv GHOST_VERSION) == "$to" ]] || fail "Ghost is not $to"
 [[ $(setting GHOST_IMAGE_REF) == "ghost/nightly@$latest_digest" ]] ||

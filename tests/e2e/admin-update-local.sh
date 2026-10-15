@@ -149,6 +149,9 @@ S=$(CDPATH='' cd -- "$S" && pwd -P)
 GD_IMAGE="$MANAGER" "$ROOT/ghost-docker" --dir "$S" install --local --ghost-image "$REPOSITORY" \
     --version "$FROM-local" --with supervisor --no-prompt
 gd() { "$S/ghost-docker" --dir "$S" "$@"; }
+PROJECT=$(gd config get .env COMPOSE_PROJECT_NAME)
+# shellcheck source=supervisor-api.sh
+source "$ROOT/tests/e2e/supervisor-api.sh"
 compose_in() { docker compose --project-directory "$S" -f "$S/compose.yml" "$@"; }
 
 step "Ghost's update adapter, on"
@@ -161,12 +164,11 @@ ok "HttpUpgradeAdapter, on /run/ghost-upgrade/supervisor.sock"
 step "The supervisor offers Ghost $TO one-click"
 offered=""
 for ((tick = 0; tick < 300; tick += 5)); do
-    offered=$(gd supervisor status --json 2>/dev/null |
-        jq -r '.status.oneClick[]? | select(.component == "ghost") | .toVersion' || true)
+    offered=$(offered_ghost || true)
     [[ $offered == "$TO" ]] && break
     sleep 5
 done
-[[ $offered == "$TO" ]] || die "the supervisor does not offer Ghost $TO: $(gd supervisor status 2>&1)"
+[[ $offered == "$TO" ]] || die "the supervisor does not offer Ghost $TO: $(status_json || true)"
 ok "Ghost $FROM to $TO"
 
 url=$(gd config get .env URL)
@@ -187,10 +189,8 @@ To see an interrupted job, start another update and, while it runs:
 The job then reads "interrupted", and the site lock stays for you: follow the
 job's own steps (./ghost-docker check, then remove the lock) to clear it.
 
-From the host, as Ghost sees it:
+What the supervisor is doing:
 
-  $S/ghost-docker --dir $S supervisor status
-  $S/ghost-docker --dir $S supervisor job <id>
   docker compose --project-directory $S -f $S/compose.yml logs -f supervisor
 
 When you are done:
