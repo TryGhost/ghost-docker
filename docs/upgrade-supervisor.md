@@ -13,8 +13,8 @@ Both ends build from this document. The bodies are the
 `@tryghost/adapter-base-upgrade` schemas (`packages/adapters/upgrade-base/src/schemas.ts`
 in Ghost), as they are. What this document adds is the transport: the socket and
 who may reach it, the endpoints, their status codes, and the rules each end
-follows. Nothing in it is specific to Docker, so another host can serve the same
-API, over TCP with a bearer token.
+follows. Nothing in it is specific to Docker, so another host could serve the
+same API on a socket of its own.
 
 Any change to the API changes `protocol`, and this document, both ends and their
 fixtures change together. Before the first stable release of ghost-docker, this
@@ -288,13 +288,10 @@ request.
 ### Ghost: reaching the supervisor
 
 Ghost connects with Node's `http`, a connection per call (a kept-alive one
-outlives a supervisor restart and fails the next call). `timeoutMs`, 5000 by
-default, is a deadline for the whole exchange, and a response over 1 MiB is
-refused. Its options, under `adapters.upgrade.HttpUpgradeAdapter`, are exactly
-one of `socketPath` (an absolute path; ghost-docker's) or `url` (`http`/`https`,
-for another host). A `token`, sent as `Authorization: Bearer`, is allowed only
-with an `https` `url`; anything else is a configuration error at boot. It
-reports:
+outlives a supervisor restart and fails the next call). Each exchange has a
+fixed 5-second deadline, and a response over 1 MiB is refused. Its one option,
+under `adapters.upgrade.HttpUpgradeAdapter`, is `socketPath`: required, and an
+absolute path. It reports:
 
 - `{supported: false, reason: 'not-configured'}` when the adapter is not active;
 - `unavailable` when the supervisor cannot be reached (`ENOENT`,
