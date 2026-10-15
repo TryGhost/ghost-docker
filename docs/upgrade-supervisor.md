@@ -10,8 +10,11 @@ host's operator. This document is the contract between the two ends:
 - **`HttpUpgradeAdapter`**: Ghost core's `upgrade` adapter, the API's client.
 
 Both ends build from this document. The bodies are the
-`@tryghost/adapter-base-upgrade` schemas (`packages/adapters/upgrade-base/src/schemas.ts`
-in Ghost), as they are. What this document adds is the transport: the socket and
+`@tryghost/adapter-base-upgrade` schemas
+([`packages/adapters/upgrade-base/src/schemas.ts`](https://github.com/TryGhost/Ghost/blob/main/packages/adapters/upgrade-base/src/schemas.ts)
+in Ghost), as they are; the manager depends on that package at an exact
+version. Ghost's client is
+[`HttpUpgradeAdapter`](https://github.com/TryGhost/Ghost/blob/main/ghost/core/server/adapters/upgrade/HttpUpgradeAdapter.ts). What this document adds is the transport: the socket and
 who may reach it, the endpoints, their status codes, and the rules each end
 follows. Nothing in it is specific to Docker, so another host could serve the
 same API on a socket of its own.

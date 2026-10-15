@@ -1,7 +1,8 @@
 Examples of each body of [the upgrade supervisor protocol](../../../../docs/upgrade-supervisor.md),
 at protocol 1: `valid/` must parse and `invalid/` must be refused, by the
 supervisor's tests here and by Ghost's HttpUpgradeAdapter tests, which keep
-copies. A fixture changes only together with the protocol document.
+copies in [`ghost/test/utils/fixtures/upgrade-supervisor/`](https://github.com/TryGhost/Ghost/tree/main/ghost/test/utils/fixtures/upgrade-supervisor).
+A fixture changes only together with the protocol document, and in both places.
 
 The prefix names the body: `request` (POST /v1/requests), `status`
 (GET /v1/status), `job` (a job, as POST /v1/requests and GET /v1/jobs/<id>

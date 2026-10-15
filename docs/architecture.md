@@ -254,10 +254,10 @@ stage's side effects, and services to leave alone, so recovery stops the site
 without stopping the supervisor running it. Its private records in
 `.ghost-docker-supervisor/` are the only journal: a job found unfinished on
 start is marked interrupted, never resumed, and the site lock it held stays
-for the operator. The protocol's message schemas copy Ghost's
-`@tryghost/adapter-base-upgrade` until that package is published; the
-fixtures in `manager/test/fixtures/upgrade-supervisor/` are shared with
-Ghost's adapter tests.
+for the operator. The protocol's bodies are Ghost's own schemas, from
+`@tryghost/adapter-base-upgrade` at an exact alpha, since any alpha may change
+the contract. The fixtures in `manager/test/fixtures/upgrade-supervisor/` are
+copied into Ghost's adapter tests.
 
 ## Releases and compatibility
 

@@ -1,12 +1,20 @@
 // The upgrade supervisor's HTTP protocol, version 1: docs/upgrade-supervisor.md.
 //
-// The bodies are Ghost's own upgrade schemas (@tryghost/adapter-base-upgrade,
-// packages/adapters/upgrade-base/src/schemas.ts in Ghost), copied field for
-// field until that package is published and the manager can depend on it.
-// Keep the copy exact: a field that differs here is a body Ghost's adapter
-// refuses. The protocol adds only the transport: the socket, the paths and
-// the status codes.
+// The bodies are Ghost's own upgrade schemas, from @tryghost/adapter-base-upgrade,
+// the package Ghost's adapter is built on, so the two ends cannot describe a
+// body differently. The protocol adds only the transport: the socket, the
+// paths and the status codes.
 import { createHash, randomBytes } from 'node:crypto';
+import {
+    finalUpgradeStates,
+    manualUpdateSchema,
+    oneClickUpdateSchema,
+    upgradeDiagnosticsSchema,
+    upgradeErrorCodeSchema,
+    upgradeJobIdSchema,
+    upgradeVersionSchema,
+    type UpgradeState,
+} from '@tryghost/adapter-base-upgrade';
 import { z } from 'zod';
 
 export const PROTOCOL = 1;
@@ -21,125 +29,36 @@ export const BODY_MAX = 4 * 1024;
 /** How long Ghost, and the hand tooling, wait for an answer. */
 export const CLIENT_TIMEOUT_MS = 5_000;
 
-// --- Ghost's schemas, as they are --------------------------------------------
+// --- Ghost's schemas ------------------------------------------------------------
 
-export const upgradeVersionSchema = z.string().min(1).max(128);
-// An opaque token; this protocol uses the request's idempotency key.
-export const upgradeJobIdSchema = z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/);
-export const upgradeComponentSchema = z.string().regex(/^[a-z][a-z0-9-]{0,31}$/);
-
-const code = z
-    .string()
-    .min(1)
-    .max(128)
-    .regex(/^[A-Za-z0-9_.:-]+$/);
-const text = z.string().min(1).max(2048);
-const timestamp = z.iso.datetime();
-
-export const upgradeDiagnosticSchema = z.object({
-    source: code,
-    code,
-    severity: z.enum(['error', 'warning', 'info']),
-    message: text,
-    details: z.string().max(8192).optional(),
-    help: z.url({ protocol: /^https$/ }).optional(),
-});
-export const upgradeDiagnosticsSchema = z.array(upgradeDiagnosticSchema).max(200);
-
-export const oneClickUpdateSchema = z.object({
-    component: upgradeComponentSchema,
-    fromVersion: upgradeVersionSchema,
-    toVersion: upgradeVersionSchema,
-});
-
-export const manualUpdateSchema = oneClickUpdateSchema.extend({
-    reason: text,
-    steps: z.array(text).max(20),
-});
-
-export const createUpgradeRequestSchema = z
-    .object({
-        component: upgradeComponentSchema,
-        toVersion: upgradeVersionSchema,
-        idempotencyKey: z.hash('sha256'),
-    })
-    .strict();
-
-export const activeUpgradeStates = [
-    'pending',
-    'backing-up',
-    'pulling',
-    'restarting',
-    'verifying',
-    'restoring',
-] as const;
-export const finalUpgradeStates = [
-    'done',
-    'restored',
-    'needs-operator',
-    'refused',
-    'interrupted',
-] as const;
-
-export const upgradeJobSchema = z.object({
-    id: upgradeJobIdSchema,
-    state: z.enum([...activeUpgradeStates, ...finalUpgradeStates]),
-    component: upgradeComponentSchema,
-    fromVersion: upgradeVersionSchema.optional(),
-    toVersion: upgradeVersionSchema,
-    createdAt: timestamp,
-    updatedAt: timestamp,
-    diagnostics: upgradeDiagnosticsSchema.optional(),
-});
-
-export const upgradeStatusSchema = z.discriminatedUnion('supported', [
-    z.object({
-        supported: z.literal(false),
-        reason: z.enum(['not-configured', 'not-supported']),
-    }),
-    z
-        .object({
-            supported: z.literal(true),
-            availability: z.enum(['ready', 'busy', 'unavailable', 'stale', 'incompatible']),
-            backupRequired: z.boolean().optional(),
-            currentVersion: upgradeVersionSchema.optional(),
-            oneClick: z.array(oneClickUpdateSchema).max(50).default([]),
-            manual: z.array(manualUpdateSchema).max(50).default([]),
-            activeJobId: upgradeJobIdSchema.nullable().optional(),
-            pollAfterMs: z.int().min(1000).max(60000).optional(),
-            diagnostics: upgradeDiagnosticsSchema.optional(),
-        })
-        .refine(
-            (status) => status.availability !== 'ready' || status.backupRequired !== undefined,
-            {
-                message: 'A ready host must report its backup policy.',
-                path: ['backupRequired'],
-            },
-        ),
-]);
-
-export const upgradeJobResultSchema = z.union([
+// Pinned to an exact alpha: any alpha may change the contract.
+export {
+    activeUpgradeStates,
+    createUpgradeRequestSchema,
+    finalUpgradeStates,
+    manualUpdateSchema,
+    oneClickUpdateSchema,
+    upgradeComponentSchema,
+    upgradeDiagnosticSchema,
+    upgradeDiagnosticsSchema,
+    upgradeErrorCodeSchema,
+    upgradeJobIdSchema,
+    upgradeJobResultSchema,
     upgradeJobSchema,
-    z.object({ id: upgradeJobIdSchema, state: z.enum(['unknown', 'expired']) }),
-]);
+    upgradeStatusSchema,
+    upgradeVersionSchema,
+} from '@tryghost/adapter-base-upgrade';
+export type {
+    ManualUpdate,
+    OneClickUpdate,
+    UpgradeDiagnostic,
+    UpgradeJob,
+    UpgradeJobResult,
+    UpgradeState,
+} from '@tryghost/adapter-base-upgrade';
+export type { CreateUpgradeRequest as UpgradeRequest } from '@tryghost/adapter-base-upgrade';
 
-export const upgradeErrorCodeSchema = z.enum([
-    'unsupported',
-    'unavailable',
-    'busy',
-    'target-unapproved',
-    'idempotency-conflict',
-    'request-expired',
-]);
-
-export type UpgradeDiagnostic = z.infer<typeof upgradeDiagnosticSchema>;
-export type OneClickUpdate = z.infer<typeof oneClickUpdateSchema>;
-export type ManualUpdate = z.infer<typeof manualUpdateSchema>;
-export type UpgradeRequest = z.infer<typeof createUpgradeRequestSchema>;
-export type UpgradeJob = z.infer<typeof upgradeJobSchema>;
-export type UpgradeState = UpgradeJob['state'];
 export type FinalState = (typeof finalUpgradeStates)[number];
-export type UpgradeJobResult = z.infer<typeof upgradeJobResultSchema>;
 
 export const isFinal = (state: UpgradeState): state is FinalState =>
     (finalUpgradeStates as readonly string[]).includes(state);

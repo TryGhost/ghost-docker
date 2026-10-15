@@ -1,0 +1,2 @@
+minimumReleaseAgeExclude:
+  - '@tryghost/adapter-base-upgrade@0.1.0-alpha.1'
