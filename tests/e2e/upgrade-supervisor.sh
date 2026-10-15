@@ -72,9 +72,37 @@ compose_in() { docker compose --project-directory "$S" -f "$S/compose.yml" "$@";
 setting() { gd config get "$1" 2>/dev/null; }
 # As Ghost runs: its own user, in its own container.
 as_ghost() { compose_in exec -T --user ghost ghost sh -c "$1"; }
-status_json() { gd supervisor status --json 2>/dev/null; }
+# A call to the supervisor's API as Ghost makes one: Ghost's uid, the volume
+# mounted read-only as Ghost mounts it. In a container of its own, because
+# Ghost's is stopped for parts of an update. Prints the status, then the body.
+ghost_http() {
+    docker run --rm --user 1000:1000 --network none \
+        -v "$(setting COMPOSE_PROJECT_NAME)_upgrade:/run/ghost-upgrade:ro" --entrypoint node "$MANAGER" -e '
+const [method, path, body] = process.argv.slice(1);
+const r = require("http").request({socketPath: "/run/ghost-upgrade/supervisor.sock", method, path, agent: false},
+  res => { let b = ""; res.on("data", d => b += d); res.on("end", () => console.log(res.statusCode + " " + b)); });
+r.on("error", e => console.log("error " + e.code));
+r.end(body || undefined);
+' "$1" "$2" "${3:-}"
+}
+# The body of a call that answered 200.
+api() {
+    local out
+    out=$(ghost_http "$@")
+    [[ ${out%% *} == 200 ]] || return 1
+    printf '%s' "${out#* }"
+}
+status_json() { api GET /v1/status; }
 availability() { status_json | jq -r '.availability'; }
-job_state() { gd supervisor job "$1" --json 2>/dev/null | jq -r '.state'; }
+job_json() { api GET "/v1/jobs/$1"; }
+job_state() { job_json "$1" | jq -r '.state'; }
+new_key() { head -c 32 /dev/urandom | shasum -a 256 | cut -d' ' -f1; }
+# POST /v1/requests for Ghost `$1` with key `$2`; OUT is the status and body.
+request() {
+    run ghost_http POST /v1/requests "{\"component\":\"ghost\",\"toVersion\":\"$1\",\"idempotencyKey\":\"$2\"}"
+}
+answered() { [[ ${OUT%% *} == "$1" ]] || fail "answered ${OUT%% *}, expected $1" "$OUT"; }
+body() { printf '%s' "${OUT#* }"; }
 # Waits for `what` to print `want`, for up to `seconds`.
 wait_for() {
     local want=$1 seconds=$2 got=''
@@ -125,9 +153,9 @@ expect_status 0
 [[ $(setting COMPOSE_PROFILES) == local,supervisor ]] || fail "the supervisor profile is not selected"
 grep -q adapters__upgrade "$S/ghost.env" && fail "the adapter was enabled on a Ghost that does not ship it"
 wait_for ready 300 availability
-to=$(status_json | jq -r '.status.oneClick[] | select(.component == "ghost") | .toVersion')
+to=$(status_json | jq -r '.oneClick[] | select(.component == "ghost") | .toVersion')
 [[ -n $to && $to != "$FROM" ]] || fail "no one-click Ghost update is offered" "$(status_json)"
-[[ $(status_json | jq -r '.status.backupRequired') == true ]] || fail "the status does not promise a backup"
+[[ $(status_json | jq -r '.backupRequired') == true ]] || fail "the status does not promise a backup"
 ok "ready, offering Ghost $to one-click"
 
 step "As Ghost's uid, the socket: reached through a read-only mount, never replaced"
@@ -153,31 +181,31 @@ ok "400 malformed, and nothing taken"
 step "A request while the CLI holds the lock is refused"
 printf '{"operation":"backup","startedAt":"2026-10-14T00:00:00Z"}\n' >"$S/.ghost-docker.lock"
 wait_for busy 30 availability
-run gd supervisor request ghost "$to" --json
-expect_status 1
-jq -e '.rejected == "busy"' <<<"$OUT" >/dev/null || fail "not refused as busy" "$OUT"
+request "$to" "$(new_key)"
+answered 409
+body | jq -e '.error.code == "busy"' >/dev/null || fail "not refused as busy" "$OUT"
 rm "$S/.ghost-docker.lock"
 wait_for ready 30 availability
 ok "busy while locked; ready again once the lock is gone"
 
 step "A supervisor killed mid-job reports it interrupted, with the lock left for the operator"
-run gd supervisor request ghost "$to" --json
-expect_status 0
-id=$(jq -r '.accepted.id' <<<"$OUT")
+request "$to" "$(new_key)"
+answered 202
+id=$(body | jq -r '.id')
 wait_for_any '^(backing-up|restarting|verifying)$' 300 job_state "$id" >/dev/null
 docker kill "$(compose_in ps -q supervisor)" >/dev/null
 compose_in --profile supervisor up --detach --wait supervisor >/dev/null 2>&1 || fail "the supervisor did not start again"
 wait_for interrupted 60 job_state "$id"
 [[ -e $S/.ghost-docker.lock ]] || fail "the interrupted job's lock was removed"
 [[ $(availability) == unavailable ]] || fail "the supervisor is not unavailable over an interrupted job"
-gd supervisor job "$id" --json | jq -e '.diagnostics[0].details | test("rm .ghost-docker.lock")' >/dev/null ||
-    fail "the interrupted job does not say what to do" "$(gd supervisor job "$id")"
+job_json "$id" | jq -e '.diagnostics[0].details | test("rm .ghost-docker.lock")' >/dev/null ||
+    fail "the interrupted job does not say what to do" "$(job_json "$id")"
 ok "job $id interrupted; the lock stays; unavailable"
 
 step "The operator follows the steps"
-gd supervisor job "$id"
+job_json "$id" | jq -r '.diagnostics[0].details'
 rm "$S/.ghost-docker.lock"
-state=$(gd supervisor job "$id" --json | jq -r '.diagnostics[0].details')
+state=$(job_json "$id" | jq -r '.diagnostics[0].details')
 if grep -q 'restore --yes' <<<"$state"; then
     backup=$(sed -n 's/.*restore --yes \(backups\/[^ ]*\).*/\1/p' <<<"$state" | head -1)
     run gd restore --yes "$backup"
@@ -192,19 +220,22 @@ wait_for ready 60 availability
 ok "checked, and ready again"
 
 step "A request made by hand runs to done"
-version_now=$(status_json | jq -r '.status.currentVersion')
-to=$(status_json | jq -r '.status.oneClick[] | select(.component == "ghost") | .toVersion')
+version_now=$(status_json | jq -r '.currentVersion')
+to=$(status_json | jq -r '.oneClick[] | select(.component == "ghost") | .toVersion')
 [[ -n $to ]] || fail "no update offered after recovery (Ghost $version_now)" "$(status_json)"
-run gd supervisor request ghost "$to" --json
-expect_status 0
-id=$(jq -r '.accepted.id' <<<"$OUT")
-# The same request again is the same job.
-run gd supervisor request ghost "$to" --json
+key=$(new_key)
+request "$to" "$key"
+answered 202
+id=$(body | jq -r '.id')
+# The same request again is the same job, answered 200.
+request "$to" "$key"
+answered 200
+[[ $(body | jq -r '.id') == "$id" ]] || fail "a replay named another job" "$OUT"
 wait_for "done" 900 job_state "$id"
 [[ $(compose_in exec -T ghost printenv GHOST_VERSION) == "$to" ]] || fail "Ghost is not $to"
 [[ ! -e $S/.ghost-docker.lock && ! -e $S/.ghost-docker-update ]] || fail "the job left its lock or snapshot"
-gd supervisor job "$id" --json | jq -e '.diagnostics[0].message | test("backed up to backups/")' >/dev/null ||
-    fail "the job does not name its backup" "$(gd supervisor job "$id")"
+job_json "$id" | jq -e '.diagnostics[0].message | test("backed up to backups/")' >/dev/null ||
+    fail "the job does not name its backup" "$(job_json "$id")"
 [[ $(compose_in ps --format '{{.State}}' supervisor) == running ]] || fail "the job stopped the supervisor"
 run gd check
 expect_status 0

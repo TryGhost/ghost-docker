@@ -2,10 +2,8 @@
 // describes it: the API over the socket, and what Ghost reports when it
 // cannot be reached or does not speak protocol 1.
 //
-// HttpUpgradeAdapter in Ghost core is the real client. This one is for
-// requests made by hand (`supervisor request`), run as Ghost's uid with the
-// volume mounted as Ghost mounts it, so the hand tooling exercises Ghost's
-// access rather than the operator's; and it drives the supervisor's tests.
+// HttpUpgradeAdapter in Ghost core is the real client. This one is the
+// supervisor's health check (healthcheck.ts), and drives its tests.
 import { request as httpRequest } from 'node:http';
 import type { z } from 'zod';
 import {

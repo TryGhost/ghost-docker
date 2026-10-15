@@ -59,8 +59,7 @@ image and the deploy succeeds. It needs a Tinybird login, so it is run by hand.
 Repo: ghost-docker. The protocol is [upgrade-supervisor.md](upgrade-supervisor.md), the
 contract `HttpUpgradeAdapter` in Ghost core (S9) is built against. Implement the
 supervisor as a long-running command of the manager image, running updates through
-`src/update.ts` as `update` does; wire `--with supervisor`, the socket's volume, and
-the request/status tooling the protocol describes.
+`src/update.ts` as `update` does, and wire `--with supervisor` and the socket's volume.
 
 Acceptance: handwritten requests work before Ghost gains an adapter; duplicate and
 malformed requests, permission violations, and an unreachable supervisor behave correctly; a request

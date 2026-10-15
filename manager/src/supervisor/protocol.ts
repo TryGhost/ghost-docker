@@ -123,6 +123,6 @@ export const SOURCE = 'ghost-docker';
  */
 export const jobIdOf = (idempotencyKey: string): string => idempotencyKey;
 
-/** A key as Ghost makes one: a sha256 in lowercase hex. Used for requests made by hand. */
+/** A key as Ghost makes one: a sha256 in lowercase hex. */
 export const randomIdempotencyKey = (): string =>
     createHash('sha256').update(randomBytes(32)).digest('hex');

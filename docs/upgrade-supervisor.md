@@ -411,8 +411,8 @@ That is the whole retention rule.
 Install enables `HttpUpgradeAdapter` in `ghost.env` only when the site's
 Ghost is at least the first release that ships it. That release is recorded in
 `manager/src/ghost.ts` once Ghost releases it. Below that version, install leaves
-the adapter off and says so. The supervisor still runs, and requests can be made
-by hand. Ghost's settings, for when Ghost reaches that release:
+the adapter off and says so: the supervisor runs, but nothing asks it for
+updates. Ghost's settings, for when Ghost reaches that release:
 
 ```
 adapters__upgrade__active=HttpUpgradeAdapter
@@ -423,19 +423,13 @@ adapters__upgrade__HttpUpgradeAdapter__socketPath=/run/ghost-upgrade/supervisor.
 supervisor runs the same manager as the launcher. It refuses while a job holds
 the lock.
 
-## Requests by hand
+## Clients
 
-These work before Ghost has an adapter. They call the API through a short-lived
-container that runs as Ghost's uid and mounts the volume as Ghost does, so they
-exercise Ghost's access, not the operator's:
-
-```bash
-./ghost-docker supervisor status
-./ghost-docker supervisor request ghost 6.72.0
-./ghost-docker supervisor job <id>
-```
-
-`request` sends a random idempotency key and prints the job ID.
+Ghost is the API's only client; ghost-docker has no command that calls it. The
+end-to-end test (`tests/e2e/upgrade-supervisor.sh`) makes requests by hand, as
+Ghost's uid with the volume mounted as Ghost mounts it. The supervisor's health
+check calls `GET /v1` and `GET /v1/status` as Ghost's adapter would. To see what
+it is doing: `docker compose logs supervisor`.
 
 ## Fixtures
 

@@ -11,13 +11,7 @@ import { doctorCommand } from './commands/doctor.ts';
 import { installCommand } from './commands/install.ts';
 import { checkCommand, infoCommand, listCommand } from './commands/site.ts';
 import { selfUpdateCommand } from './commands/self-update.ts';
-import {
-    supervisorClientCommand,
-    supervisorJobCommand,
-    supervisorRequestCommand,
-    supervisorRunCommand,
-    supervisorStatusCommand,
-} from './commands/supervisor.ts';
+import { supervisorRunCommand } from './commands/supervisor.ts';
 import { updateCommand } from './commands/update.ts';
 import { versionCommand } from './commands/version.ts';
 import { CliError, EXIT, UsageError } from './errors.ts';
@@ -34,11 +28,7 @@ const COMMANDS: Record<string, Command> = {
     list: listCommand,
     'self-update': selfUpdateCommand,
     update: updateCommand,
-    'supervisor status': supervisorStatusCommand,
-    'supervisor request': supervisorRequestCommand,
-    'supervisor job': supervisorJobCommand,
     'supervisor run': supervisorRunCommand,
-    'supervisor client': supervisorClientCommand,
     backup: backupCommand,
     restore: restoreCommand,
     version: versionCommand,

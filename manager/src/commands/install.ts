@@ -861,7 +861,7 @@ function printSummary(site: Site, importing: Importing | null) {
                 ? [
                       hasUpgradeAdapter(ghost.version)
                           ? '  Supervisor   running; Ghost Admin offers updates within SUPERVISOR_UPDATES in .env'
-                          : `  Supervisor   running, but Ghost ${ghost.version} cannot use it yet: ask for updates with ./ghost-docker supervisor request`,
+                          : `  Supervisor   running, but Ghost ${ghost.version} cannot use it yet: nothing asks the supervisor for updates until a Ghost release does`,
                   ]
                 : []),
             '',

@@ -129,7 +129,7 @@ asked for in Ghost Admin, within the policy you set in `.env`
 is `update` with a checked backup first, and majors and stack updates always
 stay on the host. It holds the Docker socket and runs as you. Ghost's side,
 `HttpUpgradeAdapter`, is enabled in `ghost.env` only for a Ghost release
-that ships it; before that, make requests by hand (see [update](#update)). It is
+that ships it; until then the supervisor runs, but nothing asks it for updates. It is
 refused under rootless Docker and user-namespace remapping. The protocol,
 ownership and recovery rules are in [upgrade-supervisor.md](upgrade-supervisor.md).
 
@@ -804,13 +804,7 @@ usage error.
 A site installed `--with supervisor` runs these updates on Ghost Admin's
 request, one at a time, refusing anything outside `SUPERVISOR_UPDATES`. Each
 job reports the same outcomes, and needs the same recovery, as `update` above.
-To see and drive it from the host, as Ghost does:
-
-```bash
-./ghost-docker supervisor status
-./ghost-docker supervisor request ghost 6.72.0
-./ghost-docker supervisor job <id>
-```
+Ghost Admin shows what the supervisor offers and each job's progress.
 
 A request while a job runs, or while another command holds the lock, is
 refused rather than queued. If the supervisor, Docker or the host stops during
