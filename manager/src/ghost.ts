@@ -88,10 +88,32 @@ export async function resolveGhost(
     image = DEFAULT_IMAGE,
 ): Promise<ResolvedGhost> {
     const tag = ghostTag(requested);
-    const wanted = `${image}:${tag}`;
+    return pullAndDescribe(io, image, tag, tag);
+}
+
+/**
+ * Exactly `image@digest`, recorded under `tag`, the tag it was found by: what
+ * the supervisor discovered, so a job runs that image and not whatever the
+ * tag points to by then.
+ */
+export const resolvePinned = (
+    io: Io,
+    image: string,
+    tag: string,
+    digest: string,
+): Promise<ResolvedGhost> => pullAndDescribe(io, image, digest, tag);
+
+/** `image` pulled at `ref` (a tag or a digest), and what it is. */
+async function pullAndDescribe(
+    io: Io,
+    image: string,
+    ref: string,
+    tag: string,
+): Promise<ResolvedGhost> {
+    const wanted = ref.startsWith('sha256:') ? `${image}@${ref}` : `${image}:${ref}`;
 
     try {
-        await pullImage(io.docker, image, tag);
+        await pullImage(io.docker, image, ref);
     } catch (error) {
         throw new CliError(
             `${wanted} could not be pulled: ${describeDaemonError(error)}.\n` +
@@ -101,7 +123,9 @@ export async function resolveGhost(
     const pulled = await inspectImage(io.docker, wanted);
     // The pin is the digest of what was just pulled, read from the image
     // itself rather than inferred from another tag.
-    const reference = pulled?.repoDigests.find((entry) => entry.startsWith(`${image}@`));
+    const reference = pulled?.repoDigests.find((entry) =>
+        ref.startsWith('sha256:') ? entry === wanted : entry.startsWith(`${image}@`),
+    );
     if (pulled === null || reference === undefined) {
         throw new CliError(`${wanted} has no repository digest; refusing an unpinned install`);
     }

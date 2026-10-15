@@ -49,6 +49,23 @@ export const stageSchema = z.enum([
 ]);
 export type Stage = z.infer<typeof stageSchema>;
 
+/** The exact image an offered update runs: what discovery pulled, by digest. */
+export const targetSchema = z
+    .object({
+        image: z.string().min(1),
+        /** The tag it was found by, recorded as the site's GHOST_VERSION. */
+        tag: z.string().min(1),
+        digest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+    })
+    .strict();
+export type Target = z.infer<typeof targetSchema>;
+
+/** A one-click entry, and the image it runs. */
+const pinSchema = z
+    .object({ component: z.string(), toVersion: z.string(), target: targetSchema })
+    .strict();
+export type Pin = z.infer<typeof pinSchema>;
+
 const recordSchema = z
     .object({
         job: upgradeJobSchema,
@@ -58,6 +75,8 @@ const recordSchema = z
         backup: z.string().nullable(),
         /** Whether the job took the site lock. */
         lock: z.boolean(),
+        /** The image the job runs, pinned when it was accepted. */
+        target: targetSchema.nullable(),
     })
     .strict();
 export type JobRecord = z.infer<typeof recordSchema>;
@@ -68,6 +87,8 @@ const discoverySchema = z
         currentVersion: upgradeVersionSchema.optional(),
         oneClick: z.array(oneClickUpdateSchema),
         manual: z.array(manualUpdateSchema),
+        /** The image behind each one-click entry: what a job may run, and nothing else. */
+        pins: z.array(pinSchema),
         /** When each component last checked successfully. */
         succeededAt: z.record(z.string(), z.iso.datetime()),
         diagnostics: z.array(upgradeDiagnosticSchema),

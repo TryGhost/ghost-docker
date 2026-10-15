@@ -236,7 +236,12 @@ export class Supervisor {
             (entry) =>
                 entry.component === request.component && entry.toVersion === request.toVersion,
         );
-        if (!offered) {
+        // The image discovery found for it: the job runs that, and nothing else.
+        const pin = (this.discovery?.pins ?? []).find(
+            (entry) =>
+                entry.component === request.component && entry.toVersion === request.toVersion,
+        );
+        if (!offered || pin === undefined) {
             return failure(
                 'target-unapproved',
                 `${request.component} ${request.toVersion} is not an update this host offers from Admin.`,
@@ -266,6 +271,7 @@ export class Supervisor {
             stage: null,
             backup: null,
             lock: true,
+            target: pin.target,
         };
         try {
             this.records.create(record);

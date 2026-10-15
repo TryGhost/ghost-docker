@@ -20,6 +20,7 @@ import { Supervisor, type Executor, type JobOutcome } from '../src/supervisor/su
 
 const FROM = '6.68.0';
 const TO = '6.72.0';
+const TARGET = { image: 'ghost', tag: '6-next-alpine', digest: `sha256:${'7'.repeat(64)}` };
 
 let root: string;
 let dir: string;
@@ -41,6 +42,7 @@ const discover: Discoverer = async ({ now }) => ({
     currentVersion: FROM,
     oneClick: [{ component: 'ghost', fromVersion: FROM, toVersion: TO }],
     manual: [],
+    pins: [{ component: 'ghost', toVersion: TO, target: TARGET }],
     succeededAt: { ghost: now.toISOString() },
     diagnostics: [],
 });
@@ -225,6 +227,13 @@ describe('a request made by hand', () => {
         assert.ok('accepted' in after && after.accepted.state === 'done');
     });
 
+    test('an accepted job records the exact image discovery found for it', async () => {
+        const running = await serve();
+        const job = await accepted();
+        await running.job;
+        assert.deepEqual(new Records(dir).read(job.id)?.target, TARGET);
+    });
+
     test('a key reused for another update is an idempotency conflict', async () => {
         const running = await serve();
         const key = randomIdempotencyKey();
@@ -240,6 +249,24 @@ describe('refusals', () => {
         assert.equal(await rejected('6.71.0'), 'target-unapproved');
         assert.equal(await rejected('7.0.0; rm -rf /'), 'target-unapproved');
         assert.equal(readLock(dir).state, 'free');
+    });
+
+    test('an update offered without the image discovery found is refused', async () => {
+        const supervisor = new Supervisor({
+            io,
+            dir,
+            records: new Records(dir),
+            execute: (context) => execute(context),
+            discover: async (input) => ({ ...(await discover(input)), pins: [] }),
+            metadata,
+            policy: () => policy,
+        });
+        supervisor.start();
+        const server = supervisorServer(supervisor, io.stderr);
+        servers.push(server);
+        await listen(server, socket);
+        await supervisor.rediscover();
+        assert.equal(await rejected(), 'target-unapproved');
     });
 
     test('a request while a job is active is refused as busy', async () => {

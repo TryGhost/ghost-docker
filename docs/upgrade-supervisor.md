@@ -113,11 +113,13 @@ A request's `component` must be `ghost`, and `{component, toVersion}` must be in
 the `oneClick` list the supervisor offers at that moment. Otherwise it is
 rejected as `target-unapproved`.
 
-The job then pulls exactly `<toVersion>-<variant>`. If that image reports any
-other `GHOST_VERSION`, the job is refused. The supervisor pins and runs the
-digest of what it pulled. Request text never reaches a shell or an image
-reference: the only value taken from a request is a version that is already
-known.
+Discovery records the exact image behind each one-click entry: its repository,
+the tag it was found by, and its digest. Accepting a request copies that image
+into the job's record, and the job pulls that digest and nothing else, so a tag
+that has moved since discovery changes nothing. If the image reports any other
+`GHOST_VERSION`, the job is refused. Request text never reaches a shell or an
+image reference: the only value taken from a request is a version that is
+already known.
 
 ## The socket
 
@@ -347,7 +349,7 @@ Before each step, the job is written in its new state:
 
 | State | Before |
 | --- | --- |
-| `pulling` | Pulling exactly `<toVersion>-<variant>`, and checking its version |
+| `pulling` | Pulling the digest discovery found, and checking its version |
 | `backing-up` | The snapshot, the writer pause and the checked backup. The backup's path is recorded as soon as the backup exists. |
 | `restarting` | Starting the services, after the new pin is written |
 | `verifying` | Verification |

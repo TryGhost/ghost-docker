@@ -6,7 +6,7 @@ import { relative } from 'node:path';
 import { refuseDrift } from '../backup.ts';
 import { direction, ghostUpdatePlan, reference, type GhostUpdate } from '../commands/update.ts';
 import { describeError } from '../errors.ts';
-import { resolveGhost, variantOf } from '../ghost.ts';
+import { resolvePinned } from '../ghost.ts';
 import type { Io } from '../io.ts';
 import { requireMetadata } from '../meta.ts';
 import { resolveSite } from '../resolved.ts';
@@ -42,10 +42,15 @@ export const ghostJob =
             );
         }
 
+        const { target } = record;
+        if (target === null) {
+            return refused('target-unapproved', `No image was pinned for Ghost ${toVersion}.`);
+        }
         stage('pulling');
         let to;
         try {
-            to = await resolveGhost(io, `${toVersion}-${variantOf(from.tag)}`, from.image);
+            // Exactly what discovery found, by digest: never what a tag points to now.
+            to = await resolvePinned(io, target.image, target.tag, target.digest);
         } catch (error) {
             return refused(
                 'pull-failed',
@@ -55,7 +60,7 @@ export const ghostJob =
         if (to.version !== toVersion) {
             return refused(
                 'target-mismatch',
-                `${to.image}:${to.tag} is Ghost ${to.version}, not ${toVersion}.`,
+                `${to.reference} is Ghost ${to.version}, not ${toVersion}.`,
             );
         }
         try {

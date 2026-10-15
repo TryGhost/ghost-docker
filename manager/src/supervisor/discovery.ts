@@ -13,7 +13,7 @@ import type { Metadata } from '../meta.ts';
 import { compareReleases, isRelease } from '../release.ts';
 import { diagnostic } from './diagnostics.ts';
 import type { ManualUpdate, OneClickUpdate, UpgradeDiagnostic } from './protocol.ts';
-import type { Discovery } from './store.ts';
+import type { Discovery, Pin } from './store.ts';
 
 /** How often discovery runs while nothing asks for it. */
 export const DISCOVERY_EVERY_MS = 6 * 60 * 60_000;
@@ -33,9 +33,10 @@ export const parsePolicy = (value: string | undefined): Policy | null =>
 interface Found {
     readonly oneClick: OneClickUpdate[];
     readonly manual: ManualUpdate[];
+    readonly pins: Pin[];
 }
 
-const NOTHING: Found = { oneClick: [], manual: [] };
+const NOTHING: Found = { oneClick: [], manual: [], pins: [] };
 
 const OPERATOR_GUIDE = 'https://github.com/TryGhost/ghost-docker/blob/next-docker/docs/install.md';
 
@@ -47,7 +48,7 @@ async function ghostUpdates(io: Io, metadata: Metadata, policy: Policy): Promise
     }
     const variant = variantOf(from.tag);
     const current = major(from.version);
-    const found: Found = { oneClick: [], manual: [] };
+    const found: Found = { oneClick: [], manual: [], pins: [] };
 
     const latest = await resolveGhost(io, `${current}-${variant}`, from.image);
     if (
@@ -64,6 +65,11 @@ async function ghostUpdates(io: Io, metadata: Metadata, policy: Policy): Promise
             });
         } else {
             found.oneClick.push(entry);
+            found.pins.push({
+                component: 'ghost',
+                toVersion: latest.version,
+                target: { image: latest.image, tag: latest.tag, digest: latest.digest },
+            });
         }
     }
 
@@ -125,6 +131,7 @@ async function stackUpdates(io: Io, metadata: Metadata): Promise<Found> {
     }
     return {
         oneClick: [],
+        pins: [],
         manual: [
             {
                 component: 'stack',
@@ -158,6 +165,7 @@ export const discover: Discoverer = async (input) => {
     const checkedAt = now.toISOString();
     const oneClick: OneClickUpdate[] = [];
     const manual: ManualUpdate[] = [];
+    const pins: Pin[] = [];
     const diagnostics: UpgradeDiagnostic[] = [];
     const succeededAt: Record<string, string> = {};
     for (const [component, check] of Object.entries(CHECKS)) {
@@ -165,6 +173,7 @@ export const discover: Discoverer = async (input) => {
             const found = await check(input);
             oneClick.push(...found.oneClick);
             manual.push(...found.manual);
+            pins.push(...found.pins);
             succeededAt[component] = checkedAt;
         } catch (error) {
             const last = previous?.succeededAt[component];
@@ -185,6 +194,7 @@ export const discover: Discoverer = async (input) => {
                 oneClick.push(
                     ...previous.oneClick.filter((entry) => entry.component === component),
                 );
+                pins.push(...previous.pins.filter((pin) => pin.component === component));
             }
             manual.push(...previous.manual.filter((entry) => entry.component === component));
         }
@@ -194,6 +204,7 @@ export const discover: Discoverer = async (input) => {
         currentVersion: input.metadata.ghost.version,
         oneClick,
         manual,
+        pins,
         succeededAt,
         diagnostics,
     };
