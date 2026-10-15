@@ -29,6 +29,9 @@ const options = z.object({
     check: flag(
         'Say whether there is a newer Ghost and which; change nothing. The image is pulled to find out.',
     ),
+    noBackup: flag(
+        'Take no backup before the update. Going back to the earlier Ghost then needs a backup of your own.',
+    ),
 });
 
 /** The Ghost a site runs, as its metadata records it. */
@@ -158,7 +161,7 @@ export const updateCommand = defineCommand({
 
         const lock = acquireLock(dir, `update Ghost to ${to.version}`);
         try {
-            return await apply(update);
+            return await apply(update, !flags.noBackup);
         } finally {
             lock.release();
         }
@@ -180,7 +183,7 @@ function report({ io, from, to }: GhostUpdate, decided: Direction): number {
     return EXIT.ok;
 }
 
-async function apply(update: GhostUpdate): Promise<number> {
+async function apply(update: GhostUpdate, backup: boolean): Promise<number> {
     const { io, site, metadata, from, to } = update;
     const dir = site.dir;
     io.stdout(`Updating Ghost from ${from.version} to ${to.version}\n`);
@@ -196,6 +199,7 @@ async function apply(update: GhostUpdate): Promise<number> {
         kept: 'the configuration and the metadata, which name the Ghost the site runs',
         failing: `The update to Ghost ${to.version} did not complete.`,
         afterStartup: 'keep',
+        backup,
         async write() {
             heading(io, 'Pinning the new Ghost');
             // Together, and before startup: they describe the same image.
@@ -249,9 +253,17 @@ async function apply(update: GhostUpdate): Promise<number> {
             '',
             `  Ghost        ${to.version}, ${to.reference}`,
             `  Previously   ${from.version}, ${reference(from)}`,
-            `  Backup       ${relative(dir, outcome.backup)}, of the site before the update; kept until you remove it`,
-            '',
-            `Going back to Ghost ${from.version} means restoring that backup, which discards anything written since.`,
+            ...(outcome.backup === null
+                ? [
+                      '  Backup       none, as --no-backup asked',
+                      '',
+                      `Ghost ${from.version} does not undo ${to.version}'s migrations: going back to it needs a backup of your own.`,
+                  ]
+                : [
+                      `  Backup       ${relative(dir, outcome.backup)}, of the site before the update; kept until you remove it`,
+                      '',
+                      `Going back to Ghost ${from.version} means restoring that backup, which discards anything written since.`,
+                  ]),
             '',
         ].join('\n'),
     );
@@ -292,7 +304,7 @@ function failed(
             ...(servicesChanged
                 ? [
                       `Ghost ${to.version} started before the update failed, so it may have migrated the database and`,
-                      'accepted writes since the backup. Nothing was loaded over them: the data is as the update left it.',
+                      `accepted writes${backup === null ? '' : ' since the backup'}. Nothing was loaded over them: the data is as the update left it.`,
                       `The configuration still names Ghost ${to.version}: switching back to ${from.version} would not undo`,
                       'its migrations.',
                   ]
