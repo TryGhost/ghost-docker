@@ -1,7 +1,7 @@
 // install, against a scripted daemon and Compose. What a real installation
 // does on a real host is tests/e2e/install.sh; this is what it decides.
 import assert from 'node:assert/strict';
-import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { afterEach, beforeEach, describe, test } from 'node:test';
 import { choosePort, secret } from '../src/commands/install.ts';
@@ -60,6 +60,7 @@ describe('refusals that change nothing', () => {
             [['--domain', 'example.com', '--admin-domain', 'example.com'], /must differ/],
             [['--local', '--with', 'redis'], /unknown optional service: redis/],
             [['--domain', 'example.com', '--with', 'mailpit'], /mailpit is for local sites only/],
+            [['--local', '--with', 'activitypub'], /activitypub is for production sites only/],
             [['--local', '--with', 'production'], /--with selects optional services/],
             [['--local', '--port', '70000'], /port number/],
             [['--local', '--frobnicate'], /frobnicate/],
@@ -333,11 +334,7 @@ describe('a local site, not started', () => {
         const metadata = JSON.parse(readFileSync(join(h.dir, '.ghost-docker.json'), 'utf8'));
         assert.equal(metadata.source, 'image');
         assert.equal(metadata.ghost.digest, INDEX);
-        assert.ok(
-            metadata.payload['compose.yml'] &&
-                metadata.payload['caddy/Caddyfile'] &&
-                metadata.payload['ghost-docker'],
-        );
+        assert.ok(metadata.payload['compose.yml'] && metadata.payload['ghost-docker']);
         assert.equal(
             readFileSync(join(h.dir, 'compose.yml'), 'utf8'),
             readFileSync(join(REPO, 'compose.yml'), 'utf8'),
@@ -367,6 +364,17 @@ describe('a local site, not started', () => {
 
     test('nothing was started', () => {
         assert.ok(!compose.some((args) => args[0] === 'up' || args[0] === 'run'));
+    });
+
+    test('caddy/ and tinybird/ are left out, as only production sites use them', () => {
+        const metadata = JSON.parse(readFileSync(join(h.dir, '.ghost-docker.json'), 'utf8'));
+        assert.ok(!existsSync(join(h.dir, 'caddy')));
+        assert.ok(!existsSync(join(h.dir, 'tinybird')));
+        assert.deepEqual(
+            Object.keys(metadata.payload).filter((file) => /^(caddy|tinybird)\//.test(file)),
+            [],
+        );
+        assert.ok(metadata.payload['mysql-init/create-multiple-databases.sh']);
     });
 });
 
@@ -473,6 +481,8 @@ describe('a production site, not started', () => {
         assert.match(routes, /^example\.com \{$/m);
         assert.match(routes, /^\ttls ops@example\.com$/m);
         assert.match(routes, /reverse_proxy ghost-ghost-example-com:2368/);
+        const metadata = JSON.parse(readFileSync(join(h.dir, '.ghost-docker.json'), 'utf8'));
+        assert.ok(metadata.payload['caddy/Caddyfile'] && metadata.payload['tinybird/Dockerfile']);
         // The email lives in the routes, where changing it takes effect.
         assert.equal(env.get(readFileSync(join(h.dir, '.env'), 'utf8'), 'ACME_EMAIL'), undefined);
         assert.ok(!compose.some((args) => args[0] === 'run' || args[0] === 'up'));

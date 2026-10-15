@@ -124,7 +124,9 @@ Adding one never changes the site mode:
 | `mailpit` | `mailpit`, its inbox on `127.0.0.1:${MAILPIT_PORT}` | one long-running Go service (~20-30 MB RSS); its messages in `${MAILPIT_DATA_LOCATION}` |
 
 `mailpit` is for local sites only: validation rejects it beside `production`,
-where it would catch the site's real mail. Selecting the profile only runs
+where it would catch the site's real mail. `analytics` and `activitypub` are
+for production sites only: validation rejects them beside `local`, because
+only Caddy's routes reach their services, and a local site has no Caddy. Selecting the profile only runs
 Mailpit; Ghost sends to it because `ghost.env` says so (`install --with
 mailpit` writes those settings; see [install.md](install.md#optional-services)).
 

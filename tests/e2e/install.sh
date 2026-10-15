@@ -135,20 +135,22 @@ expect_output 'ok +ghost +healthy'
 expect_output 'note +published ports +Docker publishes Ghost on 127\.0\.0\.1:[0-9]+'
 ok "installed and healthy; the host's port is checked below"
 
-for file in compose.yml caddy/Caddyfile caddy/snippets/SecurityHeaders mysql-init/create-multiple-databases.sh \
-    tinybird/Dockerfile .env.example ghost.env.example ghost-docker; do
+for file in compose.yml mysql-init/create-multiple-databases.sh .env.example ghost.env.example ghost-docker; do
     [[ -e $A/$file ]] || fail "the payload is missing $file" "$(ls -AR "$A")"
+done
+for directory in caddy tinybird; do
+    [[ ! -e $A/$directory ]] || fail "a local site was given $directory/" "$(ls -AR "$A/$directory")"
 done
 [[ -x $A/ghost-docker && -x $A/mysql-init/create-multiple-databases.sh ]] || fail "executables lost their mode"
 grep -qE '^readonly GD_PINNED_IMAGE="[^"]+"$' "$A/ghost-docker" || fail "the site's launcher is not pinned" "$(grep GD_PINNED_IMAGE "$A/ghost-docker")"
-ok "the payload and a pinned launcher were written"
+ok "the payload, without caddy/ or tinybird/, and a pinned launcher were written"
 
 for file in .env ghost.env .ghost-docker.json; do
     [[ $(owner_mode "$A/$file") == "$(id -u) 600" ]] || fail "$file is $(owner_mode "$A/$file"), not $(id -u) 600"
 done
 # data/ghost and data/mysql are the images' own business once their services
 # have run: Ghost and MySQL take ownership of them.
-for file in compose.yml caddy/Caddyfile ghost-docker data; do
+for file in compose.yml mysql-init ghost-docker data; do
     [[ $(owner_mode "$A/$file") == "$(id -u) "* ]] || fail "$file belongs to $(owner_mode "$A/$file")"
 done
 ok "credentials are private, and what the manager wrote belongs to $(id -u)"
@@ -412,20 +414,37 @@ fi
 
 # --- Optional services, from the image alone ------------------------------------
 
-step "ActivityPub and the analytics helpers, from the image alone"
-new_site e2e-activitypub
-AP=$SITE
-run install_alone "$AP" --local --with activitypub
-expect_status 0
-run compose_in "$AP" ps --all --format '{{.Service}} {{.State}} {{.ExitCode}}'
-expect_output '^activitypub running'
-expect_output '^activitypub-migrate exited 0'
-[[ $(setting "$AP" labs__publicAPI) == true ]] || fail "labs__publicAPI was not set"
-ok "ActivityPub runs, its migration completed (mysql-init/ created its database)"
-run compose_in "$AP" --profile analytics build tinybird-login tinybird-deploy
-expect_status 0
-ok "the analytics helper images build from the tinybird/ written there"
-compose_in "$AP" down --volumes >/dev/null 2>&1
+step "A local site refuses ActivityPub, which only Caddy's routes reach"
+new_site e2e-local-activitypub
+LA=$SITE
+run install_alone "$LA" --local --with activitypub
+expect_status 2
+expect_output 'activitypub is for production sites only'
+[[ -z $(ls -A "$LA") ]] || fail "files were written" "$(ls -A "$LA")"
+ok "a usage error, before anything was written"
+
+step "ActivityPub and the analytics helpers on a production site, from the image alone"
+if port_free 80 && port_free 443; then
+    new_site e2e-activitypub
+    AP=$SITE
+    mkdir -p "$AP/caddy/global"
+    printf 'local_certs\n' >"$AP/caddy/global/test-ca.caddy"
+    run install_alone "$AP" --domain "$DOMAIN" --with activitypub
+    expect_status 0
+    run compose_in "$AP" ps --all --format '{{.Service}} {{.State}} {{.ExitCode}}'
+    expect_output '^activitypub running'
+    expect_output '^activitypub-migrate exited 0'
+    [[ $(setting "$AP" labs__publicAPI) == true ]] || fail "labs__publicAPI was not set"
+    grep -q 'import /etc/caddy/snippets/ActivityPub activitypub-' "$AP/caddy/sites/site.caddy" ||
+        fail "the routes do not send ActivityPub to its service" "$(cat "$AP/caddy/sites/site.caddy")"
+    ok "ActivityPub runs behind Caddy's routes, its migration completed (mysql-init/ created its database)"
+    run compose_in "$AP" --profile analytics build tinybird-login tinybird-deploy
+    expect_status 0
+    ok "the analytics helper images build from the tinybird/ written there"
+    compose_in "$AP" down --volumes >/dev/null 2>&1
+else
+    skip "something on this host already holds 80 or 443"
+fi
 
 step "Mailpit catches the mail a local site sends"
 new_site e2e-mailpit

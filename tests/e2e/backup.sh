@@ -3,25 +3,27 @@
 #
 #   tests/e2e/backup.sh
 #
-# Builds the manager image from this checkout and installs a local site with
-# ActivityPub from it. The site is given an owner, a post, an image, a theme
-# of its own, a configuration value and ActivityPub records, then backed up
-# consistently (Ghost and ActivityPub stopped for the capture and running
-# again after),
-# changed, and restored over itself; then taken down and restored into a new
-# directory. Each restore is checked the way an operator would: staff sign in
+# Builds the manager image from this checkout and installs a production site
+# with ActivityPub from it, served by Caddy with its own test CA under the
+# name ghost-e2e.test, which curl resolves to this host. The site is given an
+# owner, a post, an image, a theme of its own, a configuration value and
+# ActivityPub records, then backed up consistently (Ghost and ActivityPub
+# stopped for the capture and running again after), changed, and restored
+# over itself; then taken down and restored into a new directory. Each restore is checked the way an operator would: staff sign in
 # and the post is there, the image is served, the theme is active, the
 # configuration is as it was, and ActivityPub's records hold exactly what was
 # backed up. Then the lock refuses a second operation, `check` reports a
 # stale lock, a dump that fails is an error, not a backup, and leaves the
 # writers running, and a backup by default is live and never stops them.
 #
-# It pulls images, starts containers and binds a loopback port. It needs jq
-# and curl. Exits non-zero at the first check that fails, naming it.
+# It pulls images, starts containers and binds ports 80 and 443 (it fails
+# when something else holds them, or is skipped with GD_E2E_ALLOW_SKIP=1). It
+# needs jq and curl. Exits non-zero at the first check that fails, naming it.
 set -euo pipefail
 
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd -P)
 IMAGE=ghost-docker:e2e-backup
+DOMAIN=ghost-e2e.test
 OWNER_EMAIL=owner@example.com
 OWNER_PASSWORD='Kept-in-a-backup-2026!'
 # A setting of the site's own, with dollar signs and both kinds of quote: what
@@ -57,6 +59,12 @@ SQL
 # shellcheck source=/dev/null
 source "$ROOT/tests/e2e/skip.sh"
 require_docker
+port_free() { ! (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
+if ! port_free 80 || ! port_free 443; then
+    skip "something on this host already holds 80 or 443"
+    passed "Nothing ran: the site is a production one, on 80 and 443."
+    exit 0
+fi
 for tool in jq curl; do
     command -v "$tool" >/dev/null || {
         printf 'backup.sh needs %s\n' "$tool" >&2
@@ -154,17 +162,23 @@ api() {
     local site=$1 method=$2 path=$3 base
     shift 3
     base=$(base_of "$site")
-    curl --disable --silent --noproxy '*' --max-time 60 --cookie "$site.cookies" \
+    site_curl --max-time 60 --cookie "$site.cookies" \
         --header "Origin: $base" --request "$method" "$@" "$base/ghost/api/admin/$path"
 }
 
-base_of() { printf 'http://localhost:%s' "$(setting "$1" .env GHOST_PORT)"; }
+base_of() { printf 'https://%s' "$DOMAIN"; }
+
+# site_curl ARGS... -- through Caddy on this host's port 443, trusting its
+# test CA as a browser told to would.
+site_curl() {
+    curl --disable --silent --insecure --noproxy '*' --resolve "$DOMAIN:443:127.0.0.1" "$@"
+}
 
 # sign_in SITE -- with the owner's password; the session goes in SITE.cookies.
 sign_in() {
     local base status
     base=$(base_of "$1")
-    status=$(curl --disable --silent --noproxy '*' --max-time 30 --output "$1.session" --write-out '%{http_code}' \
+    status=$(site_curl --max-time 30 --output "$1.session" --write-out '%{http_code}' \
         --cookie-jar "$1.cookies" --request POST --header 'Content-Type: application/json' \
         --header "Origin: $base" \
         --data "$(jq -cn --arg u "$OWNER_EMAIL" --arg p "$OWNER_PASSWORD" '{username: $u, password: $p}')" \
@@ -187,7 +201,7 @@ expect_restored() {
         fail "the post is not in the restored site" "$body"
     ok "the owner signs in, and the post is there"
 
-    body=$(curl --disable --silent --noproxy '*' --max-time 30 "$base/content/images/2026/10/marker.png")
+    body=$(site_curl --max-time 30 "$base/content/images/2026/10/marker.png")
     [[ $body == 'backed-up image' ]] || fail "the image was not served as backed up" "$body"
     ok "the image is served"
 
@@ -215,20 +229,24 @@ printf 'Docker: %s on %s\n' "$(docker info --format '{{.OperatingSystem}}')" "$(
 
 # --- A site worth backing up -------------------------------------------------
 
-step "Build the manager image, and install a local site with ActivityPub"
+step "Build the manager image, and install a production site with ActivityPub"
 run docker build --quiet --file "$ROOT/manager/Dockerfile" --tag "$IMAGE" "$ROOT"
 expect_status 0
 mkdir -p "$WORK/launcher-only" "$WORK/sites"
 cp "$ROOT/ghost-docker" "$WORK/launcher-only/ghost-docker"
 new_site e2e-backup-a
 A=$SITE
-run env GD_IMAGE=$IMAGE "$WORK/launcher-only/ghost-docker" --dir "$A" install --local --with activitypub
+# Caddy's own CA for the name, at once: a test fixture standing in for the CA
+# a real domain gets. A restore carries it with the site's other Caddy files.
+mkdir -p "$A/caddy/global"
+printf 'local_certs\n' >"$A/caddy/global/test-ca.caddy"
+run env GD_IMAGE=$IMAGE "$WORK/launcher-only/ghost-docker" --dir "$A" install --domain "$DOMAIN" --with activitypub
 expect_status 0
 ok "$A"
 
 step "Give it an owner, a post, an image, a theme and a setting"
 BASE=$(base_of "$A")
-body=$(curl --disable --silent --noproxy '*' --max-time 60 --request POST \
+body=$(site_curl --max-time 60 --request POST \
     --header 'Content-Type: application/json' --header "Origin: $BASE" \
     --data "$(jq -cn --arg e "$OWNER_EMAIL" --arg p "$OWNER_PASSWORD" \
         '{setup: [{name: "Backup Tester", email: $e, password: $p, blogTitle: "Backup e2e"}]}')" \
@@ -307,7 +325,7 @@ expect_status 2
 expect_output 'Run it again with --yes'
 run gd "$A" restore --yes "$BACKUP"
 expect_status 0
-expect_output 'Restored http://localhost:[0-9]+ from '
+expect_output "Restored https://$DOMAIN from "
 expect_restored "$A"
 
 # --- Restore into a new directory ------------------------------------------------
@@ -319,7 +337,7 @@ B=$SITE
 # The backup is outside B, so the launcher mounts it read-only.
 run gd "$B" restore "$BACKUP"
 expect_status 0
-expect_output "Restored http://localhost:[0-9]+ from .*, into $B"
+expect_output "Restored https://$DOMAIN from .*, into $B"
 cmp -s "$A/compose.yml" "$B/compose.yml" || fail "the stack files were not restored"
 expect_restored "$B"
 

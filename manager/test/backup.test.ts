@@ -1,5 +1,5 @@
-// backup and restore, against a scripted daemon and Compose. A site is
-// installed from the image with ActivityPub, backed up, and restored over
+// backup and restore, against a scripted daemon and Compose. A production
+// site is installed from the image with ActivityPub, backed up, and restored over
 // itself or into a new directory. What they do on a real host is
 // tests/e2e/backup.sh; this is what they decide.
 import assert from 'node:assert/strict';
@@ -41,8 +41,8 @@ const IMAGES = {
     db: `mysql:8.0.44@sha256:${'4'.repeat(64)}`,
     activitypub: `ghcr.io/tryghost/activitypub:1.2.14@sha256:${'5'.repeat(64)}`,
 };
-/** What `up` with no services named starts. */
-const SERVICES = ['ghost', 'db'];
+/** What `up` with no services named starts: a production site's. */
+const SERVICES = ['ghost', 'db', 'caddy'];
 const DUMP = '-- MySQL dump\nCREATE TABLE `posts` (id int);\n-- Dump completed on 2026-10-09\n';
 /** The rows the scratch load reports, and the live database has. */
 const ROWS: Record<string, Record<string, number>> = {
@@ -188,7 +188,14 @@ beforeEach(async () => {
         }
     };
 
-    const installed = await h.run('install', '--local', '--with', 'activitypub', '--no-start');
+    const installed = await h.run(
+        'install',
+        '--domain',
+        'example.com',
+        '--with',
+        'activitypub',
+        '--no-start',
+    );
     assert.equal(installed.code, 0, installed.stderr);
     mkdirSync(join(h.dir, 'data', 'ghost', 'images', '2026'), { recursive: true });
     writeFileSync(join(h.dir, 'data', 'ghost', 'images', '2026', 'photo.jpg'), 'jpeg');
@@ -240,7 +247,7 @@ describe('backup', () => {
         assert.equal(manifest.manager.commit, 'c'.repeat(40));
         assert.equal(manifest.site.commit, null);
         assert.equal(manifest.site.dir, h.dir);
-        assert.deepEqual(manifest.site.profiles, ['local', 'activitypub']);
+        assert.deepEqual(manifest.site.profiles, ['production', 'activitypub']);
         assert.equal(manifest.content.entries > 3, true);
         for (const file of [
             'database/ghost.sql',
@@ -598,8 +605,8 @@ describe('restore over the site', () => {
                 ['rm', '/site/.ghost-docker-restore'],
             ],
         );
-        assert.deepEqual([...running].sort(), ['db', 'ghost']);
-        assert.match(result.stdout, /Restored http:\/\/localhost:\d+ from /);
+        assert.deepEqual([...running].sort(), ['caddy', 'db', 'ghost']);
+        assert.match(result.stdout, /Restored https:\/\/example\.com from /);
     });
 
     test('asks first, and without a terminal needs --yes', async () => {
@@ -844,9 +851,9 @@ describe('restore over the site', () => {
         assert.equal(result.code, 1);
         assert.match(result.stderr, /the site could not be stopped: .*cannot stop container/);
         assert.match(result.stderr, /Nothing was moved or written/);
-        assert.match(result.stderr, /These of its services are still running: db, ghost\./);
+        assert.match(result.stderr, /These of its services are still running: caddy, db, ghost\./);
         assert.doesNotMatch(result.stderr, /rm -rf|sudo mv/);
-        assert.deepEqual([...running].sort(), ['db', 'ghost']);
+        assert.deepEqual([...running].sort(), ['caddy', 'db', 'ghost']);
         assert.equal(readSite('data/mysql/ibdata1'), 'the old database');
         assert.ok(!existsSync(join(h.dir, '.ghost-docker-restore')));
         assert.deepEqual(containers, []);
@@ -937,8 +944,8 @@ describe('restore over the site', () => {
         const result = await h.run('restore', '--yes', root);
         assert.equal(result.code, 1);
         assert.match(result.stderr, /docker compose down failed: cannot stop container/);
-        assert.match(result.stderr, /These of its services are still running: db, ghost\./);
-        assert.deepEqual([...running].sort(), ['db', 'ghost']);
+        assert.match(result.stderr, /These of its services are still running: caddy, db, ghost\./);
+        assert.deepEqual([...running].sort(), ['caddy', 'db', 'ghost']);
     });
 
     test('is refused while another operation holds the lock', async () => {
@@ -1064,7 +1071,7 @@ describe('restore into a new directory', () => {
         // Nothing to stop and nothing set aside.
         assert.deepEqual(composed('down'), []);
         assert.deepEqual(containers, []);
-        assert.deepEqual([...running].sort(), ['db', 'ghost']);
+        assert.deepEqual([...running].sort(), ['caddy', 'db', 'ghost']);
         assert.match(result.stdout, new RegExp(`into ${fresh}`));
     });
 
@@ -1228,7 +1235,7 @@ describe('consistency', () => {
             'resume ghost activitypub',
             'scratch',
         ]);
-        assert.deepEqual([...running].sort(), ['activitypub', 'db', 'ghost']);
+        assert.deepEqual([...running].sort(), ['activitypub', 'caddy', 'db', 'ghost']);
         assert.equal(
             JSON.parse(readFileSync(join(root, 'manifest.json'), 'utf8')).consistency,
             'quiesced',
@@ -1263,7 +1270,7 @@ describe('consistency', () => {
         running.delete('activitypub');
         await backUp('--consistent');
         assert.ok(!events.some((event) => event.startsWith('stop') || event.startsWith('resume')));
-        assert.deepEqual([...running], ['db']);
+        assert.deepEqual([...running].sort(), ['caddy', 'db']);
     });
 
     test('only the writers that were running are stopped and started again', async () => {
@@ -1274,7 +1281,7 @@ describe('consistency', () => {
             events.filter((event) => event.startsWith('resume')),
             ['resume ghost'],
         );
-        assert.deepEqual([...running].sort(), ['db', 'ghost']);
+        assert.deepEqual([...running].sort(), ['caddy', 'db', 'ghost']);
     });
 
     test('a capture that fails starts the writers again', async () => {
@@ -1287,7 +1294,7 @@ describe('consistency', () => {
             events.filter((event) => event.startsWith('resume')),
             ['resume ghost activitypub'],
         );
-        assert.deepEqual([...running].sort(), ['activitypub', 'db', 'ghost']);
+        assert.deepEqual([...running].sort(), ['activitypub', 'caddy', 'db', 'ghost']);
         assert.deepEqual(backups(), []);
     });
 
@@ -1299,7 +1306,7 @@ describe('consistency', () => {
             events.filter((event) => event.startsWith('resume')),
             ['resume ghost activitypub'],
         );
-        assert.deepEqual([...running].sort(), ['activitypub', 'db', 'ghost']);
+        assert.deepEqual([...running].sort(), ['activitypub', 'caddy', 'db', 'ghost']);
         assert.deepEqual(backups(), []);
     });
 

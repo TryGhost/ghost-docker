@@ -190,16 +190,16 @@ step "Build four releases of the manager image"
 build_release "$R1" "$ROOT"
 copy_tree "$WORK/r2"
 printf '# changed in %s\n' "$R2" >>"$WORK/r2/compose.ipv6.yml"
-printf '# changed in %s\n' "$R2" >>"$WORK/r2/caddy/snippets/Logging"
+printf '# changed in %s\n' "$R2" >>"$WORK/r2/.env.example"
 build_release "$R2" "$WORK/r2"
 copy_tree "$WORK/r3"
-cp "$WORK/r2/caddy/snippets/Logging" "$WORK/r3/caddy/snippets/Logging"
+cp "$WORK/r2/.env.example" "$WORK/r3/.env.example"
 cp "$WORK/r2/compose.ipv6.yml" "$WORK/r3/compose.ipv6.yml"
 # shellcheck disable=SC2016 # for Compose to interpolate
 printf 'x-requires: ${GD_E2E_NO_SITE_HAS_THIS:?this release needs a setting no site has}\n' >>"$WORK/r3/compose.yml"
 build_release "$R3" "$WORK/r3"
 copy_tree "$WORK/r4"
-cp "$WORK/r2/caddy/snippets/Logging" "$WORK/r4/caddy/snippets/Logging"
+cp "$WORK/r2/.env.example" "$WORK/r4/.env.example"
 cp "$WORK/r2/compose.ipv6.yml" "$WORK/r4/compose.ipv6.yml"
 # Ghost's health check fails at once, and gives up after one try.
 perl -0pi -e 's/process\.exit\(r\.statusCode < 400 \? 0 : 1\)/process.exit(1)/; s/interval: 30s\n      timeout: 10s\n      start_period: 180s\n      start_interval: 5s\n      retries: 5/interval: 2s\n      timeout: 10s\n      start_period: 0s\n      start_interval: 2s\n      retries: 1/' "$WORK/r4/compose.yml"
@@ -257,13 +257,13 @@ port=$(setting "$S" GHOST_PORT)
 ok "$R1, Ghost $ghost_pin on 127.0.0.1:$port"
 
 step "--check says what would change, and changes nothing"
-printf '# mine\n' >>"$S/caddy/snippets/Logging"
+printf '# mine\n' >>"$S/.env.example"
 before=$(fingerprint "$S")
 run "$S/ghost-docker" --dir "$S" self-update --check --to "$R2"
 expect_status 0
 expect_output "This site runs $R1\\. This release is $R2\\."
 expect_output 'compose\.ipv6\.yml: replaced'
-expect_output 'caddy/snippets/Logging: edited, kept'
+expect_output '\.env\.example: edited, kept'
 [[ $(fingerprint "$S") == "$before" ]] || fail "--check changed files"
 ok "an update is available"
 
@@ -278,12 +278,12 @@ running=$(docker inspect -f '{{.Config.Image}}' "$(ghost_container "$S")")
 [[ $(pinned "$S") == "$(image_id "$REGISTRY:$R2")" ]] || fail "the launcher was not re-pinned: $(pinned "$S")"
 records "$S" version "$R2" || fail "the metadata does not record $R2" "$(cat "$S/.ghost-docker.json")"
 cmp -s "$S/compose.ipv6.yml" "$WORK/r2/compose.ipv6.yml" || fail "the untouched compose.ipv6.yml was not replaced"
-grep -qx '# mine' "$S/caddy/snippets/Logging" || fail "the edited Logging snippet was replaced"
-cmp -s "$S/caddy/snippets/Logging.new" "$WORK/r2/caddy/snippets/Logging" || fail "Logging.new is not the release's"
+grep -qx '# mine' "$S/.env.example" || fail "the edited .env.example was replaced"
+cmp -s "$S/.env.example.new" "$WORK/r2/.env.example" || fail ".env.example.new is not the release's"
 [[ ! -e $S/.ghost-docker-update && ! -e $S/.ghost-docker.lock ]] || fail "the update left its snapshot or lock"
 [[ $(http_status "$port") == 200 ]] || fail "the site does not answer on 127.0.0.1:$port"
 [[ -n $ghost_before ]] || fail "Ghost was not running before"
-ok "Ghost pin unchanged, launcher re-pinned, Logging kept with Logging.new beside it"
+ok "Ghost pin unchanged, launcher re-pinned, .env.example kept with .env.example.new beside it"
 
 run "$S/ghost-docker" --dir "$S" check
 expect_status 0

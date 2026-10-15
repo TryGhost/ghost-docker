@@ -57,6 +57,12 @@ export const OPTIONAL_PROFILES = ['analytics', 'activitypub', 'mailpit', 'superv
  */
 export const LOCAL_ONLY_PROFILES = ['mailpit'] as const;
 
+/**
+ * Optional profiles a local site must not select: Ghost is published
+ * directly, and only Caddy's routes reach their services.
+ */
+export const PRODUCTION_ONLY_PROFILES = ['analytics', 'activitypub'] as const;
+
 /** `production, analytics` as a list: trimmed, empties dropped. */
 export const splitProfiles = (profiles: string): string[] =>
     profiles

@@ -17,6 +17,7 @@ import {
     hostOf,
     LOCAL_ONLY_PROFILES,
     OPTIONAL_PROFILES,
+    PRODUCTION_ONLY_PROFILES,
     SITE_MODES,
     siteMode,
     unknownProfiles,
@@ -118,6 +119,18 @@ export async function validateEnv(io: Io, dir: string): Promise<Finding[]> {
                 error(
                     file,
                     `COMPOSE_PROFILES selects ${profile}, which is for local sites only: in production it would catch the site's real mail`,
+                ),
+            );
+        }
+    }
+    if (mode === 'local') {
+        for (const profile of PRODUCTION_ONLY_PROFILES.filter((each) =>
+            hasProfile(profiles, each),
+        )) {
+            findings.push(
+                error(
+                    file,
+                    `COMPOSE_PROFILES selects ${profile}, which is for production sites only: a local site has no Caddy to route to it`,
                 ),
             );
         }

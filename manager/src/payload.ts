@@ -4,6 +4,9 @@
 // In image mode `install` writes them, with a checksum of each recorded in the
 // metadata so that `self-update` can tell an untouched file from an edited one, and
 // writes a copy of the launcher pinned to the image that installed the site.
+// A local site gets only the files its mode runs: Caddy, and analytics
+// behind it, serve production sites only, so caddy/ and tinybird/ are not
+// written into a local one.
 // In clone mode the site is a checkout of the repository: the files are
 // already there, are used in place, and nothing is written over them.
 import { createHash } from 'node:crypto';
@@ -14,6 +17,7 @@ import { inspectImage, splitReference } from './docker/client.ts';
 import { CliError } from './errors.ts';
 import { atomicWrite } from './fs.ts';
 import type { Io } from './io.ts';
+import type { SiteMode } from './site.ts';
 
 export const stackDir = (env: NodeJS.ProcessEnv): string =>
     env.GD_STACK_DIR ?? '/opt/ghost-docker/stack';
@@ -30,8 +34,14 @@ export const sha256 = (content: string | Buffer): string =>
 export const isCheckout = (context: Context, dir: string): boolean =>
     context.source === 'checkout' && existsSync(join(dir, 'manager', 'Dockerfile'));
 
-/** Every file of the payload, relative to the stack directory, in a stable order. */
-export function payloadFiles(stack: string): string[] {
+/** Top-level payload directories only production sites use: Caddy, and analytics's Tinybird jobs. */
+const PRODUCTION_ONLY = ['caddy', 'tinybird'];
+
+/**
+ * Every file of the payload, relative to the stack directory, in a stable
+ * order; with a mode, only those a site of that mode uses.
+ */
+export function payloadFiles(stack: string, mode?: SiteMode): string[] {
     const files: string[] = [];
     const walk = (directory: string) => {
         for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) =>
@@ -46,7 +56,9 @@ export function payloadFiles(stack: string): string[] {
         }
     };
     walk(stack);
-    return files;
+    return mode === 'local'
+        ? files.filter((file) => !PRODUCTION_ONLY.includes(file.split('/')[0]!))
+        : files;
 }
 
 /** Paths, files and directories, the payload and launcher would write over. */

@@ -1,7 +1,16 @@
 // Image-only stack update. The target manager runs outside the files it replaces.
 // Recovery must not load the checkpoint after service startup was attempted:
 // even a failed start may have accepted writes. See docs/architecture.md#recovery.
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import {
+    cpSync,
+    existsSync,
+    mkdirSync,
+    readdirSync,
+    readFileSync,
+    rmdirSync,
+    rmSync,
+    statSync,
+} from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { refuseDrift } from '../backup.ts';
 import { compose, composeConfig, composeError } from '../compose.ts';
@@ -33,7 +42,7 @@ import { describeServices } from '../recovery.ts';
 import { compareReleases, isRelease } from '../release.ts';
 import { resolveSite } from '../resolved.ts';
 import { heading, ok, printChecks } from '../report.ts';
-import { COMPOSE_FILE, META_FILE, UPDATE_DIR, type SiteFacts } from '../site.ts';
+import { COMPOSE_FILE, META_FILE, UPDATE_DIR, type SiteFacts, type SiteMode } from '../site.ts';
 import { runUpdate, type UpdateOutcome } from '../update.ts';
 import { atLeast, MINIMUM } from '../versions.ts';
 import {
@@ -108,13 +117,18 @@ const checksumOf = (path: string): string | null =>
     existsSync(path) ? sha256(readFileSync(path)) : null;
 
 /**
- * What the update does to each managed file. A file is untouched when its
- * checksum is the one recorded when the manager wrote it.
+ * What the update does to each managed file of a site of this mode. A file is
+ * untouched when its checksum is the one recorded when the manager wrote it.
  */
-function planPayload(dir: string, stack: string, recorded: Record<string, string>): Payload {
+function planPayload(
+    dir: string,
+    stack: string,
+    mode: SiteMode,
+    recorded: Record<string, string>,
+): Payload {
     const changes: FileChange[] = [];
     const checksums: Record<string, string> = {};
-    const files = payloadFiles(stack);
+    const files = payloadFiles(stack, mode);
     for (const file of files) {
         const wanted = sha256(readFileSync(join(stack, file)));
         const present = checksumOf(join(dir, file));
@@ -146,6 +160,14 @@ function planPayload(dir: string, stack: string, recorded: Record<string, string
 }
 
 const newPath = (file: string) => `${file}.new`;
+
+/** Removes `directory` and its parents below `dir` while each is empty. */
+function removeEmptyParents(dir: string, directory: string): void {
+    while (directory !== dir && existsSync(directory) && readdirSync(directory).length === 0) {
+        rmdirSync(directory);
+        directory = dirname(directory);
+    }
+}
 
 /**
  * Every path an update may write or remove, relative to the site: what the
@@ -183,6 +205,7 @@ function writePayloadChanges(io: Io, dir: string, stack: string, payload: Payloa
                 break;
             case 'remove':
                 rmSync(target, { force: true });
+                removeEmptyParents(dir, dirname(target));
                 break;
             case 'same':
             case 'edited':
@@ -313,7 +336,7 @@ export const selfUpdateCommand = defineCommand({
         }
 
         const stack = stackDir(io.env);
-        const payload = planPayload(dir, stack, metadata.payload);
+        const payload = planPayload(dir, stack, metadata.mode, metadata.payload);
         const update: Update = { io, site, metadata, from, to, release, stack, payload };
 
         if (flags.check) {
