@@ -468,6 +468,49 @@ describe('a local site with the upgrade supervisor, not started', () => {
     });
 });
 
+describe('a site on your own build of Ghost', () => {
+    test('--ghost-image installs from that repository, pinned by digest', async () => {
+        h.daemon.api = imageApi({
+            ghost: { '6.72.0-local': '6.72.0' },
+            repository: 'localhost:5000/ghost',
+        });
+        const result = await install(
+            '--local',
+            '--ghost-image',
+            'localhost:5000/ghost',
+            '--version',
+            '6.72.0-local',
+            '--no-start',
+        );
+        assert.equal(result.code, 0, result.stderr);
+        const values = env.toRecord(readFileSync(join(h.dir, '.env'), 'utf8'));
+        assert.equal(values.GHOST_IMAGE, 'localhost:5000/ghost');
+        assert.equal(values.GHOST_VERSION, '6.72.0-local');
+        assert.equal(values.GHOST_IMAGE_REF, `localhost:5000/ghost@${INDEX}`);
+        const metadata = JSON.parse(readFileSync(join(h.dir, '.ghost-docker.json'), 'utf8'));
+        assert.equal(metadata.ghost.image, 'localhost:5000/ghost');
+        assert.equal(metadata.ghost.version, '6.72.0');
+    });
+
+    test('refuses a reference with a tag, and the nightly channel or an import beside it', async () => {
+        for (const [args, pattern] of [
+            [['--ghost-image', 'localhost:5000/ghost:6-local'], /must be an image repository/],
+            [
+                ['--ghost-image', 'x/ghost', '--ghost-channel', 'nightly'],
+                /not both: the channel is its image/,
+            ],
+            [
+                ['--ghost-image', 'x/ghost', '--import', '/nonexistent.tgz'],
+                /--ghost-image cannot be combined with --import/,
+            ],
+        ] as const) {
+            const result = await install('--local', ...args);
+            assert.equal(result.code, 2, `${args.join(' ')}: ${result.stderr}`);
+            assert.match(result.stderr, pattern);
+        }
+    });
+});
+
 describe('which release', () => {
     const release = (version: string) => {
         h.env.GD_VERSION_FILE = `${stack}-version.json`;
