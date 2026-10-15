@@ -178,6 +178,18 @@ const options = z
             .describe(
                 'A Ghost version (6.61.0) or image tag (6-next-alpine); on the nightly channel, a build date (20261015) or latest. Resolved to an exact digest.',
             ),
+        ghostImage: z
+            .string()
+            .regex(
+                /^[a-z0-9][a-z0-9.-]*(:[0-9]+)?(\/[a-z0-9]+([._-][a-z0-9]+)*)*$/,
+                refused(
+                    'must be an image repository, such as localhost:5000/ghost, without a tag or digest',
+                ),
+            )
+            .optional()
+            .describe(
+                "Ghost's image repository, for testing your own builds of Ghost, such as localhost:5000/ghost. --version names its tag. Default: ghost.",
+            ),
         ghostChannel: z
             .enum(GHOST_CHANNELS, refused('must be stable or nightly'))
             .default('stable')
@@ -215,6 +227,12 @@ const options = z
                 : null) ??
             (flags.import !== undefined && flags.ghostChannel === 'nightly'
                 ? '--ghost-channel nightly cannot be combined with --import: an import runs at the source site’s exact Ghost release'
+                : null) ??
+            (flags.ghostImage !== undefined && flags.ghostChannel === 'nightly'
+                ? 'choose --ghost-image or --ghost-channel nightly, not both: the channel is its image'
+                : null) ??
+            (flags.ghostImage !== undefined && flags.import !== undefined
+                ? '--ghost-image cannot be combined with --import: an import runs on the published Ghost release'
                 : null) ??
             (flags.import === undefined ? null : importConflict(flags));
         if (conflict !== null) {
@@ -449,7 +467,7 @@ async function prepare(
     heading(io, 'Resolving the Ghost image');
     const ghost = await io.busy('Resolving the Ghost image', () =>
         importing === null
-            ? resolveGhost(io, flags.version, channelImage(flags.ghostChannel))
+            ? resolveGhost(io, flags.version, flags.ghostImage ?? channelImage(flags.ghostChannel))
             : importing.resolveGhost(),
     );
     ok(io, 'ghost', `${ghost.image}:${ghost.tag} is Ghost ${ghost.version}, ${ghost.reference}`);
