@@ -38,6 +38,9 @@ interface Response {
     readonly body: unknown;
 }
 
+/** The largest response the client reads, as Ghost's adapter bounds it. */
+const RESPONSE_MAX = 1024 * 1024;
+
 class Unreachable extends Error {}
 class Incompatible extends Error {}
 
@@ -60,7 +63,6 @@ export class SupervisorClient {
                     agent: false,
                     method,
                     path,
-                    timeout: CLIENT_TIMEOUT_MS,
                     headers:
                         payload === undefined
                             ? {}
@@ -70,8 +72,26 @@ export class SupervisorClient {
                               },
                 },
                 (response) => {
+                    if ((response.statusCode ?? 0) >= 500) {
+                        response.resume();
+                        reject(new Unreachable(`${path} answered ${response.statusCode}`));
+                        return;
+                    }
                     const chunks: Buffer[] = [];
-                    response.on('data', (chunk: Buffer) => chunks.push(chunk));
+                    let size = 0;
+                    response.on('data', (chunk: Buffer) => {
+                        size += chunk.length;
+                        if (size > RESPONSE_MAX) {
+                            request.destroy(
+                                new Unreachable(`${path} answered over ${RESPONSE_MAX} bytes`),
+                            );
+                            return;
+                        }
+                        chunks.push(chunk);
+                    });
+                    // Dropped mid-body: the supervisor went away, not another protocol.
+                    response.on('aborted', () => reject(new Unreachable(`${path} was cut off`)));
+                    response.on('error', () => reject(new Unreachable(`${path} was cut off`)));
                     response.on('end', () => {
                         const text = Buffer.concat(chunks).toString('utf8');
                         try {
@@ -86,9 +106,12 @@ export class SupervisorClient {
                     });
                 },
             );
-            request.on('timeout', () =>
-                request.destroy(new Unreachable(`no answer within ${CLIENT_TIMEOUT_MS} ms`)),
+            // A deadline for the whole exchange, not only between chunks.
+            const deadline = setTimeout(
+                () => request.destroy(new Unreachable(`no answer within ${CLIENT_TIMEOUT_MS} ms`)),
+                CLIENT_TIMEOUT_MS,
             );
+            request.on('close', () => clearTimeout(deadline));
             request.on('error', (error: NodeJS.ErrnoException) =>
                 reject(
                     error instanceof Unreachable || error instanceof Incompatible

@@ -288,21 +288,27 @@ request.
 ### Ghost: reaching the supervisor
 
 Ghost connects with Node's `http`, a connection per call (a kept-alive one
-outlives a supervisor restart and fails the next call), with a timeout of
-`timeoutMs`, 5000 by default. Its options, under
-`adapters.upgrade.HttpUpgradeAdapter`, are exactly one of `socketPath` (an
-absolute path; ghost-docker's) or `url` (`http`/`https`, for another host, with
-an optional `token` sent as `Authorization: Bearer`). It reports:
+outlives a supervisor restart and fails the next call). `timeoutMs`, 5000 by
+default, is a deadline for the whole exchange, and a response over 1 MiB is
+refused. Its options, under `adapters.upgrade.HttpUpgradeAdapter`, are exactly
+one of `socketPath` (an absolute path; ghost-docker's) or `url` (`http`/`https`,
+for another host). A `token`, sent as `Authorization: Bearer`, is allowed only
+with an `https` `url`; anything else is a configuration error at boot. It
+reports:
 
 - `{supported: false, reason: 'not-configured'}` when the adapter is not active;
 - `unavailable` when the supervisor cannot be reached (`ENOENT`,
-  `ECONNREFUSED`, `ECONNRESET`, `EPIPE`, a timeout) or answers any `5xx`;
+  `ECONNREFUSED`, `ECONNRESET`, `EPIPE`, the deadline), drops the connection
+  mid-response, or answers any `5xx`, with or without an error body, on any
+  endpoint;
 - `incompatible` when `GET /v1` does not answer `200 {"protocol": 1}`, or a body
-  fails its base schema.
+  fails its base schema;
+- a host's own `{supported: false, reason}` status as it is. ghost-docker's
+  supervisor never answers one, but another host may.
 
 On `POST /v1/requests`, an error body with a base code becomes that rejection.
-A `400`, a `413` or a code Ghost does not know is Ghost's own failure: it logs
-it and shows Admin `unavailable`. A job ID that fails the job-ID schema is
+A `400`, a `413`, a code Ghost does not know or a response over 1 MiB is Ghost's
+own failure: it logs it and shows Admin `unavailable`. A job ID that fails the job-ID schema is
 `unknown` without a call.
 
 ### Supervisor: a request

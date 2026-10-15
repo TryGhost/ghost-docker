@@ -331,6 +331,30 @@ describe("Ghost's end, when the supervisor is not there or speaks another protoc
         assert.equal(await rejected(), 'unavailable');
     });
 
+    test('a bare 5xx, or a connection dropped mid-answer, is unavailable, not incompatible', async () => {
+        const other = createServer((request, response) => {
+            if (request.url === '/v1') {
+                response.writeHead(200, { 'content-type': 'application/json' });
+                response.end('{"protocol":1}');
+            } else if (request.url === '/v1/status') {
+                // Headers and half a body, then gone.
+                response.writeHead(200, {
+                    'content-type': 'application/json',
+                    'content-length': '100',
+                });
+                response.write('{"supported":');
+                response.destroy();
+            } else {
+                response.writeHead(502);
+                response.end('Bad Gateway');
+            }
+        });
+        servers.push(other);
+        await listen(other, socket);
+        assert.equal(await availability(), 'unavailable');
+        assert.equal(await rejected(), 'unavailable');
+    });
+
     test('a server without /v1 is incompatible', async () => {
         const other = createServer((_request, response) => {
             response.writeHead(404, { 'content-type': 'application/json' });
