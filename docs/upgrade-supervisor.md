@@ -287,16 +287,23 @@ request.
 
 ### Ghost: reaching the supervisor
 
-Ghost connects with Node's `http` and `socketPath`, with a 5-second timeout. It
-reports:
+Ghost connects with Node's `http`, a connection per call (a kept-alive one
+outlives a supervisor restart and fails the next call), with a timeout of
+`timeoutMs`, 5000 by default. Its options, under
+`adapters.upgrade.HttpUpgradeAdapter`, are exactly one of `socketPath` (an
+absolute path; ghost-docker's) or `url` (`http`/`https`, for another host, with
+an optional `token` sent as `Authorization: Bearer`). It reports:
 
 - `{supported: false, reason: 'not-configured'}` when the adapter is not active;
-- `unavailable` when the socket is missing, refuses the connection or times
-  out, or answers `503`;
+- `unavailable` when the supervisor cannot be reached (`ENOENT`,
+  `ECONNREFUSED`, `ECONNRESET`, `EPIPE`, a timeout) or answers any `5xx`;
 - `incompatible` when `GET /v1` does not answer `200 {"protocol": 1}`, or a body
   fails its base schema.
 
-Ghost checks the protocol once per process and again after any failure.
+On `POST /v1/requests`, an error body with a base code becomes that rejection.
+A `400`, a `413` or a code Ghost does not know is Ghost's own failure: it logs
+it and shows Admin `unavailable`. A job ID that fails the job-ID schema is
+`unknown` without a call.
 
 ### Supervisor: a request
 

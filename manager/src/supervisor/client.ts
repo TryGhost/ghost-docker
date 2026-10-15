@@ -135,8 +135,11 @@ export class SupervisorClient {
         return this.guarded<StatusRead>(
             async () => {
                 const answer = await this.call('GET', '/v1/status');
-                if (answer.status === 503) {
-                    return { availability: 'unavailable', reason: 'the supervisor answered 503' };
+                if (answer.status >= 500) {
+                    return {
+                        availability: 'unavailable',
+                        reason: `the supervisor answered ${answer.status}`,
+                    };
                 }
                 const status = upgradeStatusSchema.safeParse(answer.body);
                 if (answer.status !== 200 || !status.success || !status.data.supported) {
