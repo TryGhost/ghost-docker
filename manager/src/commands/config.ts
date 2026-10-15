@@ -60,7 +60,7 @@ export const getCommand = defineCommand({
     brief: 'Print one decoded value.',
     positionals: ['file', 'key'],
     run: async (_values, args, io) => {
-        const { site } = installedSite(io);
+        const { site } = installedSite(io, { moved: true });
         const { file, rest } = await target(io, site.dir, args, 1);
         const key = rest[0]!;
         checkKey(key);
@@ -81,7 +81,7 @@ export const setCommand = defineCommand({
         'A value that starts with a dash goes after --. Holds the site lock while it writes.',
     positionals: ['file', 'key', 'value'],
     run: async (_values, args, io) => {
-        const { site } = installedSite(io);
+        const { site } = installedSite(io, { moved: true });
         const { file, rest } = await target(io, site.dir, args, 2);
         const [key, value] = rest as [string, string];
         checkKey(key);

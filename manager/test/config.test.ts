@@ -294,6 +294,18 @@ describe('get, set and unset', () => {
         assert.equal((await h.run('config', 'get')).code, 2);
     });
 
+    test('a moved site can read and set PROJECT_DIR, which other commands refuse to run without', async () => {
+        writeFileSync(join(h.dir, '.env'), 'COMPOSE_PROFILES="local"\nPROJECT_DIR="/srv/old"\n');
+        const refused = await h.run('config', 'validate');
+        assert.equal(refused.code, 1);
+        assert.match(refused.stderr, /\.env says PROJECT_DIR is \/srv\/old, but the site is at /);
+        assert.equal((await h.run('config', 'get', 'PROJECT_DIR')).stdout, '/srv/old\n');
+        const set = await h.run('config', 'set', '.env', 'PROJECT_DIR', h.dir);
+        assert.equal(set.code, 0, set.stderr);
+        assert.equal((await h.run('config', 'get', 'PROJECT_DIR')).stdout, `${h.dir}\n`);
+        assert.doesNotMatch((await h.run('config', 'validate')).stderr, /PROJECT_DIR/);
+    });
+
     test('outside a site, it says there is none', async () => {
         const result = await harness().run('config', 'get', 'A');
         assert.equal(result.code, 1);
