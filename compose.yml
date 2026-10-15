@@ -172,17 +172,13 @@ services:
       GD_IMAGE: ${MANAGER_IMAGE_REF:-ghost-docker:checkout}
     volumes:
       - ${PROJECT_DIR:-/nonexistent}:${PROJECT_DIR:-/nonexistent}
-      - ${DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
+      # Read-only, so the socket file cannot be replaced from in here. It
+      # limits nothing the API can do: connecting is not a write.
+      - ${DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock:ro
       - upgrade:/run/ghost-upgrade
     # Healthy while it answers on its socket, as Ghost would ask it.
     healthcheck:
-      test:
-        - CMD
-        - node
-        - -e
-        - >-
-          require('http').get({socketPath: '/run/ghost-upgrade/supervisor.sock', path: '/v1/status', timeout: 5000},
-          r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))
+      test: ["CMD", "node", "/opt/ghost-docker/manager/src/supervisor/healthcheck.ts"]
       interval: 30s
       timeout: 10s
       start_period: 300s
