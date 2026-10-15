@@ -71,7 +71,7 @@ ghost-docker install --import BUNDLE [--domain DOMAIN] [--admin-domain DOMAIN] [
 | `--name NAME` | The site's `COMPOSE_PROJECT_NAME`, used as given in either mode: lowercase letters, digits and dashes, at most 45 characters. Omitted: chosen as described under [Identity and secrets](#what-installation-does). |
 | `--port PORT` | The loopback port Ghost is published on, in both modes. Omitted: the first at or above 2368 that is free (see [Ports](#ports-and-your-existing-proxy)). |
 | `--version VERSION` | A Ghost version (`6.61.0`, which means `6.61.0-next-alpine`) or a full image tag (`6-next-alpine`). Resolved to an exact digest. Only the `next` variants' layout runs: an image installed by Ghost-CLI, such as the `-alpine` tags, is refused. |
-| `--with LIST` | `activitypub`, and `mailpit` for a local site. `analytics` is added after installation; see below. |
+| `--with LIST` | `activitypub` for a production site, `mailpit` for a local one. `analytics` is added after installation; see below. |
 | `--channel CHANNEL` | Install the newest release on `stable` or `beta`; see [Releases](#releases). |
 | `--release vX.Y.Z` | Install that release. |
 | `--no-prompt` | Never ask: every input must then be an option. |
@@ -99,8 +99,12 @@ it later, edit that line and reload Caddy (see [caddy.md](caddy.md)).
 
 ### Optional services
 
-`--with activitypub` runs the site's own ActivityPub service, its migration
-job and its database; it needs nothing else.
+`--with activitypub`, for a production site only, runs the site's own
+ActivityPub service, its migration job and its database, and routes its paths
+to it through Caddy; it needs nothing else. A local site cannot select it, nor
+analytics: only Caddy's routes reach their services, so `--local` with
+`--with activitypub` is a usage error, and `config validate` rejects either
+profile beside `local`.
 
 It also sets `labs__publicAPI` in `ghost.env`, which ActivityPub and
 analytics both need.
@@ -120,13 +124,13 @@ not SMTP, so Mailpit never sees them. A production site cannot select it:
 rejects `mailpit` beside `production` in `COMPOSE_PROFILES`, because it would
 catch the site's real mail.
 
-Analytics is set up after installation: its Tinybird login is interactive, in a
-browser, and Ghost waits for the Tinybird jobs to finish, so a site cannot start
-with it before that login. Add it to an installed site: set the tokens with
+Analytics, for a production site, is set up after installation: its Tinybird
+login is interactive, in a browser, and Ghost waits for the Tinybird jobs to
+finish, so a site cannot start with it before that login. Add it to an installed site: set the tokens with
 `./ghost-docker config set .env TINYBIRD_TRACKER_TOKEN ...` (and
 `TINYBIRD_ADMIN_TOKEN`, `TINYBIRD_WORKSPACE_ID`), `labs__publicAPI` in
 `ghost.env`, add `analytics` to `COMPOSE_PROFILES`, add its route to
-`caddy/sites/site.caddy` in production, and finish the interactive Tinybird login as
+`caddy/sites/site.caddy`, and finish the interactive Tinybird login as
 [TINYBIRD.md](../TINYBIRD.md) describes. `--with analytics` says so and exits
 2.
 

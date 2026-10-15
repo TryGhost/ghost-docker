@@ -115,9 +115,10 @@ records created resources so a failed installation removes only its own work.
 
 `src/ghost.ts` resolves and inspects the pulled image, including its declared
 layout. `src/payload.ts` writes the image's stack files and pinned launcher;
-checkout files stay in place. A local site gets no `caddy/`, which only the
-production profile mounts; a self-update removes it from local sites installed
-before, keeping any file in it that was edited. Caddy routes are rendered once from
+checkout files stay in place. A local site gets no `caddy/` or `tinybird/`: only
+the production profile mounts the first, and the second builds analytics's
+jobs, which local sites cannot select. A self-update removes them from local
+sites installed before, keeping any file in them that was edited. Caddy routes are rendered once from
 `templates/site.caddy`, then belong to the operator. [caddy.md](caddy.md) owns
 route edits and reload instructions.
 

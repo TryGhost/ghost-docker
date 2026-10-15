@@ -4,8 +4,9 @@
 // In image mode `install` writes them, with a checksum of each recorded in the
 // metadata so that `self-update` can tell an untouched file from an edited one, and
 // writes a copy of the launcher pinned to the image that installed the site.
-// A local site gets only the files its mode runs: Caddy serves production
-// sites only, so caddy/ is not written into a local one.
+// A local site gets only the files its mode runs: Caddy, and analytics
+// behind it, serve production sites only, so caddy/ and tinybird/ are not
+// written into a local one.
 // In clone mode the site is a checkout of the repository: the files are
 // already there, are used in place, and nothing is written over them.
 import { createHash } from 'node:crypto';
@@ -33,8 +34,8 @@ export const sha256 = (content: string | Buffer): string =>
 export const isCheckout = (context: Context, dir: string): boolean =>
     context.source === 'checkout' && existsSync(join(dir, 'manager', 'Dockerfile'));
 
-/** Top-level payload directories only production sites use: Caddy serves no local site. */
-const PRODUCTION_ONLY = ['caddy'];
+/** Top-level payload directories only production sites use: Caddy, and analytics's Tinybird jobs. */
+const PRODUCTION_ONLY = ['caddy', 'tinybird'];
 
 /**
  * Every file of the payload, relative to the stack directory, in a stable

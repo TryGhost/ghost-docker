@@ -57,6 +57,16 @@ describe('.env', () => {
         assert.match(result.errors, /selects mailpit, which is for local sites only/);
     });
 
+    test('analytics and ActivityPub are for production sites only', async () => {
+        makeSite(h, { ...PRODUCTION, COMPOSE_PROFILES: 'production,analytics,activitypub' });
+        assert.doesNotMatch((await validate()).errors, /for production sites only/);
+        makeSite(h, { ...LOCAL, COMPOSE_PROFILES: 'local,analytics,activitypub' });
+        const result = await validate();
+        assert.equal(result.code, 1);
+        assert.match(result.errors, /selects analytics, which is for production sites only/);
+        assert.match(result.errors, /selects activitypub, which is for production sites only/);
+    });
+
     test('SITE_MODE must match COMPOSE_PROFILES', async () => {
         makeSite(h, { ...LOCAL, SITE_MODE: 'production' });
         assert.match((await validate()).errors, /SITE_MODE=production does not match .* \(local\)/);

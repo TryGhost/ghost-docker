@@ -176,7 +176,7 @@ jobs:
       - name: Migration end to end
         run: tests/e2e/migrate-main.sh
 
-  # Real backups and restores on Docker Engine: a local site with ActivityPub
+  # Real backups and restores on Docker Engine: a production site with ActivityPub
   # backed up, restored over itself and into a new directory, the lock
   # refusing a second operation, and a dump that fails.
   backup-linux:

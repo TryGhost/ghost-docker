@@ -172,7 +172,9 @@ const options = z
             ),
         with: services
             .default([])
-            .describe('Optional per-site services: activitypub, and mailpit for a local site.'),
+            .describe(
+                'Optional per-site services: activitypub for a production site, mailpit for a local one.',
+            ),
         import: z
             .string()
             .min(1, { error: 'needs the path of a migration bundle' })
@@ -257,8 +259,13 @@ async function plan(flags: Flags, prompt: Prompter | null): Promise<Plan> {
 const imported = (importing: Importing, flags: Flags): Plan =>
     checked({ ...importing.address(flags), email: flags.email ?? '', services: flags.with });
 
-/** What a production site cannot be, however its domains were given. */
+/** What a site of its mode cannot be, however its domains were given. */
 function checked(intent: Plan): Plan {
+    if (intent.mode === 'local' && intent.services.includes('activitypub')) {
+        throw new UsageError(
+            '--with activitypub is for production sites only: a local site has no Caddy to route to it',
+        );
+    }
     if (intent.mode === 'production') {
         if (intent.adminDomain !== '' && intent.adminDomain === intent.domain) {
             throw new UsageError('--admin-domain must differ from --domain');
@@ -563,7 +570,7 @@ function writeStack(site: Site, created: Created) {
     ok(
         io,
         'stack files',
-        `compose.yml, ${site.production ? 'caddy/, ' : ''}mysql-init/, tinybird/ from the manager image`,
+        `compose.yml, ${site.production ? 'caddy/, mysql-init/, tinybird/' : 'mysql-init/'} from the manager image`,
     );
     writeLauncher(dir, io.env, { image: pin!, channel: site.release.channel }, created);
     created.save();
