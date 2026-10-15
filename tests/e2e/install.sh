@@ -135,20 +135,21 @@ expect_output 'ok +ghost +healthy'
 expect_output 'note +published ports +Docker publishes Ghost on 127\.0\.0\.1:[0-9]+'
 ok "installed and healthy; the host's port is checked below"
 
-for file in compose.yml caddy/Caddyfile caddy/snippets/SecurityHeaders mysql-init/create-multiple-databases.sh \
+for file in compose.yml mysql-init/create-multiple-databases.sh \
     tinybird/Dockerfile .env.example ghost.env.example ghost-docker; do
     [[ -e $A/$file ]] || fail "the payload is missing $file" "$(ls -AR "$A")"
 done
+[[ ! -e $A/caddy ]] || fail "a local site was given caddy/" "$(ls -AR "$A/caddy")"
 [[ -x $A/ghost-docker && -x $A/mysql-init/create-multiple-databases.sh ]] || fail "executables lost their mode"
 grep -qE '^readonly GD_PINNED_IMAGE="[^"]+"$' "$A/ghost-docker" || fail "the site's launcher is not pinned" "$(grep GD_PINNED_IMAGE "$A/ghost-docker")"
-ok "the payload and a pinned launcher were written"
+ok "the payload, without caddy/, and a pinned launcher were written"
 
 for file in .env ghost.env .ghost-docker.json; do
     [[ $(owner_mode "$A/$file") == "$(id -u) 600" ]] || fail "$file is $(owner_mode "$A/$file"), not $(id -u) 600"
 done
 # data/ghost and data/mysql are the images' own business once their services
 # have run: Ghost and MySQL take ownership of them.
-for file in compose.yml caddy/Caddyfile ghost-docker data; do
+for file in compose.yml tinybird/Dockerfile ghost-docker data; do
     [[ $(owner_mode "$A/$file") == "$(id -u) "* ]] || fail "$file belongs to $(owner_mode "$A/$file")"
 done
 ok "credentials are private, and what the manager wrote belongs to $(id -u)"
