@@ -3,9 +3,10 @@
 #
 #   ghost-docker [--dir PATH] <command> [options]
 #   ghost-docker help
-#   curl -fsSL https://docker.ghost.org/install.sh | bash -s -- [install options]
+#   curl -fsSL https://docker.ghost.org/install.sh | bash
+#   curl -fsSL https://docker.ghost.org/install.sh | bash -s -- <command> [options]
 #
-# Piped into bash with no command, the command is `install`.
+# Piped into bash with no arguments, the command is `install`.
 #
 # Everything ghost-docker does happens in a container, the manager image. This
 # script is the only part that runs on the host, and it does three things:
@@ -149,13 +150,17 @@ if [[ -n ${BASH_SOURCE[0]:-} && -f ${BASH_SOURCE[0]} ]]; then
     script_dir=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 fi
 
-# Piped with no command, it installs: `curl ... | bash` and
-# `curl ... | bash -s -- --local` mean `install`, the only command that has no
-# site's own copy of this script to run instead.
-if [[ -z $script_dir && -z $command_word ]]; then
-    command_word=install
-    args=(install ${args[@]+"${args[@]}"})
-    [[ -z $bundle_at ]] || bundle_at=$((bundle_at + 1))
+# Piped with no arguments, it installs: `curl ... | bash` means `install`, the
+# only command that has no site's own copy of this script to run instead. With
+# arguments the command comes first, as it does from a file: only the manager
+# knows which of its options take a value, so a command after them cannot be
+# told from one (`--port 2368`).
+if [[ -z $script_dir ]]; then
+    if ((${#args[@]} == 0)); then
+        args=(install)
+    elif [[ ${args[0]} == -* ]]; then
+        die "name the command first: curl -fsSL https://docker.ghost.org/install.sh | bash -s -- ${site_dir:+--dir $site_dir }install ${args[*]}" 2
+    fi
 fi
 
 # Only the release formats that are published; the manager checks them again.
