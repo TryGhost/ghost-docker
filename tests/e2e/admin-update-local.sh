@@ -20,8 +20,8 @@
 #      newer one as <major>-local too, the tag discovery looks for;
 #   2. installs a local site on the older build with --with supervisor, from
 #      a manager image built from this checkout;
-#   3. turns on HttpUpgradeAdapter in ghost.env, which install leaves off
-#      until a Ghost release ships the update API;
+#   3. makes sure HttpUpgradeAdapter is on in ghost.env: install turns it on
+#      from Ghost 6.72.0, and an older build's version leaves it off;
 #   4. waits until the supervisor offers the newer build one-click,
 # and stops there, printing the Admin URL and what to click. The site is left
 # running; the teardown commands are printed at the end.
@@ -154,7 +154,7 @@ PROJECT=$(gd config get .env COMPOSE_PROJECT_NAME)
 source "$ROOT/tests/e2e/supervisor-api.sh"
 compose_in() { docker compose --project-directory "$S" -f "$S/compose.yml" "$@"; }
 
-step "Ghost's update adapter, on"
+step "Ghost's update adapter, on (install turns it on from 6.72.0)"
 gd config set ghost.env adapters__upgrade__active HttpUpgradeAdapter >/dev/null
 gd config set ghost.env adapters__upgrade__HttpUpgradeAdapter__socketPath \
     /run/ghost-upgrade/supervisor.sock >/dev/null
