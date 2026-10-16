@@ -413,10 +413,12 @@ That is the whole retention rule.
 - sets `SUPERVISOR_UPDATES=minor`.
 
 Install enables `HttpUpgradeAdapter` in `ghost.env` only when the site's
-Ghost is at least the first release that ships it. That release is recorded in
-`manager/src/ghost.ts` once Ghost releases it. Below that version, install leaves
-the adapter off and says so: the supervisor runs, but nothing asks it for
-updates. Ghost's settings, for when Ghost reaches that release:
+Ghost is 6.72.0 or later, the first release with Ghost's side: the adapter,
+the Admin API that calls it and the update panel in Admin. A prerelease of
+6.72.0, as Ghost's nightly builds report, counts. Below that version, install
+leaves the adapter off and says so: the supervisor runs, but nothing asks it
+for updates. Ghost's settings, to add once a site's Ghost reaches 6.72.0, then
+`docker compose up -d ghost`:
 
 ```
 adapters__upgrade__active=HttpUpgradeAdapter

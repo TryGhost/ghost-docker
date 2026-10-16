@@ -34,7 +34,13 @@ import { loadContext, type Context } from '../context.ts';
 import * as env from '../env.ts';
 import { CliError, describeError, EXIT, UsageError } from '../errors.ts';
 import { atomicWrite, PRIVATE } from '../fs.ts';
-import { hasUpgradeAdapter, resolveGhost, UPGRADE_ADAPTER, type ResolvedGhost } from '../ghost.ts';
+import {
+    hasUpgradeAdapter,
+    MINIMUM_UPGRADE_ADAPTER,
+    resolveGhost,
+    UPGRADE_ADAPTER,
+    type ResolvedGhost,
+} from '../ghost.ts';
 import { clearUnfinishedImport, Importing, importConflict } from '../import.ts';
 import type { Io, Prompter } from '../io.ts';
 import { isoSeconds, SCHEMA_VERSION, writeMetadata } from '../meta.ts';
@@ -861,7 +867,7 @@ function printSummary(site: Site, importing: Importing | null) {
                 ? [
                       hasUpgradeAdapter(ghost.version)
                           ? '  Supervisor   running; Ghost Admin offers updates within SUPERVISOR_UPDATES in .env'
-                          : `  Supervisor   running, but Ghost ${ghost.version} cannot use it yet: nothing asks the supervisor for updates until a Ghost release does`,
+                          : `  Supervisor   running, but Ghost ${ghost.version} cannot use it yet: Ghost ${MINIMUM_UPGRADE_ADAPTER} and later offer its updates in Admin`,
                   ]
                 : []),
             '',
