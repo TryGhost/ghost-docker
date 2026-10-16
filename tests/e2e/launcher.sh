@@ -348,14 +348,23 @@ mkdir -p "$WORK/piped"
 : >"$WORK/piped/piped.tgz"
 set +e
 OUT=$(cd "$WORK" && FAKE_DOCKER=ok PATH="$FAKE:$PATH" env ${fake_socket_env[@]+"${fake_socket_env[@]}"} \
-    "$BASH_BIN" -s -- --dir "$SITE" --channel stable --local --import piped/piped.tgz <"$LAUNCHER" 2>&1)
+    "$BASH_BIN" -s -- --dir "$SITE" --channel stable --local --import piped/piped.tgz --port 2368 <"$LAUNCHER" 2>&1)
 RC=$?
 set -e
 expect_status 0
-[[ $(run_args | tail -7) == $'ghcr.io/tryghost/ghost-docker:stable\ninstall\n--channel\nstable\n--local\n--import\n'"$WORK/piped/piped.tgz" ]] ||
+[[ $(run_args | tail -9) == $'ghcr.io/tryghost/ghost-docker:stable\ninstall\n--channel\nstable\n--local\n--import\n'"$WORK/piped/piped.tgz"$'\n--port\n2368' ]] ||
     fail "a piped launcher with no command did not run install" "$(run_args)"
 expect_run_arg "$WORK/piped/piped.tgz:$WORK/piped/piped.tgz:ro"
 rm -rf "$WORK/piped"
+# An option's value is not the command, though it is not an option itself.
+set +e
+OUT=$(FAKE_DOCKER=ok PATH="$FAKE:$PATH" env ${fake_socket_env[@]+"${fake_socket_env[@]}"} \
+    "$BASH_BIN" -s -- --dir "$SITE" --domain example.com <"$LAUNCHER" 2>&1)
+RC=$?
+set -e
+expect_status 0
+[[ $(run_args | tail -4) == $'ghcr.io/tryghost/ghost-docker:beta\ninstall\n--domain\nexample.com' ]] ||
+    fail "a piped launcher took an option's value for the command" "$(run_args)"
 cp "$LAUNCHER" "$WORK/no-command-launcher"
 with_fake ok env ${fake_socket_env[@]+"${fake_socket_env[@]}"} GD_IMAGE=example/manager:1 \
     "$BASH_BIN" "$WORK/no-command-launcher" --dir "$SITE" --local

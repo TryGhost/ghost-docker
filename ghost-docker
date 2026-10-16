@@ -74,8 +74,12 @@ with_deadline() {
 site_dir=""
 # The index in args of a path to mount: --import's bundle, or restore's backup.
 bundle_at=""
-# The first word that is not an option: the command.
+# The first word that is not an option: the command. It comes before the
+# manager's options, because the word after one of them may be its value
+# (`--port 2368`), and only the manager knows which options take one.
 command_word=""
+# Set once a manager option has been passed on: no word after it is the command.
+option_seen=""
 channel=""
 release=""
 declare -a args=()
@@ -106,6 +110,7 @@ while (($#)); do
         # The manager's option, but the bundle has to be mounted for it to
         # see it; the manager validates it like any other argument.
         --import)
+            option_seen=1
             args+=("$1")
             if (($# > 1)); then
                 bundle_at=${#args[@]}
@@ -114,6 +119,7 @@ while (($#)); do
             fi
             ;;
         --import=*)
+            option_seen=1
             args+=(--import)
             bundle_at=${#args[@]}
             args+=("${1#*=}")
@@ -133,9 +139,10 @@ while (($#)); do
             # like a bundle when it is outside the site.
             if [[ $command_word == restore && -z $bundle_at && $1 != -* ]]; then
                 bundle_at=${#args[@]}
-            elif [[ -z $command_word && $1 != -* ]]; then
+            elif [[ -z $command_word && -z $option_seen && $1 != -* ]]; then
                 command_word=$1
             fi
+            [[ $1 != -* ]] || option_seen=1
             args+=("$1")
             ;;
     esac
