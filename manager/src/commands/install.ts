@@ -474,8 +474,8 @@ async function preflight(io: Io, context: Context): Promise<void> {
 
 /**
  * The ports Ghost, and with --with mailpit Mailpit's inbox, are published on.
- * Any port the site needs that a container already publishes is refused,
- * naming the container. Where Docker would publish over a port a host process
+ * Any port the site needs that a running container publishes is refused,
+ * naming the container; one only a stopped site publishes is warned about. Where Docker would publish over a port a host process
  * holds (io.hostListens), Ghost's port must also be free on the host: a
  * chosen one skips it, a requested one is refused. Mailpit's is always
  * chosen, the same way.
@@ -506,6 +506,14 @@ async function sitePorts(
                 '\n  Nothing was stopped. Nothing has been changed.',
         );
     }
+    printChecks(
+        io,
+        [...taken.stopped(wanted).values()].map((detail) => ({
+            status: 'warn',
+            label: 'port',
+            detail,
+        })),
+    );
     if (requested !== undefined && !published.has(port) && (await io.hostListens(port))) {
         throw new CliError(
             `port ${port} is already in use on this host by something outside Docker, such as a\n` +
