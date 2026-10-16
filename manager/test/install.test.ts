@@ -210,6 +210,18 @@ describe('refusals that change nothing', () => {
         assert.equal(env.get(readFileSync(join(h.dir, '.env'), 'utf8'), 'GHOST_PORT'), '2368');
     });
 
+    test('an explicit --port a stopped site takes is still refused when a host process holds it', async () => {
+        stoppedSite();
+        h.daemon.hostPorts = [2368];
+        const result = await install('--local', '--port', '2368', '--no-start');
+        assert.equal(result.code, 1);
+        assert.match(
+            result.stderr,
+            /port 2368 is already in use on this host by something outside Docker/,
+        );
+        assert.deepEqual(siteFiles(), []);
+    });
+
     test('an explicit --port a host process holds is refused where Docker would publish over it', async () => {
         h.daemon.hostPorts = [2368];
         const result = await install('--local', '--port', '2368', '--no-start');

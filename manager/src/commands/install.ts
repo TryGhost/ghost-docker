@@ -514,7 +514,9 @@ async function sitePorts(
             detail,
         })),
     );
-    if (requested !== undefined && !published.has(port) && (await io.hostListens(port))) {
+    // A running container's port was refused above, so whatever listens here
+    // is not Docker publishing this daemon's own port.
+    if (requested !== undefined && (await io.hostListens(port))) {
         throw new CliError(
             `port ${port} is already in use on this host by something outside Docker, such as a\n` +
                 '  Ghost-CLI site (`ghost ls` lists those). Docker here would publish the site on it\n' +
