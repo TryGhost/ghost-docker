@@ -355,7 +355,8 @@ async function refuseOtherConfiguration(
 
 /**
  * A site restored into a new directory keeps its project name and its ports,
- * so nothing on this daemon may already use them. The site the backup was
+ * so nothing running on this daemon may already use them; a stopped site
+ * that publishes one is warned about. The site the backup was
  * taken from is the usual one, and it is named, never stopped.
  */
 async function refuseTaken(io: Io, root: string, manifest: BackupManifest): Promise<void> {
@@ -382,7 +383,8 @@ async function refuseTaken(io: Io, root: string, manifest: BackupManifest): Prom
     const wanted = keys
         .map((key) => Number(settings[key]))
         .filter((port) => Number.isInteger(port) && port > 0);
-    const lines = [...(await takenPorts(io)).holders(wanted).values()];
+    const taken = await takenPorts(io);
+    const lines = [...taken.holders(wanted).values()];
     const ghostPort = Number(settings.GHOST_PORT);
     if (lines.length === 0 && Number.isInteger(ghostPort) && (await io.hostListens(ghostPort))) {
         lines.push(`port ${ghostPort} is already in use on this host by something outside Docker`);
@@ -394,6 +396,14 @@ async function refuseTaken(io: Io, root: string, manifest: BackupManifest): Prom
                 '  stopped. Nothing has been changed.',
         );
     }
+    printChecks(
+        io,
+        [...taken.stopped(wanted).values()].map((detail) => ({
+            status: 'warn',
+            label: 'port',
+            detail,
+        })),
+    );
 }
 
 /** Replacing a site is never a surprise: it is asked, or --yes says so. */

@@ -199,13 +199,25 @@ describe('refusals that change nothing', () => {
         assert.equal(env.get(readFileSync(join(h.dir, '.env'), 'utf8'), 'GHOST_PORT'), '2369');
     });
 
-    test('an explicit --port a stopped site takes is refused, saying it is stopped', async () => {
+    test('an explicit --port a stopped site takes is only warned about', async () => {
         stoppedSite();
-        const result = await install('--local', '--port', '2368');
+        const result = await install('--local', '--port', '2368', '--no-start');
+        assert.equal(result.code, 0, result.stderr);
+        assert.match(
+            result.stderr,
+            /warning +port +port 2368 is also published by the stopped container ghost-local-a-ghost-1; only one can run at a time/,
+        );
+        assert.equal(env.get(readFileSync(join(h.dir, '.env'), 'utf8'), 'GHOST_PORT'), '2368');
+    });
+
+    test('an explicit --port a stopped site takes is still refused when a host process holds it', async () => {
+        stoppedSite();
+        h.daemon.hostPorts = [2368];
+        const result = await install('--local', '--port', '2368', '--no-start');
         assert.equal(result.code, 1);
         assert.match(
             result.stderr,
-            /port 2368 is already taken by the Docker container ghost-local-a-ghost-1, which is stopped and publishes it when it starts/,
+            /port 2368 is already in use on this host by something outside Docker/,
         );
         assert.deepEqual(siteFiles(), []);
     });
