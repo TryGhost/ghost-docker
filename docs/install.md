@@ -6,13 +6,12 @@ curl -fsSL https://docker.ghost.org/install.sh | bash -s -- install --local   # 
 ```
 
 `install.sh` is the launcher, `ghost-docker`, from the newest release on the
-`beta` channel. Piped into bash, it runs the command named first, as
+`beta` channel. Piped into bash it runs the command it is given, as
 `./ghost-docker` does: `bash -s -- install --local`, `bash -s -- self-update`.
-With no arguments at all it runs `install`. As with Ghost-CLI's `ghost
-install`, a site is a production one unless `--local` is given: plain `curl
--fsSL https://docker.ghost.org/install.sh | bash` asks for its domain.
-`install` writes a copy of the launcher into the site, and every later command
-is `./ghost-docker ...` from there.
+As with Ghost-CLI's `ghost install`, a site is a production one unless
+`--local` is given: `bash -s -- install` asks for its domain. `install` writes
+a copy of the launcher into the site, and every later command is
+`./ghost-docker ...` from there.
 
 ## Releases
 

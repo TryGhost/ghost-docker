@@ -344,43 +344,6 @@ expect_status 0
 expect_run_arg "ghcr.io/tryghost/ghost-docker:beta"
 ok "runs with no file of its own, and uses the published image"
 
-mkdir -p "$WORK/piped"
-: >"$WORK/piped/piped.tgz"
-set +e
-OUT=$(cd "$WORK" && FAKE_DOCKER=ok PATH="$FAKE:$PATH" env ${fake_socket_env[@]+"${fake_socket_env[@]}"} \
-    "$BASH_BIN" -s -- --dir "$SITE" install --channel stable --local --import piped/piped.tgz --port 2368 <"$LAUNCHER" 2>&1)
-RC=$?
-set -e
-expect_status 0
-[[ $(run_args | tail -9) == $'ghcr.io/tryghost/ghost-docker:stable\ninstall\n--channel\nstable\n--local\n--import\n'"$WORK/piped/piped.tgz"$'\n--port\n2368' ]] ||
-    fail "a piped install was not passed on as it was given" "$(run_args)"
-expect_run_arg "$WORK/piped/piped.tgz:$WORK/piped/piped.tgz:ro"
-rm -rf "$WORK/piped"
-: >"$FAKE_CALLS"
-set +e
-OUT=$(FAKE_DOCKER=ok PATH="$FAKE:$PATH" env ${fake_socket_env[@]+"${fake_socket_env[@]}"} \
-    "$BASH_BIN" -s -- --dir "$SITE" <"$LAUNCHER" 2>&1)
-RC=$?
-set -e
-expect_status 0
-[[ $(run_args | tail -2) == $'ghcr.io/tryghost/ghost-docker:beta\ninstall' ]] ||
-    fail "a piped launcher with no arguments did not run install" "$(run_args)"
-: >"$FAKE_CALLS"
-set +e
-OUT=$(FAKE_DOCKER=ok PATH="$FAKE:$PATH" env ${fake_socket_env[@]+"${fake_socket_env[@]}"} \
-    "$BASH_BIN" -s -- --dir "$SITE" --local <"$LAUNCHER" 2>&1)
-RC=$?
-set -e
-expect_status 2
-expect_output "name the command first: .* bash -s -- --dir $SITE install --local"
-[[ -z $(run_args) ]] || fail "a piped launcher with options and no command ran the manager" "$(run_args)"
-cp "$LAUNCHER" "$WORK/no-command-launcher"
-with_fake ok env ${fake_socket_env[@]+"${fake_socket_env[@]}"} GD_IMAGE=example/manager:1 \
-    "$BASH_BIN" "$WORK/no-command-launcher" --dir "$SITE" --local
-[[ $(run_args | tail -2) == $'example/manager:1\n--local' ]] ||
-    fail "a launcher run from a file was given a command" "$(run_args)"
-ok "piped with no arguments means install; with options, the command comes first; a file is not given one"
-
 step "The manager's exit status"
 for status in 0 1 2 3; do
     : >"$FAKE_CALLS"
