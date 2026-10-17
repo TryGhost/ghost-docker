@@ -27,8 +27,8 @@
 #
 # Versions are plain releases, X.Y.Z: a prerelease such as 6.72.0-rc.0 would
 # make its tag 6.72.0-rc.0-local, whose variant reads as `rc.0-local`. The two
-# must be the same major, the newer one newer, and within a minor either policy
-# offers it one-click.
+# must be the same major, and the newer one newer: the supervisor offers it
+# one-click.
 set -euo pipefail
 
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd -P)
