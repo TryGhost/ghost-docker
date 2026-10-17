@@ -8,8 +8,8 @@ import { daemonInfo, runOnce } from '../docker/client.ts';
 import { CliError, EXIT } from '../errors.ts';
 import type { Io } from '../io.ts';
 import { requireMetadata, type Metadata } from '../meta.ts';
-import { readSettings, type SiteFacts } from '../site.ts';
-import { discover, parsePolicy } from '../supervisor/discovery.ts';
+import type { SiteFacts } from '../site.ts';
+import { discover } from '../supervisor/discovery.ts';
 import { ghostJob } from '../supervisor/job.ts';
 import { SOCKET_DIR, SOCKET_PATH } from '../supervisor/protocol.ts';
 import { listen, supervisorServer } from '../supervisor/server.ts';
@@ -123,7 +123,6 @@ export const supervisorRunCommand = defineCommand({
             execute: ghostJob(io, dir),
             discover,
             metadata,
-            policy: () => parsePolicy(readSettings(dir)?.get('SUPERVISOR_UPDATES')),
         });
         supervisor.start();
         const server = supervisorServer(supervisor, io.stderr);

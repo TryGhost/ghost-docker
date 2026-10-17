@@ -14,7 +14,7 @@ import { acquireLock, describeLock, readLock, type Lock } from '../lock.ts';
 import type { Metadata } from '../meta.ts';
 import { UPDATE_DIR } from '../site.ts';
 import { diagnostic } from './diagnostics.ts';
-import type { Discoverer, Policy } from './discovery.ts';
+import type { Discoverer } from './discovery.ts';
 import { DISCOVERY_EVERY_MS } from './discovery.ts';
 import {
     createUpgradeRequestSchema,
@@ -68,8 +68,6 @@ export interface SupervisorOptions {
     readonly discover: Discoverer;
     /** The site's metadata, read again each time: an update changes it. */
     readonly metadata: () => Metadata;
-    /** SUPERVISOR_UPDATES, or null when `.env` sets something else. */
-    readonly policy: () => Policy | null;
     readonly now?: () => Date;
 }
 
@@ -211,7 +209,7 @@ export class Supervisor {
 
     /**
      * POST /v1/requests, decided in the protocol's order: a replay first, then
-     * availability, then policy. It never yields, so two requests are never
+     * availability, then the offer. It never yields, so two requests are never
      * both accepted (docs/upgrade-supervisor.md#supervisor-a-request).
      */
     request(body: unknown): Answer {
@@ -419,18 +417,6 @@ export class Supervisor {
         availability: SupervisorStatus['availability'];
         diagnostics: UpgradeDiagnostic[];
     } {
-        if (this.options.policy() === null) {
-            return {
-                availability: 'unavailable',
-                diagnostics: [
-                    diagnostic(
-                        'policy-invalid',
-                        'error',
-                        '`SUPERVISOR_UPDATES` in `.env` must be `minor` or `patch`, so the supervisor runs no updates.',
-                    ),
-                ],
-            };
-        }
         if (this.activeId !== null) {
             return {
                 availability: 'busy',
@@ -500,20 +486,16 @@ export class Supervisor {
     }
 
     async rediscover(): Promise<void> {
-        const policy = this.options.policy();
-        if (policy !== null) {
-            try {
-                this.discovery = await this.options.discover({
-                    io: this.io,
-                    metadata: this.options.metadata(),
-                    policy,
-                    previous: this.discovery,
-                    now: this.now(),
-                });
-                this.records.writeDiscovery(this.discovery);
-            } catch (error) {
-                this.io.stderr(`Checking for updates failed: ${(error as Error).message}\n`);
-            }
+        try {
+            this.discovery = await this.options.discover({
+                io: this.io,
+                metadata: this.options.metadata(),
+                previous: this.discovery,
+                now: this.now(),
+            });
+            this.records.writeDiscovery(this.discovery);
+        } catch (error) {
+            this.io.stderr(`Checking for updates failed: ${(error as Error).message}\n`);
         }
         this.discoveredAt = this.now().getTime();
     }

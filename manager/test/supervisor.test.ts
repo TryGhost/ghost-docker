@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, test } from 'node:test';
 import type { Io } from '../src/io.ts';
 import { acquireLock, readLock } from '../src/lock.ts';
 import type { Metadata } from '../src/meta.ts';
-import type { Discoverer, Policy } from '../src/supervisor/discovery.ts';
+import type { Discoverer } from '../src/supervisor/discovery.ts';
 import { randomIdempotencyKey, type UpgradeJob } from '../src/supervisor/protocol.ts';
 import { listen, supervisorServer } from '../src/supervisor/server.ts';
 import { HISTORY, Records } from '../src/supervisor/store.ts';
@@ -25,7 +25,6 @@ let root: string;
 let dir: string;
 let socket: string;
 let logged: string[];
-let policy: Policy | null;
 let execute: Executor;
 let servers: Server[];
 
@@ -64,7 +63,6 @@ async function serve(): Promise<Supervisor> {
         execute: (context) => execute(context),
         discover,
         metadata,
-        policy: () => policy,
     });
     supervisor.start();
     const server = supervisorServer(supervisor, io.stderr);
@@ -134,7 +132,6 @@ beforeEach(() => {
     mkdirSync(dir);
     socket = join(root, 's.sock');
     logged = [];
-    policy = 'minor';
     execute = done;
     servers = [];
 });
@@ -268,7 +265,6 @@ describe('refusals', () => {
             execute: (context) => execute(context),
             discover: async (input) => ({ ...(await discover(input)), pins: [] }),
             metadata,
-            policy: () => policy,
         });
         supervisor.start();
         const server = supervisorServer(supervisor, io.stderr);
@@ -299,13 +295,6 @@ describe('refusals', () => {
         assert.match(answer.body.error.diagnostics[0].message, /held by backup/);
         lock.release();
         assert.equal(await availability(), 'ready');
-    });
-
-    test('an invalid policy makes the supervisor unavailable', async () => {
-        policy = null;
-        await serve();
-        assert.equal(await availability(), 'unavailable');
-        assert.equal(await rejected(), 'unavailable');
     });
 });
 

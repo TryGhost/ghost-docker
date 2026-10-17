@@ -620,7 +620,6 @@ function writeEnv(site: Site, created: Created) {
     if (intent.services.includes('supervisor')) {
         // It runs as whoever installed the site, on the manager the launcher is pinned to.
         settings.push(
-            ['SUPERVISOR_UPDATES', 'minor'],
             ['SUPERVISOR_UID', String(site.context.caller.uid)],
             ['SUPERVISOR_GID', String(site.context.caller.gid)],
             ['MANAGER_IMAGE_REF', site.pin ?? 'ghost-docker:checkout'],
@@ -855,7 +854,7 @@ function printSummary(site: Site, importing: Importing | null) {
             ...(importing === null ? [] : [`  Imported     ${importing.description}`]),
             ...(intent.services.includes('supervisor')
                 ? [
-                      '  Supervisor   running; Ghost Admin offers updates within SUPERVISOR_UPDATES in .env',
+                      "  Supervisor   running; Ghost Admin offers updates within the site's Ghost major",
                   ]
                 : []),
             '',

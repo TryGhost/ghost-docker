@@ -449,7 +449,7 @@ describe('a local site with the upgrade supervisor, not started', () => {
     test('.env selects it, runs it as the installer, on the pinned manager, at minor updates', () => {
         const values = env.toRecord(readFileSync(join(h.dir, '.env'), 'utf8'));
         assert.equal(values.COMPOSE_PROFILES, 'local,supervisor');
-        assert.equal(values.SUPERVISOR_UPDATES, 'minor');
+        assert.equal(values.SUPERVISOR_UPDATES, undefined);
         assert.equal(values.SUPERVISOR_UID, String(h.env.GD_UID));
         assert.equal(values.SUPERVISOR_GID, String(h.env.GD_GID));
         assert.match(values.MANAGER_IMAGE_REF ?? '', /@sha256:|^sha256:/);

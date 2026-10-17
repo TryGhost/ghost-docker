@@ -124,8 +124,8 @@ rejects `mailpit` beside `production` in `COMPOSE_PROFILES`, because it would
 catch the site's real mail.
 
 `--with supervisor` runs the upgrade supervisor, which performs Ghost updates
-asked for in Ghost Admin, within the policy you set in `.env`
-(`SUPERVISOR_UPDATES`: `minor`, the default, or `patch`). Every update it runs
+asked for in Ghost Admin: any newer release of the site's Ghost major, as its
+major tag (`6-next-alpine`) points to. Every update it runs
 is `update` with a checked backup first, and majors and stack updates always
 stay on the host. It holds the Docker socket and runs as you. Ghost's side,
 `HttpUpgradeAdapter`, is turned on in `ghost.env` too. Ghost 6.72.0 is the
@@ -803,7 +803,7 @@ usage error.
 ### From Ghost Admin: the upgrade supervisor
 
 A site installed `--with supervisor` runs these updates on Ghost Admin's
-request, one at a time, refusing anything outside `SUPERVISOR_UPDATES`. Each
+request, one at a time, refusing anything it does not offer. Each
 job reports the same outcomes, and needs the same recovery, as `update` above.
 Ghost Admin shows what the supervisor offers and each job's progress.
 

@@ -5,7 +5,7 @@
 // and reading the version the image declares, never by trusting a tag name.
 // A component whose check fails keeps its last result for a day, then offers
 // nothing one-click: an update is only offered while it is known to exist.
-import { gt, major, minor, valid } from 'semver';
+import { gt, major, valid } from 'semver';
 import { pullImage, runOnce, splitReference } from '../docker/client.ts';
 import { resolveGhost, variantOf } from '../ghost.ts';
 import type { Io } from '../io.ts';
@@ -20,16 +20,6 @@ export const DISCOVERY_EVERY_MS = 6 * 60 * 60_000;
 /** How long a component's last result stands in for a failed check. */
 export const DISCOVERY_KEPT_MS = 24 * 60 * 60_000;
 
-export const POLICIES = ['minor', 'patch'] as const;
-export type Policy = (typeof POLICIES)[number];
-
-export const parsePolicy = (value: string | undefined): Policy | null =>
-    value === undefined || value === ''
-        ? 'minor'
-        : (POLICIES as readonly string[]).includes(value)
-          ? (value as Policy)
-          : null;
-
 interface Found {
     readonly oneClick: OneClickUpdate[];
     readonly manual: ManualUpdate[];
@@ -40,8 +30,11 @@ const NOTHING: Found = { oneClick: [], manual: [], pins: [] };
 
 const OPERATOR_GUIDE = 'https://github.com/TryGhost/ghost-docker/blob/next-docker/docs/install.md';
 
-/** The Ghost updates of the site's major and the next one. */
-async function ghostUpdates(io: Io, metadata: Metadata, policy: Policy): Promise<Found> {
+/**
+ * The Ghost updates of the site's major and the next one. Whatever the site's
+ * major tag points to is offered one-click: the tag is the policy.
+ */
+async function ghostUpdates(io: Io, metadata: Metadata): Promise<Found> {
     const from = metadata.ghost;
     if (valid(from.version) === null) {
         return NOTHING;
@@ -56,21 +49,16 @@ async function ghostUpdates(io: Io, metadata: Metadata, policy: Policy): Promise
         major(latest.version) === current &&
         gt(latest.version, from.version)
     ) {
-        const entry = { component: 'ghost', fromVersion: from.version, toVersion: latest.version };
-        if (policy === 'patch' && minor(latest.version) !== minor(from.version)) {
-            found.manual.push({
-                ...entry,
-                reason: 'This host allows patch updates of Ghost from Admin, and this is a minor update.',
-                steps: [`In the site directory, run \`./ghost-docker update ${latest.version}\``],
-            });
-        } else {
-            found.oneClick.push(entry);
-            found.pins.push({
-                component: 'ghost',
-                toVersion: latest.version,
-                target: { image: latest.image, tag: latest.tag, digest: latest.digest },
-            });
-        }
+        found.oneClick.push({
+            component: 'ghost',
+            fromVersion: from.version,
+            toVersion: latest.version,
+        });
+        found.pins.push({
+            component: 'ghost',
+            toVersion: latest.version,
+            target: { image: latest.image, tag: latest.tag, digest: latest.digest },
+        });
     }
 
     let next;
@@ -147,7 +135,6 @@ async function stackUpdates(io: Io, metadata: Metadata): Promise<Found> {
 export interface DiscoverInput {
     readonly io: Io;
     readonly metadata: Metadata;
-    readonly policy: Policy;
     readonly previous: Discovery | undefined;
     readonly now: Date;
 }
@@ -155,7 +142,7 @@ export interface DiscoverInput {
 export type Discoverer = (input: DiscoverInput) => Promise<Discovery>;
 
 const CHECKS: Record<string, (input: DiscoverInput) => Promise<Found>> = {
-    ghost: ({ io, metadata, policy }) => ghostUpdates(io, metadata, policy),
+    ghost: ({ io, metadata }) => ghostUpdates(io, metadata),
     stack: ({ io, metadata }) => stackUpdates(io, metadata),
 };
 

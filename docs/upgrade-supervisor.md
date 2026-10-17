@@ -1,8 +1,8 @@
 # Upgrade supervisor — HTTP protocol v1
 
 The upgrade supervisor runs Ghost updates that a site's owner or administrator
-asks for in Ghost Admin. It runs on the host's behalf, within a policy set by the
-host's operator. This document is the contract between the two ends:
+asks for in Ghost Admin. It runs on the host's behalf, within limits the host's
+operator decides. This document is the contract between the two ends:
 
 - **The supervisor**: `supervisor run`, a long-running command of the manager
   image. It is enabled per site with `install --with supervisor`, and serves a
@@ -53,18 +53,20 @@ unattended upgrades, configurable retention, and stack updates run from Admin.
 
 ## Policy
 
-The host's operator decides whether a site can be updated from Admin, and within
-what limits. Ghost's owner/admin authorization permits requests only within that
-policy.
+The host's operator decides whether a site can be updated from Admin. Ghost's
+owner/admin authorization permits requests only within what the supervisor
+offers.
 
 | Setting | Where | Meaning |
 | --- | --- | --- |
 | `supervisor` in `COMPOSE_PROFILES` | `.env` | The supervisor runs. Without it, nothing answers on the socket. |
-| `SUPERVISOR_UPDATES` | `.env` | `minor` (default): any newer release of the site's Ghost major. `patch`: newer releases of the same minor only. |
-| `adapters__upgrade__active` | `ghost.env` | `HttpUpgradeAdapter` lets Ghost show updates and send requests. Install sets it only for a Ghost that has the adapter (see [Installation](#installation)). |
+| `adapters__upgrade__active` | `ghost.env` | `HttpUpgradeAdapter` lets Ghost show updates and send requests. Install sets it (see [Installation](#installation)). |
 
-These rules are fixed rather than set by policy:
+These rules are fixed:
 
+- **Any newer Ghost of the site's major is one-click**: whatever the site's
+  major tag (`6-next-alpine`) points to. Ghost releases a minor most weeks, so
+  a narrower limit would offer almost nothing.
 - **Majors are never one-click.** `update` does not perform major upgrades.
 - **Every job takes a consistent, checked backup** before it changes anything,
   as `update` does, so status always reports `backupRequired: true`.
@@ -79,11 +81,10 @@ without rules of its own for any component.
 
 | Situation | List | `reason` and `steps` |
 | --- | --- | --- |
-| Newer Ghost in the site's major, within `SUPERVISOR_UPDATES` | `oneClick` | — |
-| Newer Ghost in the site's major, outside `SUPERVISOR_UPDATES` (`patch` policy, newer minor) | `manual` | The host allows patch updates only. `./ghost-docker update <version>` in the site directory. |
+| Newer Ghost in the site's major | `oneClick` | — |
 | The next Ghost major exists | `manual` | Major upgrades are not run from Admin. Points to the operator guide. |
 | Newer stack release on the site's channel (image installations) | `manual` | The update replaces the supervisor itself. `./ghost-docker self-update`. |
-| A Ghost the policy would allow, but which needs a newer stack | `manual` | Names the stack release it needs. Reserved: no release declares this yet. |
+| A newer Ghost of the site's major that needs a newer stack | `manual` | Names the stack release it needs. Reserved: no release declares this yet. |
 
 Checkouts report no `stack` entries. Git and Compose own their updates, and the
 supervisor cannot tell what a newer checkout is.
@@ -246,8 +247,8 @@ The supervisor reports only `ready`, `busy` or `unavailable`:
 
 - `busy`: a job is active, or another operation holds the site lock.
 - `unavailable`: something the operator must resolve. Examples are an
-  interrupted job's lock, an unreadable lock, a leftover `.ghost-docker-update/`,
-  or an invalid `SUPERVISOR_UPDATES`.
+  interrupted job's lock, an unreadable lock, or a leftover
+  `.ghost-docker-update/`.
 
 A diagnostic always says which of these it is. `pollAfterMs` is `2000` while a
 job is active and `30000` otherwise.
@@ -326,7 +327,7 @@ own failure: it logs it and shows Admin `unavailable`. A job ID that fails the j
 ### Supervisor: a request
 
 `POST /v1/requests` is decided in this order. A replay is answered before any
-availability or policy check, so a retry after a lost answer learns its job
+availability or offer check, so a retry after a lost answer learns its job
 even while that job runs, or once its update is no longer offered.
 
 1. **Read it.** Over 4 KiB is `413`. Not JSON, or not the request schema, is
@@ -415,8 +416,7 @@ That is the whole retention rule.
 
 - adds `supervisor` to `COMPOSE_PROFILES`;
 - records `SUPERVISOR_UID`, `SUPERVISOR_GID`, `MANAGER_IMAGE_REF` (a checkout
-  uses `ghost-docker:checkout`) and `DOCKER_SOCKET` in `.env`;
-- sets `SUPERVISOR_UPDATES=minor`.
+  uses `ghost-docker:checkout`) and `DOCKER_SOCKET` in `.env`.
 
 Install also turns on `HttpUpgradeAdapter` in `ghost.env`, whatever the
 site's Ghost:

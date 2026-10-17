@@ -124,8 +124,8 @@ Adding one never changes the site mode:
 | `mailpit` | `mailpit`, its inbox on `127.0.0.1:${MAILPIT_PORT}` | one long-running Go service (~20-30 MB RSS); its messages in `${MAILPIT_DATA_LOCATION}` |
 | `supervisor` | `supervisor`, the manager image as a service | one long-running Node process; it holds the Docker socket. See [upgrade-supervisor.md](upgrade-supervisor.md) |
 
-`supervisor` reads `SUPERVISOR_UPDATES`, `SUPERVISOR_UID`, `SUPERVISOR_GID`,
-`MANAGER_IMAGE_REF` and `DOCKER_SOCKET` from `.env`, which `install --with
+`supervisor` reads `SUPERVISOR_UID`, `SUPERVISOR_GID`, `MANAGER_IMAGE_REF`
+and `DOCKER_SOCKET` from `.env`, which `install --with
 supervisor` writes and `self-update` keeps on the release it installs. Every
 site's Ghost mounts the `upgrade` volume read-only, where the supervisor's
 socket is; it stays empty without the supervisor.
