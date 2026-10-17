@@ -151,7 +151,8 @@ run env GD_IMAGE="$MANAGER" "$ROOT/ghost-docker" --dir "$S" install --local --ve
     --with supervisor --no-prompt
 expect_status 0
 [[ $(setting COMPOSE_PROFILES) == local,supervisor ]] || fail "the supervisor profile is not selected"
-grep -q adapters__upgrade "$S/ghost.env" && fail "the adapter was enabled on a Ghost that does not ship it"
+# On, whatever the Ghost: one without the upgrade adapter type ignores it.
+grep -q '^adapters__upgrade__active=' "$S/ghost.env" || fail "install did not turn on HttpUpgradeAdapter"
 wait_for ready 300 availability
 to=$(status_json | jq -r '.oneClick[] | select(.component == "ghost") | .toVersion')
 [[ -n $to && $to != "$FROM" ]] || fail "no one-click Ghost update is offered" "$(status_json)"
