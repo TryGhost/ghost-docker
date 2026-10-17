@@ -69,8 +69,10 @@ ghost-docker install --import BUNDLE [--domain DOMAIN] [--admin-domain DOMAIN] [
 | `--email EMAIL` | The ACME account email. Production only; see below. |
 | `--name NAME` | The site's `COMPOSE_PROJECT_NAME`, used as given in either mode: lowercase letters, digits and dashes, at most 45 characters. Omitted: chosen as described under [Identity and secrets](#what-installation-does). |
 | `--port PORT` | The loopback port Ghost is published on, in both modes. Omitted: the first at or above 2368 that is free (see [Ports](#ports-and-your-existing-proxy)). |
-| `--version VERSION` | A Ghost version (`6.61.0`, which means `6.61.0-next-alpine`) or a full image tag (`6-next-alpine`). Resolved to an exact digest. Only the `next` variants' layout runs: an image installed by Ghost-CLI, such as the `-alpine` tags, is refused. |
-| `--with LIST` | `activitypub` for a production site, `mailpit` for a local one. `analytics` is added after installation; see below. |
+| `--version VERSION` | A Ghost version (`6.61.0`, which means `6.61.0-next-alpine`) or a full image tag (`6-next-alpine`). Resolved to an exact digest. Only the `next` variants' layout runs: an image installed by Ghost-CLI, such as the `-alpine` tags, is refused. On the nightly channel: a build's date (`20261015`) or `latest`, the default. |
+| `--ghost-image REPO` | Ghost's image repository, such as `localhost:5050/ghost`, for testing your own builds of Ghost; `--version` names the tag. Default: `ghost`. Not with `--ghost-channel nightly` or `--import`. |
+| `--ghost-channel C` | `stable` (default) or `nightly`: Ghost's nightly builds of `main`, from `ghost/nightly`, for testing only. Not with `--import`. See [Ghost channel](configuration.md#ghost-channel). |
+| `--with LIST` | `activitypub` for a production site, `mailpit` for a local one, `supervisor` for either. `analytics` is added after installation; see below. |
 | `--channel CHANNEL` | Install the newest release on `stable` or `beta`; see [Releases](#releases). |
 | `--release vX.Y.Z` | Install that release. |
 | `--no-prompt` | Never ask: every input must then be an option. |

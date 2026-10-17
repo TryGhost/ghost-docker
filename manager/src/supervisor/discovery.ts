@@ -7,7 +7,8 @@
 // nothing one-click: an update is only offered while it is known to exist.
 import { gt, major, valid } from 'semver';
 import { pullImage, runOnce, splitReference } from '../docker/client.ts';
-import { resolveGhost, variantOf } from '../ghost.ts';
+import { order } from '../commands/update.ts';
+import { ghostChannelOf, NIGHTLY_LATEST, resolveGhost, variantOf } from '../ghost.ts';
 import type { Io } from '../io.ts';
 import type { Metadata } from '../meta.ts';
 import { compareReleases, isRelease } from '../release.ts';
@@ -30,12 +31,59 @@ const NOTHING: Found = { oneClick: [], manual: [], pins: [] };
 
 const OPERATOR_GUIDE = 'https://github.com/TryGhost/ghost-docker/blob/next-docker/docs/install.md';
 
+/** The newest nightly build, when the site follows Ghost's nightly channel. */
+async function nightlyUpdates(io: Io, metadata: Metadata): Promise<Found> {
+    const from = metadata.ghost;
+    const latest = await resolveGhost(io, NIGHTLY_LATEST, from.image);
+    if (latest.digest === from.digest || valid(latest.version) === null) {
+        return NOTHING;
+    }
+    const entry = { component: 'ghost', fromVersion: from.version, toVersion: latest.version };
+    if (major(latest.version) !== major(from.version)) {
+        return {
+            oneClick: [],
+            pins: [],
+            manual: [
+                {
+                    ...entry,
+                    reason: `Ghost's nightly builds have moved to Ghost ${major(latest.version)}, a major upgrade, which is never run from Admin.`,
+                    steps: [
+                        `ghost-docker does not yet upgrade a site across Ghost major versions. Follow the operator guide: ${OPERATOR_GUIDE}`,
+                    ],
+                },
+            ],
+        };
+    }
+    try {
+        if ((await order(io, from, latest)) !== 'newer') {
+            return NOTHING;
+        }
+    } catch {
+        // Older than the build the site runs, or not orderable: nothing to offer.
+        return NOTHING;
+    }
+    return {
+        oneClick: [entry],
+        manual: [],
+        pins: [
+            {
+                component: 'ghost',
+                toVersion: latest.version,
+                target: { image: latest.image, tag: latest.tag, digest: latest.digest },
+            },
+        ],
+    };
+}
+
 /**
  * The Ghost updates of the site's major and the next one. Whatever the site's
  * major tag points to is offered one-click: the tag is the policy.
  */
 async function ghostUpdates(io: Io, metadata: Metadata): Promise<Found> {
     const from = metadata.ghost;
+    if (ghostChannelOf(from.image) === 'nightly') {
+        return nightlyUpdates(io, metadata);
+    }
     if (valid(from.version) === null) {
         return NOTHING;
     }

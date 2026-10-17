@@ -13,7 +13,15 @@ import { findingErrors, validate } from '../config.ts';
 import * as env from '../env.ts';
 import { CliError, EXIT, UsageError } from '../errors.ts';
 import { atomicWrite } from '../fs.ts';
-import { resolveGhost, variantOf, type ResolvedGhost } from '../ghost.ts';
+import {
+    ghostChannelOf,
+    NIGHTLY_LATEST,
+    NIGHTLY_TAG,
+    resolveGhost,
+    pinnedCreated,
+    variantOf,
+    type ResolvedGhost,
+} from '../ghost.ts';
 import type { Io } from '../io.ts';
 import { acquireLock } from '../lock.ts';
 import { requireMetadata, siteFiles, writeMetadata, type Metadata } from '../meta.ts';
@@ -55,6 +63,66 @@ function requestedVersion(positionals: string[]): string | null {
         throw new UsageError(`a Ghost version, such as 6.68.0, or latest: got '${requested}'`);
     }
     return bare;
+}
+
+/** What `update` was asked for on the nightly channel: latest, or a build's date. */
+function requestedBuild(positionals: string[]): string {
+    const [requested = NIGHTLY_LATEST] = positionals;
+    if (!NIGHTLY_TAG.test(requested)) {
+        throw new UsageError(
+            `this site follows Ghost's nightly builds, which are chosen by date, such as 20261015, or latest: got '${requested}'`,
+        );
+    }
+    return requested;
+}
+
+/**
+ * The target's direction from the site's Ghost. Stable releases order by
+ * version. Nightly builds order by when they were built: two can report the
+ * same version, which differs only in the commit it names.
+ */
+export async function order(io: Io, from: Pin, to: ResolvedGhost): Promise<Direction> {
+    const channel = ghostChannelOf(from.image);
+    if (ghostChannelOf(to.image) !== channel) {
+        throw new CliError(
+            `this site follows Ghost's ${channel} channel, and ${to.reference} is on another one. Moving a site\n` +
+                '  between channels is not supported yet. Nothing has been changed.',
+        );
+    }
+    if (channel === 'stable') {
+        return direction(from, to);
+    }
+    if (to.digest === from.digest) {
+        return 'current';
+    }
+    if (valid(to.version) === null || major(to.version) !== major(from.version)) {
+        throw new CliError(
+            `this site runs Ghost ${from.version}, and ${to.reference} is Ghost ${to.version}: another major\n` +
+                '  version, or one update cannot order. A major upgrade is not supported yet. Nothing has been changed.',
+        );
+    }
+    let built: string | null;
+    try {
+        built = await pinnedCreated(io, from.image, from.tag, from.digest);
+    } catch (error) {
+        throw new CliError(
+            `the nightly build this site runs, ${reference(from)}, cannot be read to tell when it was built:\n` +
+                `  ${(error as Error).message.split('\n')[0]}\n  Nothing has been changed.`,
+        );
+    }
+    if (built === null || to.created === null) {
+        throw new CliError(
+            `${built === null ? reference(from) : to.reference} does not say when it was built, so update cannot\n` +
+                '  order the two nightly builds. Nothing has been changed.',
+        );
+    }
+    if (Date.parse(to.created) <= Date.parse(built)) {
+        throw new CliError(
+            `${to.reference} was built ${to.created}, before the nightly build this site runs (${built}).\n` +
+                '  update never moves a site to an older build: its migrations are not undone. Nothing has been changed.',
+        );
+    }
+    return 'newer';
 }
 
 export type Direction = 'newer' | 'rebuilt' | 'current';
@@ -101,11 +169,12 @@ export const updateCommand = defineCommand({
     options,
     positionals: ['version'],
     async run(flags, positionals, io) {
-        const requested = requestedVersion(positionals);
         const { site } = installedSite(io);
         const dir = site.dir;
         const metadata = requireMetadata(dir, 'update cannot tell which Ghost it runs');
         const from: Pin = metadata.ghost;
+        const nightly = ghostChannelOf(from.image) === 'nightly';
+        const requested = nightly ? null : requestedVersion(positionals);
         const pinned = site.settings.get('GHOST_IMAGE_REF');
         if (pinned !== reference(from)) {
             throw new CliError(
@@ -132,8 +201,11 @@ export const updateCommand = defineCommand({
         }
         // Pulled while the site keeps running: the slowest step, kept out of the outage.
         const variant = variantOf(from.tag);
-        const tag =
-            requested === null ? `${major(from.version)}-${variant}` : `${requested}-${variant}`;
+        const tag = nightly
+            ? requestedBuild(positionals)
+            : requested === null
+              ? `${major(from.version)}-${variant}`
+              : `${requested}-${variant}`;
         const to = await io.busy(`Pulling ${from.image}:${tag}`, () =>
             resolveGhost(io, tag, from.image),
         );
@@ -142,7 +214,7 @@ export const updateCommand = defineCommand({
                 `${to.image}:${to.tag} is Ghost ${to.version}, not ${requested}. Nothing has been changed.`,
             );
         }
-        const decided = direction(from, to);
+        const decided = await order(io, from, to);
         const update: GhostUpdate = { io, site, metadata, from, to };
 
         if (flags.check) {

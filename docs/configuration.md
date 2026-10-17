@@ -302,6 +302,26 @@ the pulled image's own declaration, and skips that check before it is pulled.
 The [bundle contract](bundle-v1.md#minimum-source-version) defines the migration
 minimum and exact source-version requirement.
 
+## Ghost channel
+
+A site runs Ghost's stable releases (`ghost`) unless it was installed with
+`--ghost-channel nightly`, which selects `ghost/nightly`: a build of Ghost's
+`main` branch each day, for testing, never for production. The channel is the
+site's `GHOST_IMAGE`; there is no other setting for it.
+
+Nightly builds are tagged by their date (`20261015`) and `latest`, never by
+version, and each reports a prerelease version naming its commit, such as
+`6.70.1-rc.0+53d6a80`. Two builds can report the same version, so a nightly
+site's builds are ordered by when they were built, as the images say. `update`
+and the upgrade supervisor on a nightly site move it only to a newer build of
+the same Ghost major, pinned by digest like any other: `update latest` or
+`update 20261015`, never a version. Only nightly sites see nightly builds.
+
+Moving a site between channels is not supported yet. A nightly's database may
+be ahead of the next stable release, and switching the image does not undo its
+migrations. Hub keeps a limited history of nightly builds, so the build a backup
+ran may no longer be pullable when it is restored.
+
 ## Existing installations
 
 Do not use `git pull` to move a released `main` installation to this layout.

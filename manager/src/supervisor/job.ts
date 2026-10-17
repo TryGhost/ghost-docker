@@ -4,7 +4,7 @@
 // prints for it become the job's diagnostics.
 import { relative } from 'node:path';
 import { refuseDrift } from '../backup.ts';
-import { direction, ghostUpdatePlan, reference, type GhostUpdate } from '../commands/update.ts';
+import { ghostUpdatePlan, order, reference, type GhostUpdate } from '../commands/update.ts';
 import { describeError } from '../errors.ts';
 import { resolvePinned } from '../ghost.ts';
 import type { Io } from '../io.ts';
@@ -64,7 +64,7 @@ export const ghostJob =
             );
         }
         try {
-            if (direction(from, to) !== 'newer') {
+            if ((await order(io, from, to)) !== 'newer') {
                 return refused('not-newer', `This site already runs Ghost ${from.version}.`);
             }
             await refuseDrift(io, await resolveSite(io, dir));

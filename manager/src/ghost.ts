@@ -12,6 +12,27 @@ import { CliError } from './errors.ts';
 import type { Io } from './io.ts';
 
 export const DEFAULT_IMAGE = 'ghost';
+
+/**
+ * Ghost's nightly builds of main, one a day: an opt-in channel, never for
+ * production (docs/configuration.md#ghost-channel). Tagged by date and
+ * `latest`, never by version; each reports a prerelease version with its
+ * commit, such as 6.70.1-rc.0+53d6a80, so two builds can share a version.
+ */
+export const NIGHTLY_IMAGE = 'ghost/nightly';
+export const NIGHTLY_LATEST = 'latest';
+/** `latest`, or a build's date, YYYYMMDD. */
+export const NIGHTLY_TAG = /^(latest|\d{8})$/;
+
+export const GHOST_CHANNELS = ['stable', 'nightly'] as const;
+export type GhostChannel = (typeof GHOST_CHANNELS)[number];
+
+/** The channel a site's Ghost image is on: its repository says. */
+export const ghostChannelOf = (image: string): GhostChannel =>
+    image === NIGHTLY_IMAGE ? 'nightly' : 'stable';
+
+export const channelImage = (channel: GhostChannel): string =>
+    channel === 'nightly' ? NIGHTLY_IMAGE : DEFAULT_IMAGE;
 /** The `next` variants install Ghost directly under /home/ghost. */
 export const DEFAULT_TAG = '6-next-alpine';
 const DEFAULT_VARIANT = DEFAULT_TAG.slice(DEFAULT_TAG.indexOf('-') + 1);
@@ -23,10 +44,6 @@ const DEFAULT_VARIANT = DEFAULT_TAG.slice(DEFAULT_TAG.indexOf('-') + 1);
 export const MINIMUM_IMPORT_VERSION = '6.61.0';
 
 /**
- * What the operator asked for, as a tag. A bare version selects the default
- * variant (`6.3.1` is `6.3.1-next-alpine`); anything else is a tag already.
- */
-/**
  * Ghost's settings for HttpUpgradeAdapter, the upgrade supervisor's client
  * (docs/upgrade-supervisor.md#installation), in ghost.env. Safe on any Ghost:
  * one without the `upgrade` adapter type ignores them.
@@ -36,6 +53,10 @@ export const UPGRADE_ADAPTER: readonly (readonly [string, string])[] = [
     ['adapters__upgrade__HttpUpgradeAdapter__socketPath', '/run/ghost-upgrade/supervisor.sock'],
 ];
 
+/**
+ * What the operator asked for, as a tag. A bare version selects the default
+ * variant (`6.3.1` is `6.3.1-next-alpine`); anything else is a tag already.
+ */
 export function ghostTag(requested: string | undefined, variant = DEFAULT_VARIANT): string {
     if (!requested) {
         return DEFAULT_TAG;
@@ -61,6 +82,8 @@ export interface ResolvedGhost {
     readonly digest: string;
     /** `ghost@sha256:...`, what GHOST_IMAGE_REF pins. */
     readonly reference: string;
+    /** When the image was built; what orders nightly builds, which can share a version. */
+    readonly created: string | null;
     readonly contentPath: string;
     readonly tinybirdPath: string;
 }
@@ -77,7 +100,17 @@ export async function resolveGhost(
     requested: string | undefined,
     image = DEFAULT_IMAGE,
 ): Promise<ResolvedGhost> {
-    const tag = ghostTag(requested);
+    let tag: string;
+    if (ghostChannelOf(image) === 'nightly') {
+        tag = requested || NIGHTLY_LATEST;
+        if (!NIGHTLY_TAG.test(tag)) {
+            throw new CliError(
+                `a nightly build is chosen by its date, such as 20261015, or latest: got '${tag}'`,
+            );
+        }
+    } else {
+        tag = ghostTag(requested);
+    }
     return pullAndDescribe(io, image, tag, tag);
 }
 
@@ -92,6 +125,24 @@ export const resolvePinned = (
     tag: string,
     digest: string,
 ): Promise<ResolvedGhost> => pullAndDescribe(io, image, digest, tag);
+
+/**
+ * When the build pinned at `digest` was built: read from the image the daemon
+ * already holds, and pulled only when it holds none. A site's own build stays
+ * on its host after its registry drops it, as old nightly builds are.
+ */
+export async function pinnedCreated(
+    io: Io,
+    image: string,
+    tag: string,
+    digest: string,
+): Promise<string | null> {
+    const held = await inspectImage(io.docker, `${image}@${digest}`);
+    if (held !== null) {
+        return held.created;
+    }
+    return (await resolvePinned(io, image, tag, digest)).created;
+}
 
 /** `image` pulled at `ref` (a tag or a digest), and what it is. */
 async function pullAndDescribe(
@@ -140,6 +191,7 @@ async function pullAndDescribe(
         version,
         digest,
         reference,
+        created: pulled.created,
         contentPath,
         tinybirdPath: `${install}/core/server/data/tinybird`,
     };
