@@ -418,18 +418,18 @@ That is the whole retention rule.
   uses `ghost-docker:checkout`) and `DOCKER_SOCKET` in `.env`;
 - sets `SUPERVISOR_UPDATES=minor`.
 
-Install enables `HttpUpgradeAdapter` in `ghost.env` only when the site's
-Ghost is 6.72.0 or later, the first release with Ghost's side: the adapter,
-the Admin API that calls it and the update panel in Admin. A prerelease of
-6.72.0, as Ghost's nightly builds report, counts. Below that version, install
-leaves the adapter off and says so: the supervisor runs, but nothing asks it
-for updates. Ghost's settings, to add once a site's Ghost reaches 6.72.0, then
-`docker compose up -d ghost`:
+Install also turns on `HttpUpgradeAdapter` in `ghost.env`, whatever the
+site's Ghost:
 
 ```
 adapters__upgrade__active=HttpUpgradeAdapter
 adapters__upgrade__HttpUpgradeAdapter__socketPath=/run/ghost-upgrade/supervisor.sock
 ```
+
+Ghost 6.72.0 is the first release with Ghost's side: the adapter, the Admin API
+that calls it and the update panel. An older Ghost has no `upgrade` adapter type
+and ignores these settings, so a site installed below 6.72.0 starts offering
+updates in Admin once it is updated to it, with nothing more to set.
 
 `self-update` keeps `MANAGER_IMAGE_REF` on the release it installs, so the
 supervisor runs the same manager as the launcher. It refuses while a job holds

@@ -34,13 +34,7 @@ import { loadContext, type Context } from '../context.ts';
 import * as env from '../env.ts';
 import { CliError, describeError, EXIT, UsageError } from '../errors.ts';
 import { atomicWrite, PRIVATE } from '../fs.ts';
-import {
-    hasUpgradeAdapter,
-    MINIMUM_UPGRADE_ADAPTER,
-    resolveGhost,
-    UPGRADE_ADAPTER,
-    type ResolvedGhost,
-} from '../ghost.ts';
+import { resolveGhost, UPGRADE_ADAPTER, type ResolvedGhost } from '../ghost.ts';
 import { clearUnfinishedImport, Importing, importConflict } from '../import.ts';
 import type { Io, Prompter } from '../io.ts';
 import { isoSeconds, SCHEMA_VERSION, writeMetadata } from '../meta.ts';
@@ -657,7 +651,7 @@ function writeEnv(site: Site, created: Created) {
 }
 
 async function writeGhostEnv(
-    { io, dir, project, intent, ghost }: Site,
+    { io, dir, project, intent }: Site,
     created: Created,
     importing: Importing | null,
 ) {
@@ -667,11 +661,7 @@ async function writeGhostEnv(
     // with Mailpit, without the source's mail transport.
     const carried = await importing?.ghostEnv(mailpit);
     created.file(path);
-    atomicWrite(
-        path,
-        ghostEnvTemplate(project, intent.services, ghost.version) + (carried?.text ?? ''),
-        PRIVATE,
-    );
+    atomicWrite(path, ghostEnvTemplate(project, intent.services) + (carried?.text ?? ''), PRIVATE);
     ok(io, GHOST_ENV_FILE, carried?.detail ?? 'Ghost application settings');
     for (const { key, reason } of carried?.skipped ?? []) {
         printChecks(io, [{ status: 'note', label: 'not carried', detail: `${key}: ${reason}` }]);
@@ -865,9 +855,7 @@ function printSummary(site: Site, importing: Importing | null) {
             ...(importing === null ? [] : [`  Imported     ${importing.description}`]),
             ...(intent.services.includes('supervisor')
                 ? [
-                      hasUpgradeAdapter(ghost.version)
-                          ? '  Supervisor   running; Ghost Admin offers updates within SUPERVISOR_UPDATES in .env'
-                          : `  Supervisor   running, but Ghost ${ghost.version} cannot use it yet: Ghost ${MINIMUM_UPGRADE_ADAPTER} and later offer its updates in Admin`,
+                      '  Supervisor   running; Ghost Admin offers updates within SUPERVISOR_UPDATES in .env',
                   ]
                 : []),
             '',
@@ -884,11 +872,7 @@ function printSummary(site: Site, importing: Importing | null) {
  * way that looks like a Ghost bug. With Mailpit, mail goes to it; the
  * operator owns these lines afterwards.
  */
-export function ghostEnvTemplate(
-    project: string,
-    services: readonly string[],
-    ghostVersion = '',
-): string {
+export function ghostEnvTemplate(project: string, services: readonly string[]): string {
     const mailpit = services.includes('mailpit');
     return [
         `# Ghost application settings for ${project}; see ghost.env.example.`,
@@ -900,7 +884,9 @@ export function ghostEnvTemplate(
         // ActivityPub (and analytics, added later) need Ghost's public API.
         ...(services.includes('activitypub') ? [env.serialize('labs__publicAPI', 'true')] : []),
         ...(mailpit ? mailpitMail(project).map(([key, value]) => env.serialize(key, value)) : []),
-        ...(services.includes('supervisor') && hasUpgradeAdapter(ghostVersion)
+        // Set whatever the Ghost: one without the upgrade adapter type never
+        // loads it, and one updated to a Ghost with it then uses it.
+        ...(services.includes('supervisor')
             ? UPGRADE_ADAPTER.map(([key, value]) => env.serialize(key, value))
             : []),
         '',

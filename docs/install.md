@@ -128,10 +128,9 @@ asked for in Ghost Admin, within the policy you set in `.env`
 (`SUPERVISOR_UPDATES`: `minor`, the default, or `patch`). Every update it runs
 is `update` with a checked backup first, and majors and stack updates always
 stay on the host. It holds the Docker socket and runs as you. Ghost's side,
-`HttpUpgradeAdapter`, is enabled in `ghost.env` only from Ghost 6.72.0; below
-it the supervisor runs, but nothing asks it for updates. Updating an older site
-to 6.72.0 does not turn the adapter on: add its two settings, as
-[upgrade-supervisor.md](upgrade-supervisor.md#installation) shows. It is
+`HttpUpgradeAdapter`, is turned on in `ghost.env` too. Ghost 6.72.0 is the
+first release with it; an older Ghost ignores the setting, and offers updates
+in Admin once it is updated to 6.72.0. It is
 refused under rootless Docker and user-namespace remapping. The protocol,
 ownership and recovery rules are in [upgrade-supervisor.md](upgrade-supervisor.md).
 

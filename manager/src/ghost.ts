@@ -6,7 +6,6 @@
 // `-alpine` variants are, is refused. The pin written is `ghost@sha256:...`: a tag can move between two
 // requests and on the next `docker compose pull`; a digest cannot. Changing
 // GHOST_VERSION alone never changes what a site runs.
-import { coerce, gte, valid } from 'semver';
 import { DaemonError, inspectImage, pullImage } from './docker/client.ts';
 import { DaemonTimeout, DaemonUnreachable } from './docker/transport.ts';
 import { CliError } from './errors.ts';
@@ -28,24 +27,10 @@ export const MINIMUM_IMPORT_VERSION = '6.61.0';
  * variant (`6.3.1` is `6.3.1-next-alpine`); anything else is a tag already.
  */
 /**
- * The first Ghost release with Ghost's side of host-managed updates:
- * HttpUpgradeAdapter, the Admin API that calls it and the panel in Admin
- * (docs/upgrade-supervisor.md#installation). Below it, install leaves the
- * adapter off: an older Ghost has no `upgrade` adapter type to load.
+ * Ghost's settings for HttpUpgradeAdapter, the upgrade supervisor's client
+ * (docs/upgrade-supervisor.md#installation), in ghost.env. Safe on any Ghost:
+ * one without the `upgrade` adapter type ignores them.
  */
-export const MINIMUM_UPGRADE_ADAPTER = '6.72.0';
-
-/**
- * Whether `version` has it. A prerelease of that release counts, as its
- * numbers say: Ghost's main branch, and so its nightly builds, report the
- * coming release as a prerelease once they have it.
- */
-export const hasUpgradeAdapter = (version: string): boolean => {
-    const release = coerce(version);
-    return valid(version) !== null && release !== null && gte(release, MINIMUM_UPGRADE_ADAPTER);
-};
-
-/** Ghost's settings for the adapter, in ghost.env. */
 export const UPGRADE_ADAPTER: readonly (readonly [string, string])[] = [
     ['adapters__upgrade__active', 'HttpUpgradeAdapter'],
     ['adapters__upgrade__HttpUpgradeAdapter__socketPath', '/run/ghost-upgrade/supervisor.sock'],

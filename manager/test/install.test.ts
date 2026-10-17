@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, test } from 'node:test';
 import { choosePort, secret } from '../src/commands/install.ts';
 import { projectName, slug } from '../src/project.ts';
 import * as env from '../src/env.ts';
-import { ghostTag, hasUpgradeAdapter } from '../src/ghost.ts';
+import { ghostTag } from '../src/ghost.ts';
 import { failed, harness, json, ok, type Harness } from './helpers.ts';
 import { imageApi, imageStack, INDEX, REFERENCE, REPO, rootContainer } from './site.ts';
 
@@ -456,18 +456,8 @@ describe('a local site with the upgrade supervisor, not started', () => {
         assert.equal(values.DOCKER_SOCKET, '/run/user-docker.sock');
     });
 
-    test('ghost.env leaves the adapter off below Ghost 6.72.0', () => {
-        const text = readFileSync(join(h.dir, 'ghost.env'), 'utf8');
-        assert.doesNotMatch(text, /adapters__upgrade/);
-        assert.match(result.stdout, /Supervisor +running, but Ghost .* cannot use it yet/);
-    });
-});
-
-describe('the upgrade supervisor on Ghost 6.72.0', () => {
-    test('ghost.env turns on HttpUpgradeAdapter on its socket', async () => {
-        h.daemon.api = imageApi({ ghost: { '6-next-alpine': '6.72.0' } });
-        const result = await install('--local', '--with', 'supervisor', '--no-start');
-        assert.equal(result.code, 0, result.stderr);
+    test('ghost.env turns on HttpUpgradeAdapter on its socket, whatever the Ghost', () => {
+        // The harness's Ghost is 6.67.0, which has no upgrade adapter type and ignores these.
         const values = env.toRecord(readFileSync(join(h.dir, 'ghost.env'), 'utf8'));
         assert.equal(values.adapters__upgrade__active, 'HttpUpgradeAdapter');
         assert.equal(
@@ -475,15 +465,6 @@ describe('the upgrade supervisor on Ghost 6.72.0', () => {
             '/run/ghost-upgrade/supervisor.sock',
         );
         assert.match(result.stdout, /Supervisor +running; Ghost Admin offers updates/);
-    });
-
-    test('a prerelease of 6.72.0 counts, and anything below it does not', () => {
-        assert.equal(hasUpgradeAdapter('6.72.0'), true);
-        assert.equal(hasUpgradeAdapter('6.72.0-rc.0+53d6a80'), true);
-        assert.equal(hasUpgradeAdapter('6.73.1'), true);
-        assert.equal(hasUpgradeAdapter('6.71.9'), false);
-        assert.equal(hasUpgradeAdapter('6.71.1-rc.0'), false);
-        assert.equal(hasUpgradeAdapter('not-a-version'), false);
     });
 });
 
