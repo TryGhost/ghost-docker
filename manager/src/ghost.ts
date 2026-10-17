@@ -126,6 +126,24 @@ export const resolvePinned = (
     digest: string,
 ): Promise<ResolvedGhost> => pullAndDescribe(io, image, digest, tag);
 
+/**
+ * When the build pinned at `digest` was built: read from the image the daemon
+ * already holds, and pulled only when it holds none. A site's own build stays
+ * on its host after its registry drops it, as old nightly builds are.
+ */
+export async function pinnedCreated(
+    io: Io,
+    image: string,
+    tag: string,
+    digest: string,
+): Promise<string | null> {
+    const held = await inspectImage(io.docker, `${image}@${digest}`);
+    if (held !== null) {
+        return held.created;
+    }
+    return (await resolvePinned(io, image, tag, digest)).created;
+}
+
 /** `image` pulled at `ref` (a tag or a digest), and what it is. */
 async function pullAndDescribe(
     io: Io,
