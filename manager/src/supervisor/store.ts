@@ -1,20 +1,13 @@
-// The supervisor's private records, in the site directory
-// (docs/upgrade-supervisor.md#what-the-supervisor-keeps).
+// The supervisor's private state, one file in the site directory
+// (docs/upgrade-supervisor.md#what-the-supervisor-keeps): its jobs, the IDs
+// of those it pruned, and what discovery last found.
 //
-// A record is the job as the API answers it plus what only the host needs:
-// the stage reached, the backup, whether it holds the lock. It is created
-// exclusively when a request is accepted, and it is what the
+// Held in memory and written whole, atomically and flushed, after every
+// change. A job's record is the job as the API answers it plus what only the
+// host needs: the stage reached, the backup, whether it holds the lock. The
+// record of the job running when the supervisor stopped is what the
 // interrupted-on-start rule reads.
-import {
-    closeSync,
-    constants,
-    existsSync,
-    mkdirSync,
-    openSync,
-    readdirSync,
-    rmSync,
-    writeSync,
-} from 'node:fs';
+import { mkdirSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { atomicWrite, PRIVATE, readIfExists } from '../fs.ts';
@@ -33,9 +26,7 @@ import {
 /** The Compose service the supervisor runs as, which its jobs leave alone. */
 export const SUPERVISOR_SERVICE = 'supervisor';
 
-const JOBS = 'jobs';
-/** `<key>.json`: a record's file name. */
-const RECORD_NAME = /^([0-9a-f]{64})\.json$/;
+const STATE_FILE = 'state.json';
 
 /** Finished jobs kept, besides the active one. */
 export const HISTORY = 20;
@@ -96,136 +87,129 @@ const discoverySchema = z
     .strict();
 export type Discovery = z.infer<typeof discoverySchema>;
 
-const prunedSchema = z.array(upgradeJobIdSchema).max(PRUNED_KEPT);
+const stateSchema = z
+    .object({
+        /** Oldest first. */
+        jobs: z.array(recordSchema),
+        /** Newest first. */
+        pruned: z.array(upgradeJobIdSchema).max(PRUNED_KEPT),
+        discovery: discoverySchema.nullable(),
+    })
+    .strict();
+type State = z.infer<typeof stateSchema>;
 
 export class ClaimedAlready extends Error {}
 
-/** The private records, in the site's SUPERVISOR_DIR. */
+/** The private state, in the site's SUPERVISOR_DIR. */
 export class Records {
     readonly root: string;
-    private readonly jobs: string;
+    private readonly file: string;
+    private state: State | null = null;
 
     constructor(dir: string) {
         this.root = join(dir, SUPERVISOR_DIR);
-        this.jobs = join(this.root, JOBS);
+        this.file = join(this.root, STATE_FILE);
     }
 
     ensure(): void {
-        mkdirSync(this.jobs, { recursive: true, mode: 0o700 });
+        mkdirSync(this.root, { recursive: true, mode: 0o700 });
     }
 
-    private path(id: string): string {
-        return join(this.jobs, `${upgradeJobIdSchema.parse(id)}.json`);
+    /**
+     * The state, read once. A file that does not parse is set aside beside
+     * itself, not overwritten: what it says about an unfinished job is for
+     * the operator to read.
+     */
+    private load(): State {
+        if (this.state !== null) {
+            return this.state;
+        }
+        const text = readIfExists(this.file);
+        this.state = { jobs: [], pruned: [], discovery: null };
+        if (text !== undefined) {
+            try {
+                this.state = stateSchema.parse(JSON.parse(text));
+            } catch (error) {
+                const kept = `${this.file}.unreadable-${Date.now()}`;
+                renameSync(this.file, kept);
+                throw new UnreadableState(kept, error);
+            }
+        }
+        return this.state;
+    }
+
+    private save(): void {
+        this.ensure();
+        atomicWrite(this.file, `${JSON.stringify(stateSchema.parse(this.load()))}\n`, PRIVATE);
     }
 
     has(id: string): boolean {
-        return existsSync(this.path(id));
+        return this.load().jobs.some((record) => record.job.id === id);
     }
 
-    /** The claim: the record created only if no record of `id` exists. */
+    /** A new job: refused when one of `id` exists. */
     create(record: JobRecord): void {
-        let fd: number;
-        try {
-            fd = openSync(
-                this.path(record.job.id),
-                constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL,
-                PRIVATE,
-            );
-        } catch (error) {
-            if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
-                throw new ClaimedAlready(record.job.id);
-            }
-            throw error;
+        if (this.has(record.job.id)) {
+            throw new ClaimedAlready(record.job.id);
         }
-        try {
-            writeSync(fd, `${JSON.stringify(recordSchema.parse(record))}\n`);
-        } finally {
-            closeSync(fd);
-        }
+        this.load().jobs.push(structuredClone(recordSchema.parse(record)));
+        this.save();
     }
 
     write(record: JobRecord): void {
-        atomicWrite(
-            this.path(record.job.id),
-            `${JSON.stringify(recordSchema.parse(record))}\n`,
-            PRIVATE,
-        );
+        const jobs = this.load().jobs;
+        const index = jobs.findIndex((each) => each.job.id === record.job.id);
+        const copy = structuredClone(recordSchema.parse(record));
+        if (index === -1) {
+            jobs.push(copy);
+        } else {
+            jobs[index] = copy;
+        }
+        this.save();
     }
 
     read(id: string): JobRecord | undefined {
-        const text = readIfExists(this.path(id));
-        return text === undefined ? undefined : recordSchema.parse(JSON.parse(text));
+        const record = this.load().jobs.find((each) => each.job.id === id);
+        return record === undefined ? undefined : structuredClone(record);
     }
 
-    /** Every record, oldest first. A record that does not parse is skipped and named. */
-    list(): { records: JobRecord[]; unreadable: string[] } {
-        const records: JobRecord[] = [];
-        const unreadable: string[] = [];
-        let names: string[] = [];
-        try {
-            names = readdirSync(this.jobs);
-        } catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-                throw error;
-            }
-        }
-        for (const name of names) {
-            const match = RECORD_NAME.exec(name);
-            if (!match) {
-                continue;
-            }
-            try {
-                records.push(this.read(match[1]!)!);
-            } catch {
-                unreadable.push(name);
-            }
-        }
-        records.sort((a, b) => a.job.createdAt.localeCompare(b.job.createdAt));
-        return { records, unreadable };
+    /** Every job, oldest first. */
+    list(): { records: JobRecord[] } {
+        return { records: this.load().jobs.map((record) => structuredClone(record)) };
     }
 
-    remove(id: string): void {
-        rmSync(this.path(id), { force: true });
+    /** Jobs removed, and their IDs kept, newest first, as pruned. */
+    prune(ids: readonly string[]): void {
+        if (ids.length === 0) {
+            return;
+        }
+        const state = this.load();
+        state.jobs = state.jobs.filter((record) => !ids.includes(record.job.id));
+        state.pruned = [...ids, ...state.pruned].slice(0, PRUNED_KEPT);
+        this.save();
     }
 
     pruned(): string[] {
-        const text = readIfExists(join(this.root, 'pruned.json'));
-        if (text === undefined) {
-            return [];
-        }
-        try {
-            return prunedSchema.parse(JSON.parse(text));
-        } catch {
-            return [];
-        }
-    }
-
-    writePruned(ids: readonly string[]): void {
-        atomicWrite(
-            join(this.root, 'pruned.json'),
-            `${JSON.stringify(ids.slice(0, PRUNED_KEPT))}\n`,
-            PRIVATE,
-        );
+        return [...this.load().pruned];
     }
 
     discovery(): Discovery | undefined {
-        const text = readIfExists(join(this.root, 'discovery.json'));
-        if (text === undefined) {
-            return undefined;
-        }
-        try {
-            return discoverySchema.parse(JSON.parse(text));
-        } catch {
-            return undefined;
-        }
+        return this.load().discovery ?? undefined;
     }
 
     writeDiscovery(discovery: Discovery): void {
-        atomicWrite(
-            join(this.root, 'discovery.json'),
-            `${JSON.stringify(discoverySchema.parse(discovery))}\n`,
-            PRIVATE,
-        );
+        this.load().discovery = discoverySchema.parse(discovery);
+        this.save();
+    }
+}
+
+/** state.json did not parse; it is kept at `kept`. */
+export class UnreadableState extends Error {
+    readonly kept: string;
+
+    constructor(kept: string, cause: unknown) {
+        super(`the supervisor's state did not parse, and is kept at ${kept}`, { cause });
+        this.kept = kept;
     }
 }
 

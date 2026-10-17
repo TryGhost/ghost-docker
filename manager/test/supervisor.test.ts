@@ -3,7 +3,7 @@
 // played by SupervisorClient, the reference of what HttpUpgradeAdapter does.
 // Jobs run a scripted executor: what the real one does is update.test.ts.
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, statSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer, request as httpRequest, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -330,6 +330,40 @@ describe('a supervisor stopped mid-job', () => {
         assert.equal(readLock(dir).state, 'held');
         assert.equal(await availability(), 'unavailable');
         assert.equal(await rejected(), 'unavailable');
+    });
+});
+
+describe("the supervisor's state", () => {
+    test('is one private file, read back by the next start', async () => {
+        const running = await serve();
+        const job = await accepted();
+        await running.job;
+        const file = join(dir, '.ghost-docker-supervisor', 'state.json');
+        assert.equal(statSync(file).mode & 0o777, 0o600);
+        await stop(servers.pop());
+        await serve();
+        assert.equal((await lookup(job.id)).state, 'done');
+    });
+
+    test('that does not parse is kept aside, and the supervisor starts without it', async () => {
+        mkdirSync(join(dir, '.ghost-docker-supervisor'), { recursive: true });
+        writeFileSync(
+            join(dir, '.ghost-docker-supervisor', 'state.json'),
+            '{"jobs": "not a list"}',
+        );
+        await serve();
+        const kept = readdirSync(join(dir, '.ghost-docker-supervisor')).filter((name) =>
+            name.startsWith('state.json.unreadable-'),
+        );
+        assert.equal(kept.length, 1);
+        const status = await client().readStatus();
+        assert.ok('status' in status && status.status.supported);
+        assert.equal(status.availability, 'ready');
+        assert.match(
+            JSON.stringify(status.status.diagnostics),
+            /earlier records could not be read/,
+        );
+        await accepted();
     });
 });
 

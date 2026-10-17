@@ -169,15 +169,21 @@ the host, as every manager command does.
 
 ### What the supervisor keeps
 
-Its private state is in the site directory, in `.ghost-docker-supervisor/`
-(operator-owned, `0700`). Ghost never sees it. That directory holds:
+Its private state is one file in the site directory,
+`.ghost-docker-supervisor/state.json` (operator-owned, `0600`). Ghost never
+sees it. It holds:
 
-- each job's record: the job, the stage reached, the backup's path and the lock;
-- the discovery cache;
-- the IDs of pruned jobs, so it can answer `expired` for them.
+- each job's record: the job, the stage reached, the backup's path, the lock,
+  and the image it runs;
+- the IDs of pruned jobs, so it can answer `expired` for them;
+- what discovery last found.
 
-It survives `docker compose down -v`, and it is the record the
-interrupted-on-start rule reads.
+The supervisor reads it once when it starts, keeps it in memory, and writes it
+whole after every change, atomically and flushed before it is renamed into
+place. It survives `docker compose down -v`, and it is the record the
+interrupted-on-start rule reads. A file that does not parse is renamed aside
+(`state.json.unreadable-<time>`) rather than overwritten, and the supervisor
+starts without it and says so in its status.
 
 ## The API
 

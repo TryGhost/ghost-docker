@@ -7,7 +7,7 @@
 // its side effects begin; a job found unfinished on start is marked
 // interrupted and never resumed, and the lock it held is left for the operator.
 import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { CliError } from '../errors.ts';
 import type { Io } from '../io.ts';
 import { acquireLock, describeLock, readLock, type Lock } from '../lock.ts';
@@ -21,7 +21,6 @@ import {
     DIAGNOSTICS_KEPT,
     ERROR_STATUS,
     jobIdOf,
-    PRUNED_KEPT,
     upgradeJobIdSchema,
     type ErrorBody,
     type ErrorCode,
@@ -36,6 +35,7 @@ import {
     HISTORY,
     isActive,
     Records,
+    UnreadableState,
     type Discovery,
     type JobRecord,
     type Stage,
@@ -113,6 +113,8 @@ export class Supervisor {
     private activeId: string | null = null;
     private lock: Lock | null = null;
     private running: Promise<void> | null = null;
+    /** What the status says once, from start, whatever else holds. */
+    private readonly notices: UpgradeDiagnostic[] = [];
 
     constructor(options: SupervisorOptions) {
         this.options = options;
@@ -135,7 +137,23 @@ export class Supervisor {
      */
     start(): void {
         this.records.ensure();
-        for (const record of this.records.list().records.filter(isActive)) {
+        let records: JobRecord[] = [];
+        try {
+            records = this.records.list().records;
+        } catch (error) {
+            if (!(error instanceof UnreadableState)) {
+                throw error;
+            }
+            this.io.stderr(`${error.message}\n`);
+            this.notices.push(
+                diagnostic(
+                    'state-unreadable',
+                    'warning',
+                    `The supervisor's earlier records could not be read, so jobs before this start are not shown. They are kept at \`${relative(this.dir, error.kept)}\` for the operator.`,
+                ),
+            );
+        }
+        for (const record of records.filter(isActive)) {
             this.interrupt(record);
         }
         this.discovery = this.records.discovery();
@@ -391,15 +409,7 @@ export class Supervisor {
         if (dropped.length === 0) {
             return;
         }
-        for (const record of dropped) {
-            this.records.remove(record.job.id);
-        }
-        this.records.writePruned(
-            [...dropped.map((record) => record.job.id), ...this.records.pruned()].slice(
-                0,
-                PRUNED_KEPT,
-            ),
-        );
+        this.records.prune(dropped.map((record) => record.job.id));
     }
 
     // --- Status ------------------------------------------------------------------------
@@ -521,7 +531,7 @@ export class Supervisor {
             manual: discovery?.manual ?? [],
             activeJobId: this.activeId,
             pollAfterMs: this.activeId === null ? POLL_IDLE_MS : POLL_ACTIVE_MS,
-            diagnostics: [...diagnostics, ...(discovery?.diagnostics ?? [])].slice(
+            diagnostics: [...diagnostics, ...this.notices, ...(discovery?.diagnostics ?? [])].slice(
                 0,
                 DIAGNOSTICS_KEPT,
             ),
