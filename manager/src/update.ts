@@ -65,7 +65,11 @@ export interface UpdatePlan {
     readonly backup?: boolean;
 }
 
-export type UpdateStage = 'backing-up' | 'restarting' | 'verifying' | 'restoring';
+/**
+ * `configuring`: writing the new configuration, which may name the target
+ * before anything has started it.
+ */
+export type UpdateStage = 'backing-up' | 'configuring' | 'restarting' | 'verifying' | 'restoring';
 
 export type UpdateOutcome =
     /** `backup` is null when the update was asked to take none. */
@@ -124,6 +128,7 @@ export async function runUpdate(plan: UpdatePlan): Promise<UpdateOutcome> {
             ok(io, 'backup', `${relative(dir, backup)}, checked`);
         }
 
+        plan.onStage?.('configuring');
         await plan.write();
 
         heading(io, 'Starting the services');

@@ -362,7 +362,7 @@ Before each step, the job is written in its new state:
 | --- | --- |
 | `pulling` | Pulling the digest discovery found, and checking its version |
 | `backing-up` | The snapshot, the writer pause and the checked backup. The backup's path is recorded as soon as the backup exists. |
-| `restarting` | Starting the services, after the new pin is written |
+| `restarting` | Writing the new pin, then starting the services. The record tells the two apart, for recovery. |
 | `verifying` | Verification |
 | `restoring` | Recovery, after a failure |
 
@@ -391,8 +391,11 @@ Rules while a job runs:
    steps, in an order that works:
    - run `./ghost-docker check`;
    - remove the lock, since `restore` and `update` refuse while it is held;
-   - for a job past `backing-up`: fix and start the new Ghost, or
-     `./ghost-docker restore --yes <backup>`. For a job in `backing-up`:
+   - for a job that may have started the new Ghost: fix and start it, or
+     `./ghost-docker restore --yes <backup>`. For a job stopped while writing
+     the new pin: put `.env` and `.ghost-docker.json` back from
+     `.ghost-docker-update/files/`, then `docker compose up -d`, so the old
+     Ghost starts and not the new one. For a job in `backing-up`:
      `docker compose up -d`, because the writers may be paused;
    - once `check` passes, remove `.ghost-docker-update/`.
 

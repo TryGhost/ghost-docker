@@ -183,11 +183,17 @@ export class Supervisor {
                                 `  or put the site back as it was, discarding anything written since: \`./ghost-docker restore --yes ${record.backup}\``,
                             ]),
                   ]
-                : record.stage === 'backing-up'
+                : record.stage === 'configuring'
                   ? [
-                        '  Nothing was changed yet, but Ghost may be stopped for the backup: `docker compose up -d`',
+                        `  \`.env\` and \`.ghost-docker.json\` may already name Ghost ${record.job.toVersion}, which has not started. Put them back`,
+                        `  first, so that starting the site does not start Ghost ${record.job.toVersion}: \`cp -a .ghost-docker-update/files/. .\`,`,
+                        '  then `docker compose up -d`, because Ghost may be stopped for the backup',
                     ]
-                  : ['  Nothing was changed.']),
+                  : record.stage === 'backing-up'
+                    ? [
+                          '  Nothing was changed yet, but Ghost may be stopped for the backup: `docker compose up -d`',
+                      ]
+                    : ['  Nothing was changed.']),
             ...(record.stage === null || record.stage === 'pulling'
                 ? []
                 : ['  Once `./ghost-docker check` passes: `rm -rf .ghost-docker-update`']),
@@ -339,7 +345,7 @@ export class Supervisor {
             record,
             stage: (stage) => {
                 record.stage = stage;
-                record.job.state = stage;
+                record.job.state = stage === 'configuring' ? 'restarting' : stage;
                 try {
                     this.save(record);
                 } catch (error) {

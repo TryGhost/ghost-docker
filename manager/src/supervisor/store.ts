@@ -34,6 +34,8 @@ export const HISTORY = 20;
 export const stageSchema = z.enum([
     'pulling',
     'backing-up',
+    // Private: the job reports it as `restarting`, the base schema's next state.
+    'configuring',
     'restarting',
     'verifying',
     'restoring',

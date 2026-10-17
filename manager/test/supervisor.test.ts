@@ -330,6 +330,29 @@ describe('a supervisor stopped mid-job', () => {
         assert.equal(await availability(), 'unavailable');
         assert.equal(await rejected(), 'unavailable');
     });
+
+    test('while writing the new pin, says to put the files back before starting anything', async () => {
+        await serve();
+        execute = async ({ stage, backup }) => {
+            stage('pulling');
+            stage('backing-up');
+            backup('backups/20261014-200103');
+            stage('configuring');
+            return new Promise<JobOutcome>(() => {});
+        };
+        const job = await accepted();
+        assert.equal((await lookup(job.id)).state, 'restarting');
+
+        await stop(servers.pop());
+        await serve();
+        const details = (await lookup(job.id)).diagnostics?.[0]?.details ?? '';
+        assert.doesNotMatch(details, /Nothing was changed/);
+        assert.match(details, /cp -a \.ghost-docker-update\/files\/\. \..*docker compose up -d/s);
+        assert.ok(
+            details.indexOf('cp -a') < details.indexOf('rm -rf .ghost-docker-update'),
+            'the files are put back before the snapshot is removed',
+        );
+    });
 });
 
 describe("the supervisor's state", () => {
