@@ -185,7 +185,7 @@ job's own steps (./ghost-docker check, then remove the lock) to clear it.
 
 What the supervisor is doing:
 
-  docker compose --project-directory $S -f $S/compose.yml logs -f supervisor
+  docker compose --project-directory $S -f $S/compose.yml logs -f -t supervisor
 
 When you are done:
 
