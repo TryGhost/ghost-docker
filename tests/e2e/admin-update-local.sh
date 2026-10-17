@@ -19,10 +19,9 @@
 #      pushes the two builds as localhost:PORT/ghost:<version>-local, and the
 #      newer one as <major>-local too, the tag discovery looks for;
 #   2. installs a local site on the older build with --with supervisor, from
-#      a manager image built from this checkout;
-#   3. makes sure HttpUpgradeAdapter is on in ghost.env: install turns it on
-#      from Ghost 6.72.0, and an older build's version leaves it off;
-#   4. waits until the supervisor offers the newer build one-click,
+#      a manager image built from this checkout, which also turns on
+#      HttpUpgradeAdapter in ghost.env;
+#   3. waits until the supervisor offers the newer build one-click,
 # and stops there, printing the Admin URL and what to click. The site is left
 # running; the teardown commands are printed at the end.
 #
@@ -152,14 +151,9 @@ gd() { "$S/ghost-docker" --dir "$S" "$@"; }
 PROJECT=$(gd config get .env COMPOSE_PROJECT_NAME)
 # shellcheck source=supervisor-api.sh
 source "$ROOT/tests/e2e/supervisor-api.sh"
-compose_in() { docker compose --project-directory "$S" -f "$S/compose.yml" "$@"; }
 
-step "Ghost's update adapter, on (install turns it on from 6.72.0)"
-gd config set ghost.env adapters__upgrade__active HttpUpgradeAdapter >/dev/null
-gd config set ghost.env adapters__upgrade__HttpUpgradeAdapter__socketPath \
-    /run/ghost-upgrade/supervisor.sock >/dev/null
-compose_in up --detach --wait ghost >/dev/null 2>&1 || die "Ghost did not start again with the adapter on"
-ok "HttpUpgradeAdapter, on /run/ghost-upgrade/supervisor.sock"
+grep -q '^adapters__upgrade__active=' "$S/ghost.env" ||
+    die "install did not turn on HttpUpgradeAdapter in $S/ghost.env"
 
 step "The supervisor offers Ghost $TO one-click"
 offered=""
