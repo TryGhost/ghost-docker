@@ -26,6 +26,16 @@ export const MINIMUM_IMPORT_VERSION = '6.61.0';
  * What the operator asked for, as a tag. A bare version selects the default
  * variant (`6.3.1` is `6.3.1-next-alpine`); anything else is a tag already.
  */
+/**
+ * Ghost's settings for HttpUpgradeAdapter, the upgrade supervisor's client
+ * (docs/upgrade-supervisor.md#installation), in ghost.env. Safe on any Ghost:
+ * one without the `upgrade` adapter type ignores them.
+ */
+export const UPGRADE_ADAPTER: readonly (readonly [string, string])[] = [
+    ['adapters__upgrade__active', 'HttpUpgradeAdapter'],
+    ['adapters__upgrade__HttpUpgradeAdapter__socketPath', '/run/ghost-upgrade/supervisor.sock'],
+];
+
 export function ghostTag(requested: string | undefined, variant = DEFAULT_VARIANT): string {
     if (!requested) {
         return DEFAULT_TAG;
@@ -68,10 +78,32 @@ export async function resolveGhost(
     image = DEFAULT_IMAGE,
 ): Promise<ResolvedGhost> {
     const tag = ghostTag(requested);
-    const wanted = `${image}:${tag}`;
+    return pullAndDescribe(io, image, tag, tag);
+}
+
+/**
+ * Exactly `image@digest`, recorded under `tag`, the tag it was found by: what
+ * the supervisor discovered, so a job runs that image and not whatever the
+ * tag points to by then.
+ */
+export const resolvePinned = (
+    io: Io,
+    image: string,
+    tag: string,
+    digest: string,
+): Promise<ResolvedGhost> => pullAndDescribe(io, image, digest, tag);
+
+/** `image` pulled at `ref` (a tag or a digest), and what it is. */
+async function pullAndDescribe(
+    io: Io,
+    image: string,
+    ref: string,
+    tag: string,
+): Promise<ResolvedGhost> {
+    const wanted = ref.startsWith('sha256:') ? `${image}@${ref}` : `${image}:${ref}`;
 
     try {
-        await pullImage(io.docker, image, tag);
+        await pullImage(io.docker, image, ref);
     } catch (error) {
         throw new CliError(
             `${wanted} could not be pulled: ${describeDaemonError(error)}.\n` +
@@ -81,7 +113,9 @@ export async function resolveGhost(
     const pulled = await inspectImage(io.docker, wanted);
     // The pin is the digest of what was just pulled, read from the image
     // itself rather than inferred from another tag.
-    const reference = pulled?.repoDigests.find((entry) => entry.startsWith(`${image}@`));
+    const reference = pulled?.repoDigests.find((entry) =>
+        ref.startsWith('sha256:') ? entry === wanted : entry.startsWith(`${image}@`),
+    );
     if (pulled === null || reference === undefined) {
         throw new CliError(`${wanted} has no repository digest; refusing an unpinned install`);
     }

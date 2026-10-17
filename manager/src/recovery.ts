@@ -6,7 +6,15 @@ import { basename, dirname, join } from 'node:path';
 import * as tar from 'tar';
 import { asRoot, removeAsRoot } from './asroot.ts';
 import type { BackupManifest } from './backup/manifest.ts';
-import { ALL_PROFILES, composeDown, composeError, composePs, composeUp } from './compose.ts';
+import {
+    ALL_PROFILES,
+    compose,
+    composeDown,
+    composeError,
+    composePs,
+    composeUp,
+    servicesExcept,
+} from './compose.ts';
 import type { Context } from './context.ts';
 import { CliError } from './errors.ts';
 import { copyPresent, sameTree } from './fs.ts';
@@ -36,17 +44,35 @@ export interface Stopped {
     readonly running: string[] | null;
 }
 
-/** Every service of every profile stopped, then what is still running, observed. */
+/**
+ * Every service of every profile stopped, then what is still running,
+ * observed. With `except`, those are left running and the others are stopped
+ * rather than removed: the supervisor never stops itself.
+ */
 export async function stopServices(
     io: Io,
     dir: string,
     spinner = 'Stopping the site',
+    except: readonly string[] = [],
 ): Promise<Stopped> {
-    const down = await io.busy(spinner, () => composeDown(io, dir, { profiles: ALL_PROFILES }));
-    return {
-        error: down.exitCode === 0 ? null : composeError(down, 2) || 'docker compose down failed',
-        running: await runningServices(io, dir),
-    };
+    let error: string | null;
+    try {
+        const down = await io.busy(spinner, async () => {
+            if (except.length === 0) {
+                return composeDown(io, dir, { profiles: ALL_PROFILES });
+            }
+            const services = await servicesExcept(io, dir, except, ALL_PROFILES);
+            return compose(io, {
+                dir,
+                profiles: ALL_PROFILES,
+                timeout: 300_000,
+            })`stop --timeout 20 ${services}`;
+        });
+        error = down.exitCode === 0 ? null : composeError(down, 2) || 'docker compose down failed';
+    } catch (listing) {
+        error = (listing as Error).message;
+    }
+    return { error, running: await runningServices(io, dir) };
 }
 
 /** A sentence for the operator about the services, from what was observed. */

@@ -1,0 +1,5 @@
+# Ghost's own upgrade contract, published with each Ghost change to it: new
+# alphas would otherwise wait out pnpm's minimum release age. Remove once the
+# package is stable (docs/upgrade-supervisor.md).
+minimumReleaseAgeExclude:
+  - '@tryghost/adapter-base-upgrade'

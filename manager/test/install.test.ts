@@ -78,7 +78,7 @@ describe('refusals that change nothing', () => {
                 ['--local', '--channel', 'beta', '--release', 'v1.0.0'],
                 /choose --channel or --release, not both/,
             ],
-            [['--local', '--with', 'supervisor'], /unknown optional service: supervisor/],
+            [['--local', '--with', 'redis'], /unknown optional service: redis/],
         ] as const) {
             const result = await install(...args);
             assert.equal(result.code, 2, `${args.join(' ')}: ${result.stderr}`);
@@ -283,6 +283,20 @@ describe('refusals that change nothing', () => {
         assert.deepEqual(siteFiles(), []);
     });
 
+    test('the supervisor is refused under user-namespace remapping, changing nothing', async () => {
+        h.daemon.info = {
+            ...h.daemon.info,
+            SecurityOptions: ['name=seccomp,profile=builtin', 'name=userns'],
+        };
+        const result = await install('--local', '--with', 'supervisor');
+        assert.equal(result.code, 1);
+        assert.match(
+            result.stderr,
+            /not supported under rootless Docker or user-namespace remapping/,
+        );
+        assert.deepEqual(siteFiles(), []);
+    });
+
     test('a Ghost version that cannot be resolved changes nothing', async () => {
         const api = h.daemon.api!;
         h.daemon.api = (request) =>
@@ -421,6 +435,36 @@ describe('a local site with Mailpit, not started', () => {
         assert.match(result.stdout, /Mailpit +http:\/\/127\.0\.0\.1:8025/);
         const metadata = JSON.parse(readFileSync(join(h.dir, '.ghost-docker.json'), 'utf8'));
         assert.deepEqual(metadata.profiles, ['local', 'mailpit']);
+    });
+});
+
+describe('a local site with the upgrade supervisor, not started', () => {
+    let result: Awaited<ReturnType<typeof install>>;
+    beforeEach(async () => {
+        h.env.GD_HOST_SOCKET = '/run/user-docker.sock';
+        result = await install('--local', '--with', 'supervisor', '--no-start');
+        assert.equal(result.code, 0, result.stderr);
+    });
+
+    test('.env selects it, runs it as the installer, on the pinned manager, at minor updates', () => {
+        const values = env.toRecord(readFileSync(join(h.dir, '.env'), 'utf8'));
+        assert.equal(values.COMPOSE_PROFILES, 'local,supervisor');
+        assert.equal(values.SUPERVISOR_UPDATES, undefined);
+        assert.equal(values.SUPERVISOR_UID, String(h.env.GD_UID));
+        assert.equal(values.SUPERVISOR_GID, String(h.env.GD_GID));
+        assert.match(values.MANAGER_IMAGE_REF ?? '', /@sha256:|^sha256:/);
+        assert.equal(values.DOCKER_SOCKET, '/run/user-docker.sock');
+    });
+
+    test('ghost.env turns on HttpUpgradeAdapter on its socket, whatever the Ghost', () => {
+        // The harness's Ghost is 6.67.0, which has no upgrade adapter type and ignores these.
+        const values = env.toRecord(readFileSync(join(h.dir, 'ghost.env'), 'utf8'));
+        assert.equal(values.adapters__upgrade__active, 'HttpUpgradeAdapter');
+        assert.equal(
+            values.adapters__upgrade__HttpUpgradeAdapter__socketPath,
+            '/run/ghost-upgrade/supervisor.sock',
+        );
+        assert.match(result.stdout, /Supervisor +running; Ghost Admin offers updates/);
     });
 });
 

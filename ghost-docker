@@ -303,6 +303,9 @@ declare -a run=(
     --env "GD_HOST_OS=$host_os"
     --env "GD_IMAGE=$image"
     --env "GD_SOURCE=$source_kind"
+    # The socket as the daemon names it, for services that mount it themselves:
+    # the upgrade supervisor.
+    --env "GD_HOST_SOCKET=$socket"
 )
 [[ -z $resolved_channel ]] || run+=(--env "GD_CHANNEL=$resolved_channel")
 [[ -z ${NO_COLOR:-} ]] || run+=(--env "NO_COLOR=$NO_COLOR")
