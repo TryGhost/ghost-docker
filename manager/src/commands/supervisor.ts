@@ -2,6 +2,7 @@
 // starts with the `supervisor` profile, serving its API on a socket in a
 // volume Ghost mounts (docs/upgrade-supervisor.md). Ghost is its only client.
 import { statSync } from 'node:fs';
+import { setInterval } from 'node:timers/promises';
 import { defineCommand } from '../command.ts';
 import { daemonInfo, runOnce } from '../docker/client.ts';
 import { CliError, EXIT } from '../errors.ts';
@@ -140,9 +141,9 @@ export const supervisorRunCommand = defineCommand({
         process.once('SIGINT', stop);
 
         await supervisor.rediscover();
-        for (;;) {
-            await new Promise((resolve) => setTimeout(resolve, DISCOVERY_CHECK_MS));
+        for await (const _ of setInterval(DISCOVERY_CHECK_MS)) {
             await supervisor.discoverIfDue();
         }
+        return EXIT.ok;
     },
 });
