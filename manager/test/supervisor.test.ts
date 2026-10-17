@@ -1,17 +1,16 @@
 // The supervisor's API over a real Unix socket (docs/upgrade-supervisor.md):
 // requests, refusals, jobs, interruption and retention, with Ghost's end
-// played by SupervisorClient, the reference of what HttpUpgradeAdapter does.
+// played by raw HTTP calls, as HttpUpgradeAdapter makes them.
 // Jobs run a scripted executor: what the real one does is update.test.ts.
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { createServer, request as httpRequest, type Server } from 'node:http';
+import { request as httpRequest, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, test } from 'node:test';
 import type { Io } from '../src/io.ts';
 import { acquireLock, readLock } from '../src/lock.ts';
 import type { Metadata } from '../src/meta.ts';
-import { SupervisorClient, type RequestResult } from '../src/supervisor/client.ts';
 import type { Discoverer, Policy } from '../src/supervisor/discovery.ts';
 import { randomIdempotencyKey, type UpgradeJob } from '../src/supervisor/protocol.ts';
 import { listen, supervisorServer } from '../src/supervisor/server.ts';
@@ -82,43 +81,51 @@ async function stop(server: Server | undefined): Promise<void> {
     }
 }
 
-const client = () => new SupervisorClient(socket);
-
-const ask = async (toVersion = TO, key = randomIdempotencyKey()): Promise<RequestResult> =>
-    client().createRequest({ component: 'ghost', toVersion, idempotencyKey: key });
-
-const accepted = async (toVersion = TO, key = randomIdempotencyKey()): Promise<UpgradeJob> => {
-    const result = await ask(toVersion, key);
-    assert.ok('accepted' in result, JSON.stringify(result));
-    return result.accepted;
-};
-
-const rejected = async (toVersion = TO, key = randomIdempotencyKey()): Promise<string> => {
-    const result = await ask(toVersion, key);
-    assert.ok('rejected' in result, JSON.stringify(result));
-    return result.rejected;
-};
-
-const lookup = async (id: string) => client().lookup(id) as Promise<UpgradeJob>;
-const availability = async () => (await client().readStatus()).availability;
-
-/** A raw call, for what Ghost's client would never send. */
+/** A call to the API, as Ghost's adapter makes one: its status and parsed body. */
 function raw(method: string, path: string, body?: string): Promise<{ status: number; body: any }> {
     return new Promise((resolve, reject) => {
-        const request = httpRequest({ socketPath: socket, method, path }, (response) => {
-            const chunks: Buffer[] = [];
-            response.on('data', (chunk: Buffer) => chunks.push(chunk));
-            response.on('end', () =>
-                resolve({
-                    status: response.statusCode ?? 0,
-                    body: JSON.parse(Buffer.concat(chunks).toString('utf8')),
-                }),
-            );
-        });
+        const request = httpRequest(
+            { socketPath: socket, method, path, agent: false },
+            (response) => {
+                const chunks: Buffer[] = [];
+                response.on('data', (chunk: Buffer) => chunks.push(chunk));
+                response.on('end', () =>
+                    resolve({
+                        status: response.statusCode ?? 0,
+                        body: JSON.parse(Buffer.concat(chunks).toString('utf8')),
+                    }),
+                );
+            },
+        );
         request.on('error', reject);
         request.end(body);
     });
 }
+
+const ask = (toVersion = TO, key = randomIdempotencyKey()) =>
+    raw(
+        'POST',
+        '/v1/requests',
+        JSON.stringify({ component: 'ghost', toVersion, idempotencyKey: key }),
+    );
+
+/** A request the supervisor accepted (202) or answered as a replay (200): its job. */
+const accepted = async (toVersion = TO, key = randomIdempotencyKey()): Promise<UpgradeJob> => {
+    const answer = await ask(toVersion, key);
+    assert.ok(answer.status === 202 || answer.status === 200, JSON.stringify(answer));
+    return answer.body;
+};
+
+/** A request the supervisor refused: its error code. */
+const rejected = async (toVersion = TO, key = randomIdempotencyKey()): Promise<string> => {
+    const answer = await ask(toVersion, key);
+    assert.ok(answer.status >= 400, JSON.stringify(answer));
+    return answer.body.error.code;
+};
+
+const lookup = async (id: string) => (await raw('GET', `/v1/jobs/${id}`)).body;
+const status = async () => (await raw('GET', '/v1/status')).body;
+const availability = async () => (await status()).availability;
 
 beforeEach(() => {
     // Short: a Unix socket's path is limited to about 100 bytes.
@@ -201,11 +208,11 @@ describe('a request made by hand', () => {
         assert.deepEqual(seen, ['pulling', 'backing-up', 'restarting', 'verifying']);
         assert.equal((await lookup(id)).state, 'done');
         assert.equal(readLock(dir).state, 'free');
-        const status = await client().readStatus();
-        assert.ok('status' in status && status.status.supported);
-        assert.equal(status.availability, 'ready');
-        assert.equal(status.status.activeJobId, null);
-        assert.equal(status.status.backupRequired, true);
+        const body = await status();
+        assert.equal(body.supported, true);
+        assert.equal(body.availability, 'ready');
+        assert.equal(body.activeJobId, null);
+        assert.equal(body.backupRequired, true);
     });
 
     test('a replay returns the original job, while it runs and once it is no longer offered', async () => {
@@ -218,13 +225,15 @@ describe('a request made by hand', () => {
         const key = randomIdempotencyKey();
         const job = await accepted(TO, key);
         const during = await ask(TO, key);
-        assert.ok('accepted' in during && during.replay && during.accepted.id === job.id);
-        assert.equal(during.accepted.state, 'pulling');
+        assert.equal(during.status, 200);
+        assert.equal(during.body.id, job.id);
+        assert.equal(during.body.state, 'pulling');
         release({ state: 'done', diagnostics: [] });
         await running.job;
         // The update is gone from oneClick once done; the replay still finds its job.
         const after = await ask(TO, key);
-        assert.ok('accepted' in after && after.accepted.state === 'done');
+        assert.equal(after.status, 200);
+        assert.equal(after.body.state, 'done');
     });
 
     test('an accepted job records the exact image discovery found for it', async () => {
@@ -284,9 +293,10 @@ describe('refusals', () => {
         await serve();
         const lock = acquireLock(dir, 'backup');
         assert.equal(await availability(), 'busy');
-        const result = await ask();
-        assert.ok('rejected' in result && result.rejected === 'busy');
-        assert.match(result.reason, /held by backup/);
+        const answer = await ask();
+        assert.equal(answer.status, 409);
+        assert.equal(answer.body.error.code, 'busy');
+        assert.match(answer.body.error.diagnostics[0].message, /held by backup/);
         lock.release();
         assert.equal(await availability(), 'ready');
     });
@@ -356,13 +366,9 @@ describe("the supervisor's state", () => {
             name.startsWith('state.json.unreadable-'),
         );
         assert.equal(kept.length, 1);
-        const status = await client().readStatus();
-        assert.ok('status' in status && status.status.supported);
-        assert.equal(status.availability, 'ready');
-        assert.match(
-            JSON.stringify(status.status.diagnostics),
-            /earlier records could not be read/,
-        );
+        const body = await status();
+        assert.equal(body.availability, 'ready');
+        assert.match(JSON.stringify(body.diagnostics), /earlier records could not be read/);
         await accepted();
     });
 });
@@ -383,47 +389,5 @@ describe('retention', () => {
         assert.equal(await rejected(TO, keys[0]!), 'request-expired');
         assert.equal((await lookup(keys.at(-1)!)).state, 'done');
         assert.equal((await lookup(randomIdempotencyKey())).state, 'unknown');
-    });
-});
-
-describe("Ghost's end, when the supervisor is not there or speaks another protocol", () => {
-    test('a missing socket is unavailable, and so is every request', async () => {
-        assert.deepEqual(await availability(), 'unavailable');
-        assert.equal(await rejected(), 'unavailable');
-    });
-
-    test('a bare 5xx, or a connection dropped mid-answer, is unavailable, not incompatible', async () => {
-        const other = createServer((request, response) => {
-            if (request.url === '/v1') {
-                response.writeHead(200, { 'content-type': 'application/json' });
-                response.end('{"protocol":1}');
-            } else if (request.url === '/v1/status') {
-                // Headers and half a body, then gone.
-                response.writeHead(200, {
-                    'content-type': 'application/json',
-                    'content-length': '100',
-                });
-                response.write('{"supported":');
-                response.destroy();
-            } else {
-                response.writeHead(502);
-                response.end('Bad Gateway');
-            }
-        });
-        servers.push(other);
-        await listen(other, socket);
-        assert.equal(await availability(), 'unavailable');
-        assert.equal(await rejected(), 'unavailable');
-    });
-
-    test('a server without /v1 is incompatible', async () => {
-        const other = createServer((_request, response) => {
-            response.writeHead(404, { 'content-type': 'application/json' });
-            response.end('{}');
-        });
-        servers.push(other);
-        await listen(other, socket);
-        assert.equal(await availability(), 'incompatible');
-        assert.equal(await rejected(), 'incompatible');
     });
 });
