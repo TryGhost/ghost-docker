@@ -18,7 +18,7 @@ import {
     NIGHTLY_LATEST,
     NIGHTLY_TAG,
     resolveGhost,
-    resolvePinned,
+    pinnedCreated,
     variantOf,
     type ResolvedGhost,
 } from '../ghost.ts';
@@ -101,24 +101,24 @@ export async function order(io: Io, from: Pin, to: ResolvedGhost): Promise<Direc
                 '  version, or one update cannot order. A major upgrade is not supported yet. Nothing has been changed.',
         );
     }
-    let running: ResolvedGhost;
+    let built: string | null;
     try {
-        running = await resolvePinned(io, from.image, from.tag, from.digest);
+        built = await pinnedCreated(io, from.image, from.tag, from.digest);
     } catch (error) {
         throw new CliError(
             `the nightly build this site runs, ${reference(from)}, cannot be read to tell when it was built:\n` +
                 `  ${(error as Error).message.split('\n')[0]}\n  Nothing has been changed.`,
         );
     }
-    if (running.created === null || to.created === null) {
+    if (built === null || to.created === null) {
         throw new CliError(
-            `${running.created === null ? reference(from) : to.reference} does not say when it was built, so update cannot\n` +
+            `${built === null ? reference(from) : to.reference} does not say when it was built, so update cannot\n` +
                 '  order the two nightly builds. Nothing has been changed.',
         );
     }
-    if (Date.parse(to.created) <= Date.parse(running.created)) {
+    if (Date.parse(to.created) <= Date.parse(built)) {
         throw new CliError(
-            `${to.reference} was built ${to.created}, before the nightly build this site runs (${running.created}).\n` +
+            `${to.reference} was built ${to.created}, before the nightly build this site runs (${built}).\n` +
                 '  update never moves a site to an older build: its migrations are not undone. Nothing has been changed.',
         );
     }

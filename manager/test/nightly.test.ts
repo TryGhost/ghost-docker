@@ -144,6 +144,28 @@ describe('updating a nightly site', () => {
         assert.equal(metadata().ghost.digest, TODAY);
     });
 
+    test("orders against the site's build as the host holds it, once the registry has dropped it", async () => {
+        publishToday();
+        const pulls: string[] = [];
+        const api = h.daemon.api;
+        h.daemon.api = (request) => {
+            if (request.method === 'POST' && request.path === '/images/create') {
+                pulls.push(request.query?.tag ?? '');
+                if (request.query?.tag === INDEX) {
+                    return {
+                        status: 404,
+                        body: Buffer.from(JSON.stringify({ message: 'manifest unknown' })),
+                    };
+                }
+            }
+            return api?.(request);
+        };
+        const result = await update();
+        assert.equal(result.code, 0, result.stderr);
+        assert.equal(metadata().ghost.digest, TODAY);
+        assert.ok(!pulls.includes(INDEX), `pulled ${pulls.join(', ')}`);
+    });
+
     test('--check names the newer build and changes nothing', async () => {
         publishToday();
         const before = readSite('.env');
