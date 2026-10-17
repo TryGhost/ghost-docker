@@ -101,31 +101,12 @@ async function prepareVolume(
     }
 }
 
-const timestamped = (io: Io): Io => {
-    const stamp = (write: (text: string) => void) => (text: string) =>
-        write(
-            text
-                .split('\n')
-                .map((line, index, lines) =>
-                    line === '' && index === lines.length - 1
-                        ? line
-                        : `${new Date().toISOString()} ${line}`,
-                )
-                .join('\n'),
-        );
-    return {
-        ...io,
-        stdout: stamp(io.stdout),
-        stderr: stamp(io.stderr),
-        busy: (_text, work) => work(),
-        prompt: null,
-    };
-};
-
 export const supervisorRunCommand = defineCommand({
     brief: 'Run the upgrade supervisor. Compose starts it with the supervisor profile; see docs/upgrade-supervisor.md.',
-    async run(_flags, _positionals, outer) {
-        const io = timestamped(outer);
+    // Logged as every command prints: Docker keeps each line's time
+    // (docker compose logs -t supervisor), and with no terminal there is no
+    // spinner and nothing is asked (io.ts).
+    async run(_flags, _positionals, io) {
         const { context, site } = installedSite(io);
         const dir = site.dir;
         await refuseUnsupportedDaemon(io, context);

@@ -814,7 +814,7 @@ leaves the site lock, so nothing else runs until you have checked the site. The
 job's details say what to do, in order: `./ghost-docker check`, remove
 `.ghost-docker.lock`, then start the site or restore the backup the job names,
 and once `check` passes, remove `.ghost-docker-update/`. Logs:
-`docker compose logs supervisor`.
+`docker compose logs -t supervisor`, timestamped by Docker.
 
 ## backup and restore
 

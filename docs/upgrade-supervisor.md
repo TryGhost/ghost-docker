@@ -441,7 +441,7 @@ Ghost is the API's only client; ghost-docker has no command that calls it. The
 end-to-end test (`tests/e2e/upgrade-supervisor.sh`) makes requests by hand, as
 Ghost's uid with the volume mounted as Ghost mounts it. The supervisor's health
 check calls `GET /v1`, and is healthy while that answers `{"protocol": 1}`. To see what
-it is doing: `docker compose logs supervisor`.
+it is doing: `docker compose logs -t supervisor`, with `-t` for the time Docker recorded on each line.
 
 ## Fixtures
 
