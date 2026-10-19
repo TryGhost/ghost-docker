@@ -285,6 +285,95 @@ async function apply(update: GhostUpdate, backup: boolean): Promise<number> {
     return EXIT.ok;
 }
 
+export type NeedsOperator = Extract<UpdateOutcome, { state: 'needs-operator' }>;
+
+/** One way out for the operator: what it does, and the commands, run in the site directory. */
+export interface RecoveryChoice {
+    readonly does: string;
+    readonly commands: readonly string[];
+}
+
+/**
+ * What the operator needs after a Ghost update that needs them, whoever ran
+ * it: the CLI prints it, the supervisor records it as the job's diagnostic.
+ * Paths are relative to the site.
+ */
+export interface RecoveryAdvice {
+    /** What recovery could not do, then what state the site is in. */
+    readonly facts: readonly string[];
+    /** Empty when there is nothing safe to suggest beyond the facts. */
+    readonly choices: readonly RecoveryChoice[];
+    /** Where the files as they were are kept, to remove once the site is right. */
+    readonly snapshot: string;
+}
+
+export function recoveryAdvice(
+    { site, from, to }: Pick<GhostUpdate, 'site' | 'from' | 'to'>,
+    outcome: NeedsOperator,
+): RecoveryAdvice {
+    const { servicesChanged, filesBack, problems, running } = outcome;
+    const backup = outcome.backup === null ? null : relative(site.dir, outcome.backup);
+    const snapshot = relative(site.dir, outcome.snapshot);
+    const restore: RecoveryChoice[] =
+        backup === null
+            ? []
+            : [
+                  {
+                      does: `Put the site back on Ghost ${from.version} as it was when the update began, discarding anything written since`,
+                      commands: [`./ghost-docker restore --yes ${backup}`],
+                  },
+              ];
+    const facts = [...problems];
+    let choices: RecoveryChoice[];
+    if (servicesChanged) {
+        facts.push(
+            `Ghost ${to.version} started before the update failed, so it may have migrated the database and accepted writes${backup === null ? '' : ' since the backup'}. Nothing was loaded over them: the data is as the update left it.`,
+            `The configuration still names Ghost ${to.version}: switching back to ${from.version} would not undo its migrations.`,
+        );
+        // Once recovery itself failed, starting Ghost again is not safe to suggest.
+        choices =
+            problems.length > 0
+                ? restore
+                : [
+                      ...restore,
+                      {
+                          does: `Find why Ghost ${to.version} did not start, fix it, and start it`,
+                          commands: [
+                              'docker compose logs ghost',
+                              'docker compose up -d',
+                              './ghost-docker check',
+                          ],
+                      },
+                  ];
+    } else if (filesBack) {
+        facts.push(
+            `Ghost ${to.version} never started, and the files are as they were before the update, naming Ghost ${from.version}.`,
+        );
+        choices = [
+            {
+                does: `Start the site on Ghost ${from.version} again, as it was`,
+                commands: ['docker compose up -d', './ghost-docker check'],
+            },
+        ];
+    } else {
+        facts.push(
+            `Ghost ${to.version} never started, but the files may already name it: starting the site now would start Ghost ${to.version}.`,
+        );
+        choices = [
+            {
+                does: `Put the files back first, then start the site on Ghost ${from.version}`,
+                commands: [
+                    `cp -a ${snapshot}/files/. .`,
+                    'docker compose up -d',
+                    './ghost-docker check',
+                ],
+            },
+        ];
+    }
+    facts.push(describeServices(running));
+    return { facts, choices, snapshot };
+}
+
 /** A failed update, as the operator needs to hear it. */
 function failed(
     { io, site, from, to }: GhostUpdate,
@@ -310,47 +399,30 @@ function failed(
         throw new CliError(`the update failed; Ghost ${from.version} was restored.`);
     }
 
-    const { servicesChanged, filesBack, problems, running, snapshot } = outcome;
-    io.stderr(
-        [
-            '',
-            'The site needs you.',
-            ...problems.map((problem) => `  ${problem}`),
-            ...(servicesChanged
-                ? [
-                      `Ghost ${to.version} started before the update failed, so it may have migrated the database and`,
-                      `accepted writes${backup === null ? '' : ' since the backup'}. Nothing was loaded over them: the data is as the update left it.`,
-                      `The configuration still names Ghost ${to.version}: switching back to ${from.version} would not undo`,
-                      'its migrations.',
-                  ]
-                : []),
-            describeServices(running),
-            ...(filesBack
-                ? [`The files are as they were before the update, naming Ghost ${from.version}.`]
-                : []),
-            '',
-            ...(backup !== null && servicesChanged && problems.length === 0
-                ? [
-                      'Choose one, in the site directory:',
-                      `  - Put the site back on Ghost ${from.version} as it was when the update began, discarding`,
-                      '    anything written since:',
-                      `      ./ghost-docker restore --yes ${backup}`,
-                      `  - Or find why Ghost ${to.version} did not start (docker compose logs ghost), fix it, and start it:`,
-                      '      docker compose up -d, then ./ghost-docker check',
-                      '',
-                  ]
-                : backup !== null && servicesChanged
-                  ? [
-                        `Before the update, the site was backed up to ${backup}: its databases, content and`,
-                        `files, on Ghost ${from.version}. Restoring it discards anything written since:`,
-                        `  ./ghost-docker restore --yes ${backup}`,
-                        '',
-                    ]
-                  : kept),
-            `The files as they were before the update are in ${snapshot}/files.`,
-            `Once the site is as it should be (./ghost-docker check), remove ${snapshot}.`,
-            '',
-        ].join('\n'),
+    const advice = recoveryAdvice({ site, from, to }, outcome);
+    const lines = ['', 'The site needs you.', ...advice.facts.map((fact) => `  ${fact}`), ''];
+    if (advice.choices.length === 0) {
+        lines.push(...kept, '');
+    }
+    if (advice.choices.length > 0) {
+        lines.push(
+            advice.choices.length === 1
+                ? 'In the site directory:'
+                : 'Choose one, in the site directory:',
+        );
+        for (const choice of advice.choices) {
+            lines.push(
+                `  - ${choice.does}:`,
+                ...choice.commands.map((command) => `      ${command}`),
+            );
+        }
+        lines.push('');
+    }
+    lines.push(
+        `The files as they were before the update are in ${advice.snapshot}/files.`,
+        `Once the site is as it should be (./ghost-docker check), remove ${advice.snapshot}.`,
+        '',
     );
+    io.stderr(lines.join('\n'));
     throw new CliError('the update failed, and the site needs the operator.');
 }

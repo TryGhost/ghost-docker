@@ -4,7 +4,13 @@
 // prints for it become the job's diagnostics.
 import { relative } from 'node:path';
 import { refuseDrift } from '../backup.ts';
-import { direction, ghostUpdatePlan, reference, type GhostUpdate } from '../commands/update.ts';
+import {
+    direction,
+    ghostUpdatePlan,
+    recoveryAdvice,
+    reference,
+    type GhostUpdate,
+} from '../commands/update.ts';
 import { describeError } from '../errors.ts';
 import { resolvePinned } from '../ghost.ts';
 import type { Io } from '../io.ts';
@@ -108,21 +114,21 @@ export const ghostJob =
                     ],
                 };
             case 'needs-operator': {
+                const advice = recoveryAdvice(update, outcome);
                 const steps = [
-                    ...outcome.problems,
-                    ...(outcome.servicesChanged
-                        ? [
-                              `Ghost ${to.version} started before the update failed, so it may have migrated the database and accepted writes since the backup. Nothing was loaded over them.`,
-                          ]
-                        : []),
-                    'In the site directory, choose one:',
-                    ...(taken === null
+                    ...advice.facts,
+                    ...(advice.choices.length === 0
                         ? []
                         : [
-                              `  Put the site back on Ghost ${from.version} as it was, discarding anything written since: \`./ghost-docker restore --yes ${taken}\``,
+                              advice.choices.length === 1
+                                  ? 'In the site directory:'
+                                  : 'In the site directory, choose one:',
+                              ...advice.choices.map(
+                                  (choice) =>
+                                      `  ${choice.does}: ${choice.commands.map((command) => `\`${command}\``).join(', then ')}`,
+                              ),
                           ]),
-                    `  Or find why Ghost ${to.version} did not start (\`docker compose logs ghost\`), fix it, then \`docker compose up -d\` and \`./ghost-docker check\``,
-                    `The files as they were before the update are in \`${relative(dir, outcome.snapshot)}/files\`; once the site is as it should be, remove \`${relative(dir, outcome.snapshot)}\`.`,
+                    `The files as they were before the update are in \`${advice.snapshot}/files\`; once the site is as it should be, remove \`${advice.snapshot}\`.`,
                 ];
                 return {
                     state: 'needs-operator',
