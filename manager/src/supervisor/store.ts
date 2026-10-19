@@ -20,7 +20,6 @@ import {
     upgradeDiagnosticSchema,
     upgradeJobIdSchema,
     upgradeJobSchema,
-    upgradeVersionSchema,
 } from './protocol.ts';
 
 /** The Compose service the supervisor runs as, which its jobs leave alone. */
@@ -53,11 +52,9 @@ export const targetSchema = z
     .strict();
 export type Target = z.infer<typeof targetSchema>;
 
-/** A one-click entry, and the image it runs. */
-const pinSchema = z
-    .object({ component: z.string(), toVersion: z.string(), target: targetSchema })
-    .strict();
-export type Pin = z.infer<typeof pinSchema>;
+/** A one-click entry and the image it runs: what a job may run, and nothing else. */
+const offerSchema = oneClickUpdateSchema.extend({ target: targetSchema }).strict();
+export type Offer = z.infer<typeof offerSchema>;
 
 const recordSchema = z
     .object({
@@ -76,12 +73,9 @@ export type JobRecord = z.infer<typeof recordSchema>;
 
 const discoverySchema = z
     .object({
-        checkedAt: z.iso.datetime(),
-        currentVersion: upgradeVersionSchema.optional(),
-        oneClick: z.array(oneClickUpdateSchema),
+        /** Status lists them without their targets. */
+        oneClick: z.array(offerSchema),
         manual: z.array(manualUpdateSchema),
-        /** The image behind each one-click entry: what a job may run, and nothing else. */
-        pins: z.array(pinSchema),
         /** When each component last checked successfully. */
         succeededAt: z.record(z.string(), z.iso.datetime()),
         diagnostics: z.array(upgradeDiagnosticSchema),

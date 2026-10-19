@@ -254,16 +254,12 @@ export class Supervisor {
                 diagnostics[0]?.message ?? 'Another job is running on this site.',
             );
         }
-        const offered = (this.discovery?.oneClick ?? []).some(
+        // The job runs the image discovery found for it, and nothing else.
+        const offer = (this.discovery?.oneClick ?? []).find(
             (entry) =>
                 entry.component === request.component && entry.toVersion === request.toVersion,
         );
-        // The image discovery found for it: the job runs that, and nothing else.
-        const pin = (this.discovery?.pins ?? []).find(
-            (entry) =>
-                entry.component === request.component && entry.toVersion === request.toVersion,
-        );
-        if (!offered || pin === undefined) {
+        if (offer === undefined) {
             return failure(
                 'target-unapproved',
                 `${request.component} ${request.toVersion} is not an update this host offers from Admin.`,
@@ -293,7 +289,7 @@ export class Supervisor {
             stage: null,
             backup: null,
             lock: true,
-            target: pin.target,
+            target: offer.target,
         };
         try {
             this.records.create(record);
@@ -515,7 +511,11 @@ export class Supervisor {
             availability,
             backupRequired: true,
             currentVersion: this.options.metadata().ghost.version,
-            oneClick: discovery?.oneClick ?? [],
+            oneClick: (discovery?.oneClick ?? []).map(({ component, fromVersion, toVersion }) => ({
+                component,
+                fromVersion,
+                toVersion,
+            })),
             manual: discovery?.manual ?? [],
             activeJobId: this.activeId,
             pollAfterMs: this.activeId === null ? POLL_IDLE_MS : POLL_ACTIVE_MS,

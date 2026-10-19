@@ -36,11 +36,8 @@ const io = {
 const metadata = () => ({ ghost: { version: FROM } }) as unknown as Metadata;
 
 const discover: Discoverer = async ({ now }) => ({
-    checkedAt: now.toISOString(),
-    currentVersion: FROM,
-    oneClick: [{ component: 'ghost', fromVersion: FROM, toVersion: TO }],
+    oneClick: [{ component: 'ghost', fromVersion: FROM, toVersion: TO, target: TARGET }],
     manual: [],
-    pins: [{ component: 'ghost', toVersion: TO, target: TARGET }],
     succeededAt: { ghost: now.toISOString() },
     diagnostics: [],
 });
@@ -235,6 +232,10 @@ describe('a request made by hand', () => {
 
     test('an accepted job records the exact image discovery found for it', async () => {
         const running = await serve();
+        // Status offers it without the image: that is the supervisor's own.
+        assert.deepEqual((await status()).oneClick, [
+            { component: 'ghost', fromVersion: FROM, toVersion: TO },
+        ]);
         const job = await accepted();
         await running.job;
         assert.deepEqual(new Records(dir).read(job.id)?.target, TARGET);
@@ -255,23 +256,6 @@ describe('refusals', () => {
         assert.equal(await rejected('6.71.0'), 'target-unapproved');
         assert.equal(await rejected('7.0.0; rm -rf /'), 'target-unapproved');
         assert.equal(readLock(dir).state, 'free');
-    });
-
-    test('an update offered without the image discovery found is refused', async () => {
-        const supervisor = new Supervisor({
-            io,
-            dir,
-            records: new Records(dir),
-            execute: (context) => execute(context),
-            discover: async (input) => ({ ...(await discover(input)), pins: [] }),
-            metadata,
-        });
-        supervisor.start();
-        const server = supervisorServer(supervisor, io.stderr);
-        servers.push(server);
-        await listen(server, socket);
-        await supervisor.rediscover();
-        assert.equal(await rejected(), 'target-unapproved');
     });
 
     test('a request while a job is active is refused as busy', async () => {

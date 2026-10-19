@@ -7,13 +7,13 @@
 // nothing one-click: an update is only offered while it is known to exist.
 import { gt, major, valid } from 'semver';
 import { pullImage, runOnce, splitReference } from '../docker/client.ts';
-import { resolveGhost, variantOf } from '../ghost.ts';
+import { resolveGhost, variantOf, type ResolvedGhost } from '../ghost.ts';
 import type { Io } from '../io.ts';
 import type { Metadata } from '../meta.ts';
 import { compareReleases, isRelease } from '../release.ts';
 import { diagnostic } from './diagnostics.ts';
-import type { ManualUpdate, OneClickUpdate, UpgradeDiagnostic } from './protocol.ts';
-import type { Discovery, Pin } from './store.ts';
+import type { ManualUpdate, UpgradeDiagnostic } from './protocol.ts';
+import type { Discovery, Offer } from './store.ts';
 
 /** How often discovery runs while nothing asks for it. */
 export const DISCOVERY_EVERY_MS = 6 * 60 * 60_000;
@@ -21,12 +21,19 @@ export const DISCOVERY_EVERY_MS = 6 * 60 * 60_000;
 export const DISCOVERY_KEPT_MS = 24 * 60 * 60_000;
 
 interface Found {
-    readonly oneClick: OneClickUpdate[];
+    readonly oneClick: Offer[];
     readonly manual: ManualUpdate[];
-    readonly pins: Pin[];
 }
 
-const NOTHING: Found = { oneClick: [], manual: [], pins: [] };
+const NOTHING: Found = { oneClick: [], manual: [] };
+
+/** Ghost `to`, offered one-click from `fromVersion`, pinned to the digest just pulled. */
+const offerOf = (fromVersion: string, to: ResolvedGhost): Offer => ({
+    component: 'ghost',
+    fromVersion,
+    toVersion: to.version,
+    target: { image: to.image, tag: to.tag, digest: to.digest },
+});
 
 const OPERATOR_GUIDE = 'https://github.com/TryGhost/ghost-docker/blob/next-docker/docs/install.md';
 
@@ -41,7 +48,7 @@ async function ghostUpdates(io: Io, metadata: Metadata): Promise<Found> {
     }
     const variant = variantOf(from.tag);
     const current = major(from.version);
-    const found: Found = { oneClick: [], manual: [], pins: [] };
+    const found: Found = { oneClick: [], manual: [] };
 
     const latest = await resolveGhost(io, `${current}-${variant}`, from.image);
     if (
@@ -49,16 +56,7 @@ async function ghostUpdates(io: Io, metadata: Metadata): Promise<Found> {
         major(latest.version) === current &&
         gt(latest.version, from.version)
     ) {
-        found.oneClick.push({
-            component: 'ghost',
-            fromVersion: from.version,
-            toVersion: latest.version,
-        });
-        found.pins.push({
-            component: 'ghost',
-            toVersion: latest.version,
-            target: { image: latest.image, tag: latest.tag, digest: latest.digest },
-        });
+        found.oneClick.push(offerOf(from.version, latest));
     }
 
     let next;
@@ -119,7 +117,6 @@ async function stackUpdates(io: Io, metadata: Metadata): Promise<Found> {
     }
     return {
         oneClick: [],
-        pins: [],
         manual: [
             {
                 component: 'stack',
@@ -150,9 +147,8 @@ const CHECKS: Record<string, (input: DiscoverInput) => Promise<Found>> = {
 export const discover: Discoverer = async (input) => {
     const { previous, now } = input;
     const checkedAt = now.toISOString();
-    const oneClick: OneClickUpdate[] = [];
+    const oneClick: Offer[] = [];
     const manual: ManualUpdate[] = [];
-    const pins: Pin[] = [];
     const diagnostics: UpgradeDiagnostic[] = [];
     const succeededAt: Record<string, string> = {};
     for (const [component, check] of Object.entries(CHECKS)) {
@@ -160,7 +156,6 @@ export const discover: Discoverer = async (input) => {
             const found = await check(input);
             oneClick.push(...found.oneClick);
             manual.push(...found.manual);
-            pins.push(...found.pins);
             succeededAt[component] = checkedAt;
         } catch (error) {
             const last = previous?.succeededAt[component];
@@ -181,18 +176,9 @@ export const discover: Discoverer = async (input) => {
                 oneClick.push(
                     ...previous.oneClick.filter((entry) => entry.component === component),
                 );
-                pins.push(...previous.pins.filter((pin) => pin.component === component));
             }
             manual.push(...previous.manual.filter((entry) => entry.component === component));
         }
     }
-    return {
-        checkedAt,
-        currentVersion: input.metadata.ghost.version,
-        oneClick,
-        manual,
-        pins,
-        succeededAt,
-        diagnostics,
-    };
+    return { oneClick, manual, succeededAt, diagnostics };
 };
