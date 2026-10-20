@@ -1,0 +1,91 @@
+name: Beta of the new Docker setup
+description: A problem or feedback on the beta installed from docker.ghost.org, run with ./ghost-docker.
+title: "[beta] "
+labels: ["next-docker"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For the beta of the new setup: sites installed from [docker.ghost.org](https://docker.ghost.org) and run with `./ghost-docker`. For the Compose setup on `main`, open a blank issue instead.
+
+        Its documentation is [docs/install.md on next-docker](https://github.com/TryGhost/ghost-docker/blob/next-docker/docs/install.md).
+
+        Before you paste command output or logs, remove passwords, tokens, and any domains or directory paths you do not want to share. Never paste `.env` or `ghost.env`.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you were doing, and what went wrong or could be better.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: false
+  - type: textarea
+    id: command
+    attributes:
+      label: The command and its output
+      description: The command you ran, and everything it printed.
+      render: shell
+    validations:
+      required: false
+  - type: textarea
+    id: version
+    attributes:
+      label: "`./ghost-docker version`"
+      description: Run it in the site directory. If there is no site directory yet, paste the install command you ran instead.
+      render: text
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Linux, Docker Engine
+        - Linux, rootless Docker
+        - macOS, Docker Desktop
+        - macOS, OrbStack
+        - Windows, WSL2
+        - Other (say which below)
+    validations:
+      required: true
+  - type: dropdown
+    id: site
+    attributes:
+      label: The site
+      options:
+        - A new local site (--local)
+        - A new production site
+        - Imported from a local Ghost-CLI site
+        - Imported from a production Ghost-CLI site
+        - Moved from the Compose setup on main
+        - Not installed yet
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: "`./ghost-docker doctor`"
+      description: What the manager can see of Docker, the platform and the site directory. Run it in the site directory, if there is one.
+      render: text
+    validations:
+      required: false
+  - type: textarea
+    id: check
+    attributes:
+      label: "`./ghost-docker check`"
+      description: Once a site is installed.
+      render: text
+    validations:
+      required: false
+  - type: textarea
+    id: more
+    attributes:
+      label: Anything else
+      description: Logs (`docker compose logs ghost`), screenshots, or what you tried.
+    validations:
+      required: false
