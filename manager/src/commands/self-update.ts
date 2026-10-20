@@ -13,10 +13,10 @@ import {
 } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { refuseDrift } from '../backup.ts';
-import { compose, composeConfig, composeError } from '../compose.ts';
+import { compose, composeError } from '../compose.ts';
 import { z } from 'zod';
 import { defineCommand, flag } from '../command.ts';
-import { findingErrors, validate } from '../config.ts';
+import { requireValid } from '../config.ts';
 import { CliError, EXIT, UsageError } from '../errors.ts';
 import { atomicWrite } from '../fs.ts';
 import type { Io } from '../io.ts';
@@ -460,24 +460,7 @@ async function apply(update: Update, backup: boolean): Promise<number> {
                 ok(io, ENV_FILE, `MANAGER_IMAGE_REF=${to.image!}, for the upgrade supervisor`);
             }
 
-            // validate() only warns when Compose cannot resolve the project; here
-            // that is the release failing.
-            const resolved = await io.busy('Resolving the Compose project', () =>
-                composeConfig(io, dir),
-            );
-            if (!resolved.ok) {
-                throw new CliError(
-                    `Compose cannot resolve the project with this release: ${resolved.reason}`,
-                );
-            }
-            const findings = await io.busy('Validating the configuration', () => validate(io, dir));
-            const errors = findingErrors(findings);
-            if (errors) {
-                throw new CliError(
-                    `the configuration does not validate with this release:\n${errors}`,
-                );
-            }
-            ok(io, 'configuration', 'valid with this release');
+            await requireValid(io, dir, 'this release');
         },
         async pull() {
             // Quick when the early pull got them; whatever it could not, now.

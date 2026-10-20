@@ -7,7 +7,7 @@
 // nothing one-click: an update is only offered while it is known to exist.
 import { gt, major, valid } from 'semver';
 import { pullImage, runOnce, splitReference } from '../docker/client.ts';
-import { nightlyOrder } from '../commands/update.ts';
+import { nightlyOrder } from '../ghost-update.ts';
 import {
     ghostChannelOf,
     NIGHTLY_LATEST,

@@ -156,6 +156,7 @@ expect_status 0
 expect_output "This site runs Ghost $FROM\\."
 expect_output 'An update is available: Ghost 6\.'
 to=$(sed -n 's/^An update is available: Ghost \([^,]*\),.*/\1/p' <<<"$OUT")
+# Named from here on: a Ghost released mid-run would otherwise become the target.
 [[ -n $to && $to != "$FROM" ]] || fail "no newer Ghost was named" "$OUT"
 [[ $(fingerprint) == "$before" ]] || fail "--check changed files"
 ok "Ghost $to"
@@ -174,7 +175,7 @@ services:
       retries: 1
 EOF
 compose_in up --detach --wait ghost >/dev/null 2>&1 || fail "Ghost $FROM is not healthy with the override"
-run "$S/ghost-docker" --dir "$S" update
+run "$S/ghost-docker" --dir "$S" update "$to"
 expect_status 1
 expect_output 'did not start and become healthy'
 expect_output 'The site needs you\.'
@@ -208,7 +209,7 @@ ok "restored from $backup: Ghost $FROM, its database and the post"
 step "Updated to Ghost $to across its migrations"
 rm "$S/compose.override.yml"
 compose_in up --detach --wait ghost >/dev/null 2>&1 || fail "Ghost $FROM did not start without the override"
-run "$S/ghost-docker" --dir "$S" update
+run "$S/ghost-docker" --dir "$S" update "$to"
 expect_status 0
 expect_output "Updated Ghost from $FROM to $to\\."
 to_pin=$(setting GHOST_IMAGE_REF)
@@ -229,7 +230,7 @@ ok "Ghost $to, $to_pin, $(migrations) migrations; the owner signs in, the post a
 
 step "Nothing more to do, and back down is refused"
 before=$(fingerprint)
-run "$S/ghost-docker" --dir "$S" update
+run "$S/ghost-docker" --dir "$S" update "$to"
 expect_status 0
 expect_output "already runs Ghost $to"
 run "$S/ghost-docker" --dir "$S" update "$FROM"

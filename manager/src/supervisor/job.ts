@@ -1,21 +1,20 @@
 // A supervisor job: `update <version>`, run by the supervisor with the site
-// lock held, through the same plan and executor as the CLI (commands/update.ts,
+// lock held, through the same checks, plan and executor as the CLI (ghost-update.ts,
 // update.ts). Its outcome becomes the job's final state; the words the CLI
 // prints for it become the job's diagnostics.
 import { relative } from 'node:path';
-import { refuseDrift } from '../backup.ts';
+import { CliError, describeError } from '../errors.ts';
+import { resolvePinned, type ResolvedGhost } from '../ghost.ts';
 import {
+    directionTo,
     ghostUpdatePlan,
-    order,
     recoveryAdvice,
-    reference,
+    refuseSiteDrift,
+    Refused,
+    siteGhost,
     type GhostUpdate,
-} from '../commands/update.ts';
-import { describeError } from '../errors.ts';
-import { resolvePinned } from '../ghost.ts';
+} from '../ghost-update.ts';
 import type { Io } from '../io.ts';
-import { requireMetadata } from '../meta.ts';
-import { resolveSite } from '../resolved.ts';
 import { readSettings, siteFacts } from '../site.ts';
 import { runUpdate } from '../update.ts';
 import { diagnostic } from './diagnostics.ts';
@@ -27,6 +26,20 @@ const refused = (code: string, message: string): JobOutcome => ({
     diagnostics: [diagnostic(code, 'error', `${message} Nothing has been changed.`)],
 });
 
+/**
+ * What the update's own checks refused, under their code, in update's words;
+ * those that say nothing has been changed are not told it twice.
+ */
+function refusedBy(error: unknown): JobOutcome {
+    if (!(error instanceof CliError)) {
+        return refused('refused', describeError(error));
+    }
+    const code = error instanceof Refused ? error.code : 'refused';
+    return error.message.endsWith('Nothing has been changed.')
+        ? { state: 'refused', diagnostics: [diagnostic(code, 'error', error.message)] }
+        : refused(code, error.message);
+}
+
 export const ghostJob =
     (io: Io, dir: string): Executor =>
     async ({ record, stage, backup }) => {
@@ -35,50 +48,33 @@ export const ghostJob =
         if (settings === null) {
             return refused('site-missing', 'The site has no .env.');
         }
-        const site = siteFacts(dir, settings);
-        const metadata = requireMetadata(
-            dir,
-            'the supervisor cannot tell which Ghost the site runs',
-        );
-        const from = metadata.ghost;
-        if (settings.get('GHOST_IMAGE_REF') !== reference(from)) {
-            return refused(
-                'pin-mismatch',
-                `\`.env\` pins \`GHOST_IMAGE_REF\` to something other than the Ghost \`.ghost-docker.json\` records (${from.version}).`,
-            );
-        }
-
         const { target } = record;
         if (target === null) {
             return refused('target-unapproved', `No image was pinned for Ghost ${toVersion}.`);
         }
-        stage('pulling');
-        let to;
+        let update: GhostUpdate;
         try {
-            // Exactly what discovery found, by digest: never what a tag points to now.
-            to = await resolvePinned(io, target.image, target.tag, target.digest);
-        } catch (error) {
-            return refused(
-                'pull-failed',
-                `Ghost ${toVersion} could not be pulled: ${describeError(error)}.`,
-            );
-        }
-        if (to.version !== toVersion) {
-            return refused(
-                'target-mismatch',
-                `${to.reference} is Ghost ${to.version}, not ${toVersion}.`,
-            );
-        }
-        try {
-            if ((await order(io, from, to)) !== 'newer') {
+            const { metadata, from } = siteGhost(dir, settings, 'the supervisor');
+            stage('pulling');
+            let to: ResolvedGhost;
+            try {
+                // Exactly what discovery found, by digest: never what a tag points to now.
+                to = await resolvePinned(io, target.image, target.tag, target.digest);
+            } catch (error) {
+                return refused(
+                    'pull-failed',
+                    `Ghost ${toVersion} could not be pulled: ${describeError(error)}.`,
+                );
+            }
+            if ((await directionTo(io, from, to, toVersion)) !== 'newer') {
                 return refused('not-newer', `This site already runs Ghost ${from.version}.`);
             }
-            await refuseDrift(io, await resolveSite(io, dir));
+            await refuseSiteDrift(io, dir);
+            update = { io, site: siteFacts(dir, settings), metadata, from, to };
         } catch (error) {
-            return refused('refused', describeError(error));
+            return refusedBy(error);
         }
-
-        const update: GhostUpdate = { io, site, metadata, from, to };
+        const { from, to } = update;
         const outcome = await runUpdate(
             ghostUpdatePlan(update, {
                 except: [SUPERVISOR_SERVICE],

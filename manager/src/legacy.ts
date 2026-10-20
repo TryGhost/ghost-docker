@@ -85,7 +85,7 @@ import {
 } from './payload.ts';
 import { takenPorts } from './ports.ts';
 import { git } from './process.ts';
-import { describeServices, runningServices, Snapshot, stopServices } from './recovery.ts';
+import { describeServices, Snapshot } from './recovery.ts';
 import { observeSite, resolveConfig, resolveSite, type ResolvedSite } from './resolved.ts';
 import { heading, ok, printChecks } from './report.ts';
 import {
@@ -103,6 +103,7 @@ import {
     type SiteFacts,
     type SiteSettings,
 } from './site.ts';
+import { recover as recoverSite } from './update.ts';
 import { verifySite } from './verify.ts';
 import { atLeast } from './versions.ts';
 import { WriterPause } from './writers.ts';
@@ -823,36 +824,25 @@ async function recover(
     const { io, dir } = plan;
     io.stderr(`\n${describeError(error)}\n`);
     io.stderr(`\nThe migration did not complete. Putting ${FROM}'s files back\n`);
-    const problems: string[] = [];
-    if (servicesChanged) {
-        const stopped = await stopServices(io, dir, 'Stopping the migrated site');
-        if (stopped.error !== null) {
-            problems.push(`the services could not be stopped: ${stopped.error}`);
-        }
-    }
-    if (problems.length === 0) {
-        try {
-            snapshot.restore();
-        } catch (restoreError) {
-            problems.push(`the files could not be put back: ${(restoreError as Error).message}`);
-        }
-    }
-    const resumed = [...pause.paused];
-    if (problems.length === 0 && !servicesChanged) {
-        try {
-            await pause.resume();
-        } catch (resumeError) {
-            problems.push((resumeError as Error).message);
-        }
-    }
+    // The stack's files change nothing the data depends on: back even after startup.
+    const outcome = await recoverSite({
+        io,
+        dir,
+        snapshot,
+        pause,
+        backup,
+        servicesChanged,
+        error,
+        stopping: 'Stopping the migrated site',
+        afterStartup: 'restore',
+    });
 
     const kept =
         backup === null
             ? []
             : [`The backup taken for the migration is kept in ${relative(dir, backup)}.`];
-    if (servicesChanged || problems.length > 0) {
-        const running = await runningServices(io, dir);
-        const filesBack = problems.length === 0;
+    if (outcome.state === 'needs-operator') {
+        const { problems, running, filesBack } = outcome;
         io.stderr(
             [
                 '',
@@ -888,7 +878,7 @@ async function recover(
         );
         throw new CliError('the migration failed, and the site needs the operator.');
     }
-    snapshot.remove();
+    const { resumed } = outcome;
     io.stderr(
         [
             '',

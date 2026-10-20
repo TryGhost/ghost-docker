@@ -3,13 +3,13 @@
 // Compose interpolates inactive services too; optional requirements are mode-specific.
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { composeConfig, composeVariables, splitComposeFile } from './compose.ts';
+import { composeConfig, composeVariables, splitComposeFile, type ConfigResult } from './compose.ts';
 import { inspectImage } from './docker/client.ts';
 import * as env from './env.ts';
 import { CliError } from './errors.ts';
 import { modeOf, readIfExists } from './fs.ts';
 import type { Io } from './io.ts';
-import type { Check } from './report.ts';
+import { ok, type Check } from './report.ts';
 import {
     COMPOSE_OVERRIDE_FILE,
     ENV_EXAMPLE_FILE,
@@ -243,8 +243,15 @@ export async function validateEnv(io: Io, dir: string): Promise<Finding[]> {
  *  - an operator setting in the wrong file. Detected from the variables
  *    Compose interpolates, the settings .env.example documents,
  *    COMPOSE_*, and whatever `.env` defines.
+ *
+ * `resolved` is the project as the caller already resolved it from the files
+ * as they are now; without it, Compose is asked here.
  */
-export async function validateGhostEnv(io: Io, dir: string): Promise<Finding[]> {
+export async function validateGhostEnv(
+    io: Io,
+    dir: string,
+    resolved?: ConfigResult,
+): Promise<Finding[]> {
     const file = GHOST_ENV_FILE;
     const path = join(dir, file);
     const text = readIfExists(path);
@@ -260,7 +267,7 @@ export async function validateGhostEnv(io: Io, dir: string): Promise<Finding[]> 
     }
     const findings: Finding[] = [];
 
-    const resolved = await composeConfig(io, dir);
+    resolved ??= await composeConfig(io, dir);
     const container = resolved.ok ? resolved.project.services.ghost?.environment : undefined;
     if (container === undefined) {
         findings.push(
@@ -343,6 +350,26 @@ export const findingErrors = (findings: readonly Finding[]): string =>
         .map((finding) => `  ${finding.file}: ${finding.message}`)
         .join('\n');
 
-export async function validate(io: Io, dir: string): Promise<Finding[]> {
-    return [...(await validateEnv(io, dir)), ...(await validateGhostEnv(io, dir))];
+export async function validate(io: Io, dir: string, resolved?: ConfigResult): Promise<Finding[]> {
+    return [...(await validateEnv(io, dir)), ...(await validateGhostEnv(io, dir, resolved))];
+}
+
+/**
+ * After an update has written what the site runs: Compose must resolve the
+ * project, which validate() alone only warns about, and the configuration must
+ * validate, both with `target`, what was written ("Ghost 6.4.0", "this release").
+ */
+export async function requireValid(io: Io, dir: string, target: string): Promise<void> {
+    const resolved = await io.busy('Resolving the Compose project', () => composeConfig(io, dir));
+    if (!resolved.ok) {
+        throw new CliError(`Compose cannot resolve the project with ${target}: ${resolved.reason}`);
+    }
+    const findings = await io.busy('Validating the configuration', () =>
+        validate(io, dir, resolved),
+    );
+    const errors = findingErrors(findings);
+    if (errors) {
+        throw new CliError(`the configuration does not validate with ${target}:\n${errors}`);
+    }
+    ok(io, 'configuration', `valid with ${target}`);
 }
