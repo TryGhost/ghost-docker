@@ -96,7 +96,8 @@ newer "$FROM" "$TO" || die "Ghost $TO is not newer than $FROM"
 step "A registry on localhost:$REGISTRY_PORT"
 if [[ -z $(docker ps -q --filter "name=^${REGISTRY_NAME}$") ]]; then
     docker rm -f "$REGISTRY_NAME" >/dev/null 2>&1 || true
-    docker run -d --name "$REGISTRY_NAME" -p "$REGISTRY_PORT:5000" registry:2 >/dev/null
+    # Loopback only: the registry has no authentication.
+    docker run -d --name "$REGISTRY_NAME" -p "127.0.0.1:$REGISTRY_PORT:5000" registry:2 >/dev/null
 fi
 ok "$REGISTRY_NAME"
 
