@@ -5,12 +5,12 @@
 // local site gets only the files its mode uses. A checkout's files are used
 // in place (docs/architecture.md#installation-and-import).
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import { dirname, join, relative } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, statSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import type { Context } from './context.ts';
 import { inspectImage, splitReference } from './docker/client.ts';
 import { CliError } from './errors.ts';
-import { atomicWrite } from './fs.ts';
+import { atomicWrite, filesUnder } from './fs.ts';
 import type { Io } from './io.ts';
 import type { SiteMode } from './site.ts';
 
@@ -37,20 +37,7 @@ const PRODUCTION_ONLY = ['caddy', 'tinybird'];
  * order; with a mode, only those a site of that mode uses.
  */
 export function payloadFiles(stack: string, mode?: SiteMode): string[] {
-    const files: string[] = [];
-    const walk = (directory: string) => {
-        for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) =>
-            a.name.localeCompare(b.name),
-        )) {
-            const path = join(directory, entry.name);
-            if (entry.isDirectory()) {
-                walk(path);
-            } else if (entry.isFile()) {
-                files.push(relative(stack, path));
-            }
-        }
-    };
-    walk(stack);
+    const files = filesUnder(stack);
     return mode === 'local'
         ? files.filter((file) => !PRODUCTION_ONLY.includes(file.split('/')[0]!))
         : files;
@@ -80,6 +67,23 @@ export function makeDirectories(path: string, created: string[]): void {
     created.push(path);
 }
 
+/**
+ * `file` of the stack written into the site, keeping its mode, the
+ * directories made recorded in `created`. Returns its checksum.
+ */
+export function copyStackFile(
+    stack: string,
+    dir: string,
+    file: string,
+    created: string[] = [],
+): string {
+    const source = join(stack, file);
+    makeDirectories(dirname(join(dir, file)), created);
+    const content = readFileSync(source);
+    atomicWrite(join(dir, file), content, statSync(source).mode & 0o777);
+    return sha256(content);
+}
+
 /** Copy the payload into the site, keeping each file's mode. */
 export function writePayload(
     dir: string,
@@ -88,13 +92,8 @@ export function writePayload(
     written: Written,
 ): void {
     for (const file of files) {
-        const source = join(stack, file);
-        const target = join(dir, file);
-        makeDirectories(dirname(target), written.directories);
-        const content = readFileSync(source);
-        atomicWrite(target, content, statSync(source).mode & 0o777);
-        written.files.push(target);
-        written.checksums[file] = sha256(content);
+        written.checksums[file] = copyStackFile(stack, dir, file, written.directories);
+        written.files.push(join(dir, file));
     }
 }
 

@@ -141,6 +141,32 @@ export function readMetadata(dir: string): MetadataRead {
     return { state: 'present', metadata: parsed.data };
 }
 
+/** The metadata of a site as it is first written: by `install`, and by the released-main migration. */
+export function installationMetadata(
+    input: Pick<Metadata, 'mode' | 'channel' | 'source' | 'profiles' | 'payload'> & {
+        readonly stack: { readonly version: string | null; readonly image: string | null };
+        /** `domain` and `adminDomain` are empty for none. */
+        readonly site: Record<'project' | 'dir' | 'url' | 'domain' | 'adminDomain', string>;
+        readonly ghost: Metadata['ghost'];
+    },
+): Metadata {
+    const { stack, site, ghost, ...rest } = input;
+    return {
+        schemaVersion: SCHEMA_VERSION,
+        installedAt: isoSeconds(),
+        updatedAt: null,
+        ...rest,
+        stack: {
+            version: stack.version,
+            ref: rest.source === 'checkout' ? null : stack.version,
+            image: stack.image,
+            previous: null,
+        },
+        site: { ...site, domain: site.domain || null, adminDomain: site.adminDomain || null },
+        ghost: { image: ghost.image, tag: ghost.tag, version: ghost.version, digest: ghost.digest },
+    };
+}
+
 /**
  * Validated before it is written, so a bad document never replaces a good
  * one. Two writes of the same document are the same bytes: the parse orders

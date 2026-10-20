@@ -6,7 +6,7 @@
 import { relative } from 'node:path';
 import { major, valid } from 'semver';
 import { defineCommand, flag } from '../command.ts';
-import { CliError, EXIT, UsageError } from '../errors.ts';
+import { EXIT, UsageError } from '../errors.ts';
 import { ghostChannelOf, NIGHTLY_LATEST, NIGHTLY_TAG, resolveGhost, variantOf } from '../ghost.ts';
 import {
     directionTo,
@@ -18,7 +18,7 @@ import {
     type Direction,
     type GhostUpdate,
 } from '../ghost-update.ts';
-import { runUpdate, type UpdateOutcome } from '../update.ts';
+import { reportNeedsOperator, reportRestored, runUpdate, type UpdateOutcome } from '../update.ts';
 import { installedSite, lockPlanned, refuseUnfinished } from './common.ts';
 import { z } from 'zod';
 
@@ -155,50 +155,15 @@ function failed(
     { io, site, from, to }: GhostUpdate,
     outcome: Exclude<UpdateOutcome, { state: 'done' }>,
 ): never {
-    const dir = site.dir;
-    const backup = outcome.backup === null ? null : relative(dir, outcome.backup);
-    const kept =
-        backup === null ? [] : [`The backup taken before the update is kept in ${backup}.`];
+    const wording = { from: `Ghost ${from.version}`, operation: 'the update' };
     if (outcome.state === 'restored') {
-        const { resumed } = outcome;
-        io.stderr(
-            [
-                '',
-                `Restored: the site is back on Ghost ${from.version}, with its files as they were` +
-                    (resumed.length > 0
-                        ? `. Its services were not changed; ${resumed.join(' and ')}, stopped for the update, ${resumed.length > 1 ? 'are' : 'is'} running again.`
-                        : '. Its services were not changed.'),
-                ...kept,
-                '',
-            ].join('\n'),
-        );
-        throw new CliError(`the update failed; Ghost ${from.version} was restored.`);
+        reportRestored(io, site.dir, outcome, wording);
     }
-
-    const advice = recoveryAdvice({ site, from, to }, outcome);
-    const lines = ['', 'The site needs you.', ...advice.facts.map((fact) => `  ${fact}`), ''];
-    if (advice.choices.length === 0) {
-        lines.push(...kept, '');
-    }
-    if (advice.choices.length > 0) {
-        lines.push(
-            advice.choices.length === 1
-                ? 'In the site directory:'
-                : 'Choose one, in the site directory:',
-        );
-        for (const choice of advice.choices) {
-            lines.push(
-                `  - ${choice.does}:`,
-                ...choice.commands.map((command) => `      ${command}`),
-            );
-        }
-        lines.push('');
-    }
-    lines.push(
-        `The files as they were before the update are in ${advice.snapshot}/files.`,
-        `Once the site is as it should be (./ghost-docker check), remove ${advice.snapshot}.`,
-        '',
+    reportNeedsOperator(
+        io,
+        site.dir,
+        outcome,
+        recoveryAdvice({ site, from, to }, outcome),
+        wording,
     );
-    io.stderr(lines.join('\n'));
-    throw new CliError('the update failed, and the site needs the operator.');
 }

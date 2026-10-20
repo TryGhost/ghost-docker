@@ -8,7 +8,6 @@ import {
     existsSync,
     mkdirSync,
     openSync,
-    readdirSync,
     readSync,
     renameSync,
     rmSync,
@@ -31,7 +30,7 @@ import { compose, composeError, composeOverrides, composePs, composeUp } from '.
 import { runOnce } from './docker/client.ts';
 import { CliError } from './errors.ts';
 import { WriterPause } from './writers.ts';
-import { atomicWrite, copyPresent, PRIVATE } from './fs.ts';
+import { atomicWrite, copyPresent, filesUnder, PRIVATE } from './fs.ts';
 import { DATABASE_MS, tableCount, withSiteDatabase } from './import/database.ts';
 import type { Io } from './io.ts';
 import { isoSeconds, siteFiles, type Metadata } from './meta.ts';
@@ -189,22 +188,6 @@ function notIncluded(site: SiteFacts): string[] {
         lines.push("Mailpit's inbox (data/mailpit)");
     }
     return lines;
-}
-
-/** Every file under `root`, relative to it, in a stable order. */
-function filesUnder(root: string, prefix = ''): string[] {
-    const files: string[] = [];
-    for (const entry of readdirSync(join(root, prefix), { withFileTypes: true }).sort((a, b) =>
-        a.name.localeCompare(b.name),
-    )) {
-        const path = prefix === '' ? entry.name : `${prefix}/${entry.name}`;
-        if (entry.isDirectory()) {
-            files.push(...filesUnder(root, path));
-        } else if (entry.isFile()) {
-            files.push(path);
-        }
-    }
-    return files;
 }
 
 /** SHA-256 of a file, read as a stream: dumps and archives can be large. */

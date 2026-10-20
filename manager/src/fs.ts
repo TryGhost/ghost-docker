@@ -68,6 +68,22 @@ export function readIfExists(path: string): string | undefined {
     }
 }
 
+/** Every regular file under `root`, relative to it with `/` separators, in a stable order. */
+export function filesUnder(root: string, prefix = ''): string[] {
+    const files: string[] = [];
+    for (const entry of readdirSync(join(root, prefix), { withFileTypes: true }).sort((a, b) =>
+        a.name.localeCompare(b.name),
+    )) {
+        const path = prefix === '' ? entry.name : `${prefix}/${entry.name}`;
+        if (entry.isDirectory()) {
+            files.push(...filesUnder(root, path));
+        } else if (entry.isFile()) {
+            files.push(path);
+        }
+    }
+    return files;
+}
+
 /** Permission bits of a file, or undefined when it does not exist. */
 export function modeOf(path: string): number | undefined {
     try {

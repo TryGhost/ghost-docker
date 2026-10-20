@@ -489,7 +489,7 @@ describe('a failed update', () => {
         assert.match(result.stderr, /The site needs you\./);
         assert.match(
             result.stderr,
-            /v0\.1\.0-beta\.2's services started before the update failed, so they may have changed\nthe databases and content, and Ghost may have accepted writes, since the backup\./,
+            /v0\.1\.0-beta\.2's services started before the update failed, so they may have changed the databases and content, and Ghost may have accepted writes, since the backup\./,
         );
         assert.match(result.stderr, /Its services are stopped\./);
         assert.match(result.stderr, /The files are v0\.1\.0-beta\.1's again\./);
@@ -497,7 +497,10 @@ describe('a failed update', () => {
             result.stderr,
             /discarding anything written since:\n +\.\/ghost-docker restore --yes backups\/\d{4}-\d\d-\d\dT/,
         );
-        assert.match(result.stderr, /start v0\.1\.0-beta\.1 on it as it is: docker compose up -d/);
+        assert.match(
+            result.stderr,
+            /start v0\.1\.0-beta\.1 on it as it is:\n +docker compose up -d/,
+        );
         assert.match(result.stderr, /the update failed, and the site needs the operator/);
         assert.deepEqual(siteOnly(), before);
         assert.equal(pinnedImage(), FIRST);

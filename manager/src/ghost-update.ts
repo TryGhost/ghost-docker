@@ -18,7 +18,7 @@ import { describeServices } from './recovery.ts';
 import { resolveSite } from './resolved.ts';
 import { heading, ok } from './report.ts';
 import { ENV_FILE, META_FILE, type SiteFacts, type SiteSettings } from './site.ts';
-import type { UpdateOutcome, UpdatePlan } from './update.ts';
+import type { RecoveryAdvice, RecoveryChoice, UpdateOutcome, UpdatePlan } from './update.ts';
 
 /**
  * A refusal before anything has changed. `code` names it in a supervisor
@@ -263,26 +263,7 @@ export function ghostUpdatePlan(
 
 export type NeedsOperator = Extract<UpdateOutcome, { state: 'needs-operator' }>;
 
-/** One way out for the operator: what it does, and the commands, run in the site directory. */
-export interface RecoveryChoice {
-    readonly does: string;
-    readonly commands: readonly string[];
-}
-
-/**
- * What the operator needs after a Ghost update that needs them, whoever ran
- * it: the CLI prints it, the supervisor records it as the job's diagnostic.
- * Paths are relative to the site.
- */
-export interface RecoveryAdvice {
-    /** What recovery could not do, then what state the site is in. */
-    readonly facts: readonly string[];
-    /** Empty when there is nothing safe to suggest beyond the facts. */
-    readonly choices: readonly RecoveryChoice[];
-    /** Where the files as they were are kept, to remove once the site is right. */
-    readonly snapshot: string;
-}
-
+/** The advice after a Ghost update that needs the operator (update.ts's RecoveryAdvice). */
 export function recoveryAdvice(
     { site, from, to }: Pick<GhostUpdate, 'site' | 'from' | 'to'>,
     outcome: NeedsOperator,

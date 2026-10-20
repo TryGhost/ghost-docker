@@ -2,6 +2,7 @@
 import { join } from 'node:path';
 import * as env from './env.ts';
 import { readIfExists } from './fs.ts';
+import type { ResolvedGhost } from './ghost.ts';
 
 export const ENV_FILE = '.env';
 export const ENV_EXAMPLE_FILE = '.env.example';
@@ -65,6 +66,17 @@ export const LOCAL_ONLY_PROFILES = ['mailpit'] as const;
  */
 export const PRODUCTION_ONLY_PROFILES = ['analytics', 'activitypub'] as const;
 
+/** Why a site of `mode` must not select `profile`, or null when it may. */
+export function profileConflict(mode: SiteMode, profile: string): string | null {
+    if (mode === 'production' && (LOCAL_ONLY_PROFILES as readonly string[]).includes(profile)) {
+        return "is for local sites only: it would catch a production site's real mail";
+    }
+    if (mode === 'local' && (PRODUCTION_ONLY_PROFILES as readonly string[]).includes(profile)) {
+        return 'is for production sites only: a local site has no Caddy to route to it';
+    }
+    return null;
+}
+
 /** `production, analytics` as a list: trimmed, empties dropped. */
 export const splitProfiles = (profiles: string): string[] =>
     profiles
@@ -106,6 +118,57 @@ export function readSettings(dir: string): SiteSettings | null {
     }
     const values = env.toRecord(text);
     return { get: (key) => values[key] };
+}
+
+/** What `.env` records for every site this layout writes, in the order it is written. */
+export function generatedSettings(input: {
+    readonly mode: SiteMode;
+    readonly profiles: readonly string[];
+    readonly project: string;
+    readonly dir: string;
+    readonly url: string;
+    /** Empty for none. */
+    readonly adminUrl: string;
+    readonly ghost: Pick<
+        ResolvedGhost,
+        'image' | 'tag' | 'reference' | 'contentPath' | 'tinybirdPath'
+    >;
+    readonly port: number;
+    readonly mailpitPort: number | null;
+    /** Caddy's, written for a production site. */
+    readonly ports: { readonly http: string; readonly https: string };
+    readonly database: {
+        readonly user: string;
+        readonly password: string;
+        readonly rootPassword: string;
+    };
+}): [string, string][] {
+    const { ghost, database } = input;
+    const production = input.mode === 'production';
+    return Object.entries({
+        COMPOSE_PROFILES: input.profiles.join(','),
+        SITE_MODE: input.mode,
+        COMPOSE_PROJECT_NAME: input.project,
+        PROJECT_DIR: input.dir,
+        NODE_ENV: production ? 'production' : 'development',
+        URL: input.url,
+        ...(input.adminUrl ? { ADMIN_URL: input.adminUrl } : {}),
+        GHOST_IMAGE: ghost.image,
+        GHOST_VERSION: ghost.tag,
+        GHOST_IMAGE_REF: ghost.reference,
+        GHOST_CONTENT_PATH: ghost.contentPath,
+        GHOST_TINYBIRD_PATH: ghost.tinybirdPath,
+        GHOST_PORT: String(input.port),
+        ...(input.mailpitPort === null ? {} : { MAILPIT_PORT: String(input.mailpitPort) }),
+        RESTART_POLICY: production ? 'unless-stopped' : 'no',
+        ...(production ? { HTTP_PORT: input.ports.http, HTTPS_PORT: input.ports.https } : {}),
+        DATABASE_HOST: 'db',
+        DATABASE_PORT: '3306',
+        DATABASE_NAME: 'ghost',
+        DATABASE_USER: database.user,
+        DATABASE_PASSWORD: database.password,
+        DATABASE_ROOT_PASSWORD: database.rootPassword,
+    });
 }
 
 /** The hostname a URL names, or '' when it is not a URL. */

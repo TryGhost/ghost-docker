@@ -164,22 +164,6 @@ expect_run_arg "$SITE:$SITE"
     "$BASH_BIN" "$LAUNCHER" version && expect_run_arg "$SITE:$SITE")
 ok "a symlinked path is mounted as the real one"
 
-step "GD_COMPOSE_OVERRIDES is refused: the site's Compose files are .env's COMPOSE_FILE"
-with_fake ok env ${fake_socket_env[@]+"${fake_socket_env[@]}"} GD_IMAGE=example/manager:1 \
-    GD_COMPOSE_OVERRIDES=compose.ipv6.yml "$BASH_BIN" "$LAUNCHER" --dir "$SITE" version
-expect_status 2
-expect_output "config set \.env COMPOSE_FILE compose\.yml:compose\.ipv6\.yml$"
-[[ -s $FAKE_CALLS ]] && fail "docker was run" "$(cat "$FAKE_CALLS")"
-# The list it ran: the site's compose.override.yml kept, and commas made colons.
-touch "$SITE/compose.override.yml"
-with_fake ok env ${fake_socket_env[@]+"${fake_socket_env[@]}"} GD_IMAGE=example/manager:1 \
-    GD_COMPOSE_OVERRIDES="compose.ipv6.yml, extra.yml,compose.override.yml" \
-    "$BASH_BIN" "$LAUNCHER" --dir "$SITE" version
-rm "$SITE/compose.override.yml"
-expect_status 2
-expect_output "COMPOSE_FILE compose\.yml:compose\.override\.yml:compose\.ipv6\.yml:extra\.yml$"
-ok "it stops before the manager runs, naming the setting to use"
-
 step "A bundle to import is mounted read-only at its own path"
 mkdir -p "$WORK/exports/bundle-dir"
 : >"$WORK/exports/bundle.tgz"

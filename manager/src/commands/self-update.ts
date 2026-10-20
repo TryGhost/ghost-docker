@@ -4,7 +4,6 @@
 import {
     cpSync,
     existsSync,
-    mkdirSync,
     readdirSync,
     readFileSync,
     rmdirSync,
@@ -30,6 +29,7 @@ import {
     type Metadata,
 } from '../meta.ts';
 import {
+    copyStackFile,
     LAUNCHER,
     launcherContent,
     managerPin,
@@ -43,7 +43,13 @@ import { resolveSite } from '../resolved.ts';
 import { heading, note, ok } from '../report.ts';
 import * as env from '../env.ts';
 import { COMPOSE_FILE, ENV_FILE, META_FILE, type SiteFacts, type SiteMode } from '../site.ts';
-import { runUpdate, type UpdateOutcome } from '../update.ts';
+import {
+    reportNeedsOperator,
+    reportRestored,
+    runUpdate,
+    type RecoveryChoice,
+    type UpdateOutcome,
+} from '../update.ts';
 import { atLeast, MINIMUM } from '../versions.ts';
 import {
     channelOption,
@@ -195,8 +201,7 @@ function writePayloadChanges(io: Io, dir: string, stack: string, payload: Payloa
         switch (action) {
             case 'add':
             case 'replace':
-                mkdirSync(dirname(target), { recursive: true, mode: 0o755 });
-                atomicWrite(target, readFileSync(source), statSync(source).mode & 0o777);
+                copyStackFile(stack, dir, file);
                 break;
             case 'keep':
                 atomicWrite(
@@ -515,66 +520,50 @@ function failed(
     outcome: Exclude<UpdateOutcome, { state: 'done' }>,
 ): never {
     const dir = site.dir;
-    const { backup } = outcome;
-    const kept =
-        backup === null
-            ? []
-            : [`The backup taken before the update is kept in ${relative(dir, backup)}.`];
-    if (outcome.state === 'needs-operator') {
-        const { servicesChanged, filesBack, problems, running, snapshot } = outcome;
-        io.stderr(
-            [
-                '',
-                'The site needs you.',
-                ...problems.map((problem) => `  ${problem}`),
+    const wording = { from: describeStack(from), operation: 'the update' };
+    if (outcome.state === 'restored') {
+        reportRestored(io, dir, outcome, wording);
+    }
+    const { servicesChanged, filesBack, problems, running, snapshot } = outcome;
+    const backup = outcome.backup === null ? null : relative(dir, outcome.backup);
+    const restore: RecoveryChoice = {
+        does: 'Put the site back as it was when the update began, discarding anything written since',
+        commands: [`./ghost-docker restore --yes ${backup}`],
+    };
+    reportNeedsOperator(
+        io,
+        dir,
+        outcome,
+        {
+            facts: [
+                ...problems,
                 ...(servicesChanged
                     ? [
-                          `${describeStack(to)}'s services started before the update failed, so they may have changed`,
-                          `the databases and content, and Ghost may have accepted writes${backup === null ? '' : ', since the backup'}.`,
-                          'Nothing was loaded over them: the data is as the update left it.',
+                          `${describeStack(to)}'s services started before the update failed, so they may have changed the databases and content, and Ghost may have accepted writes${backup === null ? '' : ', since the backup'}. Nothing was loaded over them: the data is as the update left it.`,
                       ]
                     : []),
                 describeServices(running),
                 ...(filesBack ? [`The files are ${describeStack(from)}'s again.`] : []),
-                '',
-                ...(backup !== null && servicesChanged && filesBack
-                    ? [
-                          'Choose one, in the site directory:',
-                          `  - Put the site back as it was when the update began, discarding anything written since:`,
-                          `      ./ghost-docker restore --yes ${relative(dir, backup)}`,
-                          `  - Or, if ${describeStack(to)} did not change the data (docker compose logs says what it did),`,
-                          `    start ${describeStack(from)} on it as it is: docker compose up -d, then ./ghost-docker check`,
-                          '',
-                      ]
-                    : backup !== null && servicesChanged
-                      ? [
-                            `Before the update, the site was backed up to ${relative(dir, backup)}: its databases,`,
-                            'content and files. Restoring it discards anything written since:',
-                            `  ./ghost-docker restore --yes ${relative(dir, backup)}`,
-                            '',
-                        ]
-                      : kept),
-                `The files as they were before the update are in ${snapshot}/files.`,
                 `The site ran the manager image ${from.image}; its launcher still runs it.`,
-                `Once the site is as it should be (./ghost-docker check), remove ${snapshot}.`,
-                '',
-            ].join('\n'),
-        );
-        throw new CliError('the update failed, and the site needs the operator.');
-    }
-    const { resumed } = outcome;
-    io.stderr(
-        [
-            '',
-            `Restored: the site is back on ${describeStack(from)}, with its files as they were` +
-                (resumed.length > 0
-                    ? `. Its services were not changed; ${resumed.join(' and ')}, stopped for the update, ${resumed.length > 1 ? 'are' : 'is'} running again.`
-                    : '. Its services were not changed.'),
-            ...kept,
-            '',
-        ].join('\n'),
+            ],
+            choices:
+                backup === null || !servicesChanged
+                    ? []
+                    : [
+                          restore,
+                          ...(filesBack
+                              ? [
+                                    {
+                                        does: `Or, if ${describeStack(to)} did not change the data (docker compose logs says what it did), start ${describeStack(from)} on it as it is`,
+                                        commands: ['docker compose up -d', './ghost-docker check'],
+                                    },
+                                ]
+                              : []),
+                      ],
+            snapshot: relative(dir, snapshot),
+        },
+        wording,
     );
-    throw new CliError(`the update failed; ${describeStack(from)} was restored.`);
 }
 
 function summarize({ io, site, from, to, metadata, payload }: Update, backup: string | null): void {
