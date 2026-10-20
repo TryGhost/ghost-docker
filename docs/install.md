@@ -17,8 +17,8 @@ This is a beta. To report a problem or send feedback, see
 [Reporting a problem](#reporting-a-problem). What each command does in detail,
 and what it refuses, is in [reference.md](reference.md).
 
-**Requirements:** Docker Engine 25.0+ with the Compose v2.24+ plugin, and
-bash. Production is supported on Linux with rootful Docker Engine. On Windows,
+**Requirements:** Docker Engine 25.0+ with the Compose v2.24+ plugin, bash,
+and curl for the install command above. Production is supported on Linux with rootful Docker Engine. On Windows,
 see [Windows](#windows).
 
 **One directory is one site.** The site directory is the current directory, or
@@ -271,8 +271,8 @@ SQL
 docker compose up -d
 ```
 
-Remove the copy (`docker compose down`, then the directory) when you are
-done. For the real move, export again with the source stopped, to a new path.
+Remove the copy when you are done: `docker compose down`, then delete the
+directory, with `sudo` because MySQL owns `data/mysql`. For the real move, export again with the source stopped, to a new path.
 
 ## Ports, and your existing proxy
 
