@@ -47,6 +47,7 @@ import {
     composeConfig,
     composeError,
     composeVariables,
+    siteComposeFiles,
     upAndWait,
     type ComposeInputs,
 } from './compose.ts';
@@ -223,13 +224,8 @@ async function prepare(
     const text = readFileSync(join(dir, ENV_FILE), 'utf8');
     const legacy = readLegacyEnv(text);
     const old = legacy.values;
-    if (old.COMPOSE_FILE !== undefined) {
-        refuse(
-            '.env sets COMPOSE_FILE, which the manager does not use: it names Compose files itself.\n' +
-                '  Remove it, and name any extra file with GD_COMPOSE_OVERRIDES when you run this again\n' +
-                '  (docs/configuration.md#the-compose-invocation-contract).',
-        );
-    }
+    // main's COMPOSE_FILE, if it has one, is kept: checked before anything else.
+    siteComposeFiles(dir);
     const domain = (old.DOMAIN ?? '').toLowerCase();
     const adminDomain = (old.ADMIN_DOMAIN ?? '').toLowerCase();
     for (const [key, value] of [

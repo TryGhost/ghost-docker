@@ -729,7 +729,7 @@ resolve, if any of it cannot be carried over:
 | Ghost's configuration in `.env` (`mail__*`, `labs__*`, anything Ghost read) | Moved to `ghost.env`, with the values Ghost actually received. Keys the container sets itself (`url`, `database__*`) are listed and left out, as they were overridden on main too |
 | `ghost:6-alpine` | The `next` image of **exactly the running version**, pinned by digest (`GHOST_IMAGE_REF`). Ghost 6.61.0 is the first with one: upgrade an older Ghost on main first (`docker compose pull ghost && docker compose up -d`) |
 | `caddy/Caddyfile` | Kept as `caddy/Caddyfile.local`, and carried into `caddy/sites/site.caddy` as written: `{$DOMAIN}`, `{$ADMIN_DOMAIN}` and `{$ACTIVITYPUB_TARGET}` filled in, and `import snippets/...` pointed at main's snippets, kept in `caddy/sites/legacy-snippets/`. A leading global options block moves to `caddy/global/legacy.caddy`. Caddy loads the result before anything changes; if it does not load, nothing is changed |
-| `compose.override.yml`, `GD_COMPOSE_OVERRIDES` | Kept, and resolved with the new layout and every `.env` setting before anything changes. A mount into `/var/lib/ghost`, where main's Ghost image kept its files, is refused: this layout's image keeps them in `/home/ghost/content`, and a backup holds content only in `data/ghost` |
+| `compose.override.yml`, `COMPOSE_FILE` | Kept, and resolved with the new layout and every `.env` setting before anything changes. `.env`'s `COMPOSE_FILE` must start with `compose.yml`. A mount into `/var/lib/ghost`, where main's Ghost image kept its files, is refused: this layout's image keeps them in `/home/ghost/content`, and a backup holds content only in `data/ghost` |
 | Stack files (`compose.yml`, snippets, `mysql-init/`) | The release's. Git must show them unedited: a change in the work tree or in a commit no remote has stops the migration. Move such changes into `compose.override.yml` or a `.caddy` file of your own afterwards |
 
 Then it keeps a copy of every file it writes in `.ghost-docker-update/`, stops
@@ -751,8 +751,8 @@ Afterwards the directory is a site installed from the image: update it with
 `./ghost-docker self-update`, not git (its `.git` is left in place, and shows
 the stack files as changed). Running the served command again is an ordinary
 self-update. Compose files you used with `-f` by hand, such as
-`compose.ipv6.yml`, are not seen by the manager: name them with
-`GD_COMPOSE_OVERRIDES` when you migrate, as for every manager command
+`compose.ipv6.yml`, are not seen by the manager: name them in `.env`'s
+`COMPOSE_FILE` before you migrate, and every later command runs them
 ([configuration](configuration.md#the-compose-invocation-contract)).
 
 ## update
@@ -853,7 +853,7 @@ backups off the host to keep them safe.
 | `database/ghost.sql` | A `mysqldump` of Ghost's database, taken as the site's own database user in one consistent snapshot. |
 | `database/activitypub.sql` | ActivityPub's database, when the `activitypub` profile is on. |
 | `content.tar.gz` | The content directory, `data/ghost`: images, media, files, themes, settings. |
-| `site/` | `.env`, `ghost.env`, `.ghost-docker.json`, `compose.override.yml` and the overrides `GD_COMPOSE_OVERRIDES` names, `caddy/sites/`, `caddy/custom/`, `caddy/global/` and, for a site installed from the image, the stack's files and the launcher the site ran. |
+| `site/` | `.env`, `ghost.env`, `.ghost-docker.json`, `compose.override.yml` and the overrides `COMPOSE_FILE` names, `caddy/sites/`, `caddy/custom/`, `caddy/global/` and, for a site installed from the image, the stack's files and the launcher the site ran. |
 
 A backup is **checked** before it counts as one: every dump is loaded into a
 scratch MySQL, in a throwaway container of the MySQL image the site runs, with
@@ -905,9 +905,9 @@ runs with, and what the daemon runs, not what `.env` alone says:
   `data/mysql`, whether `.env` moved it (`UPLOAD_LOCATION`,
   `MYSQL_DATA_LOCATION`) or an override did, or that mounts anything else
   inside them, is refused rather than half backed up.
-- An override `GD_COMPOSE_OVERRIDES` names is backed up with the site, and
-  recorded; one outside the site directory is refused. A restore must run with
-  the same `GD_COMPOSE_OVERRIDES`.
+- An override `.env`'s `COMPOSE_FILE` names is backed up with the site, and
+  recorded; one outside the site directory is refused. A restore runs the
+  backup's `COMPOSE_FILE`.
 - A site running other images than its configuration now names, because the
   configuration changed and `docker compose up -d` has not run since (say, a
   clone checked out at a commit that bumps MySQL), is **refused** before

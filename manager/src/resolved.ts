@@ -7,7 +7,7 @@
 // daemon says of the project's containers. Commands that change a site, or
 // record it, ask here rather than read `.env` and guess.
 import { isAbsolute, relative } from 'node:path';
-import { composeConfig, composeFileList, type ComposeInputs } from './compose.ts';
+import { composeConfig, siteComposeFiles, type ComposeInputs } from './compose.ts';
 import { inspectImage, listContainers } from './docker/client.ts';
 import { CliError } from './errors.ts';
 import type { Io } from './io.ts';
@@ -98,7 +98,7 @@ export async function resolveConfig(
                 definition.labels[LIFECYCLE_LABEL] === 'one-shot' ? 'one-shot' : 'long-running',
         };
     }
-    const files = inputs?.files ?? composeFileList(dir, io.env.GD_COMPOSE_OVERRIDES);
+    const files = inputs?.files ?? siteComposeFiles(dir);
     const site: ResolvedSite = {
         dir,
         project: project.name,

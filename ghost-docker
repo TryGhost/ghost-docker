@@ -148,6 +148,23 @@ if [[ -n $release ]] && ! [[ $release =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|
     die "a release is vX.Y.Z or vX.Y.Z-beta.N: got '$release'" 2
 fi
 [[ -z $channel || -z $release ]] || die "choose a channel or a release, not both" 2
+# The site's Compose files are .env's COMPOSE_FILE, which the upgrade supervisor
+# and plain docker compose read too (docs/configuration.md). The refusal names
+# the list GD_COMPOSE_OVERRIDES ran: compose.yml, the site's compose.override.yml
+# when it has one, then each comma-separated file, once.
+if [[ -n ${GD_COMPOSE_OVERRIDES:-} ]]; then
+    compose_files=compose.yml
+    [[ ! -f ${site_dir:-$PWD}/compose.override.yml ]] || compose_files+=:compose.override.yml
+    IFS=, read -ra named_files <<<"$GD_COMPOSE_OVERRIDES"
+    for file in ${named_files[@]+"${named_files[@]}"}; do
+        file=${file#"${file%%[![:space:]]*}"}
+        file=${file%"${file##*[![:space:]]}"}
+        [[ -z $file || :$compose_files: == *:$file:* ]] || compose_files+=:$file
+    done
+    die "GD_COMPOSE_OVERRIDES is no longer read: name every Compose file in .env's COMPOSE_FILE,
+  compose.yml first. Unset it, then in the site directory:
+    ./ghost-docker config set .env COMPOSE_FILE $compose_files" 2
+fi
 
 # --- Can Docker be used? ----------------------------------------------------
 #
@@ -309,8 +326,6 @@ declare -a run=(
 )
 [[ -z $resolved_channel ]] || run+=(--env "GD_CHANNEL=$resolved_channel")
 [[ -z ${NO_COLOR:-} ]] || run+=(--env "NO_COLOR=$NO_COLOR")
-# Extra Compose files for the manager's own Compose runs (docs/configuration.md).
-[[ -z ${GD_COMPOSE_OVERRIDES:-} ]] || run+=(--env "GD_COMPOSE_OVERRIDES=$GD_COMPOSE_OVERRIDES")
 [[ -z ${TERM:-} ]] || run+=(--env "TERM=$TERM")
 # Keep a failed import's site for inspection instead of removing it (docs/install.md).
 [[ -z ${GD_IMPORT_KEEP_FAILED:-} ]] || run+=(--env "GD_IMPORT_KEEP_FAILED=$GD_IMPORT_KEEP_FAILED")

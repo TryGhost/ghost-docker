@@ -2,13 +2,13 @@
 // environment so manager settings cannot override the site's .env.
 // See docs/configuration.md#the-compose-invocation-contract.
 import { existsSync } from 'node:fs';
-import { dirname, isAbsolute, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import type { Readable } from 'node:stream';
 import type { TemplateExpression } from 'execa';
 import { z } from 'zod';
 import { CliError } from './errors.ts';
 import type { Io } from './io.ts';
-import { COMPOSE_FILE, COMPOSE_OVERRIDE_FILE } from './site.ts';
+import { COMPOSE_FILE, COMPOSE_OVERRIDE_FILE, readSettings, type SiteSettings } from './site.ts';
 
 /** The version of the Compose client in this image. */
 export async function composeVersion(io: Io): Promise<string | null> {
@@ -71,32 +71,44 @@ export type Compose = (
 ) => Promise<ComposeResult>;
 
 /**
- * The `-f` list: compose.yml, the site's compose.override.yml when there is
- * one, then each override GD_COMPOSE_OVERRIDES names, relative to the site.
- * `composeFile` stands in for the site's compose.yml.
+ * The Compose files a site runs with, in the order Compose merges them: what
+ * `.env`'s COMPOSE_FILE names, or compose.yml and, when there is one, the
+ * site's compose.override.yml, as plain `docker compose` would. `.env` is the
+ * one record of it, so the manager, the upgrade supervisor and `docker
+ * compose` in the site directory all run the same files
+ * (docs/configuration.md#your-own-compose-overrides). `settings` stands in
+ * for the site's `.env`.
  */
-export function composeFiles(dir: string, overrides = '', composeFile?: string): string[] {
-    const files = composeFileList(dir, overrides);
-    if (composeFile !== undefined) {
-        files[0] = composeFile;
+export function siteComposeFiles(
+    dir: string,
+    settings: SiteSettings | null = readSettings(dir),
+): string[] {
+    const recorded = settings?.get('COMPOSE_FILE') ?? '';
+    if (recorded === '') {
+        return [
+            join(dir, COMPOSE_FILE),
+            ...(existsSync(join(dir, COMPOSE_OVERRIDE_FILE))
+                ? [join(dir, COMPOSE_OVERRIDE_FILE)]
+                : []),
+        ];
     }
-    return files.flatMap((file) => ['-f', file]);
-}
-
-/** The Compose files a site runs with, in the order Compose merges them. */
-export function composeFileList(dir: string, overrides = ''): string[] {
-    const files = [join(dir, COMPOSE_FILE)];
-    if (existsSync(join(dir, COMPOSE_OVERRIDE_FILE))) {
-        files.push(join(dir, COMPOSE_OVERRIDE_FILE));
-    }
-    for (const override of overrides.split(',').map((item) => item.trim())) {
-        const file = isAbsolute(override) ? override : join(dir, override);
-        if (override && !files.includes(file)) {
-            files.push(file);
-        }
+    const files = splitComposeFile(dir, recorded, settings?.get('COMPOSE_PATH_SEPARATOR') || ':');
+    if (files[0] !== join(dir, COMPOSE_FILE)) {
+        throw new CliError(
+            `.env's COMPOSE_FILE is ${recorded}: it must start with ${COMPOSE_FILE}, the site's own, and every\n` +
+                '  file after it overrides it. Nothing has been changed.',
+        );
     }
     return files;
 }
+
+/** A COMPOSE_FILE value as Compose splits it, each file resolved against the site. */
+export const splitComposeFile = (dir: string, value: string, separator = ':'): string[] =>
+    value
+        .split(separator)
+        .map((item) => item.trim())
+        .filter((item) => item !== '')
+        .map((item) => resolve(dir, item));
 
 /** Additional overrides from the ordered file list; only the site's root override is implicit. */
 export function composeOverrides(dir: string, files: readonly string[]): string[] {
@@ -157,26 +169,33 @@ export function compose(
         ...(input === undefined ? {} : { stdin: 'pipe', input }),
         ...(output === undefined ? {} : { stdout: { file: output } }),
     });
-    const project =
-        dir === undefined
-            ? []
-            : [
-                  '--project-directory',
-                  dir,
-                  ...(inputs === undefined
-                      ? composeFiles(dir, io.env.GD_COMPOSE_OVERRIDES, composeFile)
-                      : [
-                            ...inputs.files.flatMap((file) => ['-f', file]),
-                            '--env-file',
-                            inputs.envFile,
-                        ]),
-              ];
+    // Worked out when it runs, so a site whose files are refused rejects
+    // like any other failure rather than throwing here.
+    const project = (): string[] => {
+        if (dir === undefined) {
+            return [];
+        }
+        if (inputs !== undefined) {
+            return [
+                '--project-directory',
+                dir,
+                ...inputs.files.flatMap((file) => ['-f', file]),
+                '--env-file',
+                inputs.envFile,
+            ];
+        }
+        const files = siteComposeFiles(dir);
+        if (composeFile !== undefined) {
+            files[0] = composeFile;
+        }
+        return ['--project-directory', dir, ...files.flatMap((file) => ['-f', file])];
+    };
     return async (strings, ...values) => {
         const template = Object.assign(prefixed(strings), { raw: prefixed(strings.raw) });
         // Typed loosely: execa infers nothing useful from options built at runtime.
         const result: Ran = await run(
             template as unknown as TemplateStringsArray,
-            project,
+            project(),
             ...(values as TemplateExpression[]),
         );
         return {

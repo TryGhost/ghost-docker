@@ -240,23 +240,32 @@ Every manager command uses one contract:
 docker compose --project-directory "$DIR" -f "$DIR/compose.yml" ...
 ```
 
-`--project-directory`, never `-C`. `COMPOSE_FILE` is unset by the manager,
-because it changes override auto-loading, and an explicit `-f` replaces the
-selected list. The manager adds the site's `compose.override.yml` after
-`compose.yml` when it exists, which is what plain `docker compose` does on its
-own, so the two run the same site (see [Your own Compose
-overrides](#your-own-compose-overrides)). Opt into any other override file
-with `GD_COMPOSE_OVERRIDES` (a comma-separated list, in merge order):
+`--project-directory`, never `-C`. The `-f` list is the site's own selection,
+from `.env`: the files `COMPOSE_FILE` names, split on `COMPOSE_PATH_SEPARATOR`
+(`:` unless set) and relative to the site, or, without it, `compose.yml` and
+the site's `compose.override.yml` when it exists. That is what plain
+`docker compose` in the site directory reads too, so every manager command,
+the upgrade supervisor, backups and `docker compose` run the same files (see
+[Your own Compose overrides](#your-own-compose-overrides)). `COMPOSE_FILE`
+must start with `compose.yml`; the manager refuses a list that does not.
+
+Opt into any other override file by recording it in `COMPOSE_FILE`, in merge
+order:
 
 ```bash
-GD_COMPOSE_OVERRIDES=compose.ipv6.yml ./ghost-docker check
+./ghost-docker config set .env COMPOSE_FILE compose.yml:compose.override.yml:compose.ipv6.yml
 ```
 
-Relative paths are relative to the site. Only the root `compose.override.yml`
-is implicit: `overrides/compose.override.yml` is an additional override like
-any other. Backup requires additional overrides to be inside the site, records
-their order and copies them; restore requires the same selection. Use matching
-`-f` arguments for direct Compose commands.
+`config set` never runs Compose, so it can fix a `COMPOSE_FILE` the manager
+refuses. The launcher refuses `GD_COMPOSE_OVERRIDES`, which earlier betas
+read: record the files in `COMPOSE_FILE` instead.
+
+Only the root `compose.override.yml` is implicit, and only without
+`COMPOSE_FILE`: `overrides/compose.override.yml` is an additional override
+like any other, and `config validate` warns when `COMPOSE_FILE` leaves out a
+root `compose.override.yml` that exists. Backup requires additional overrides
+to be inside the site, records their order and copies them; restore runs the
+backup's selection.
 
 The manager passes only Docker connection/tool-path variables from its own
 environment, so its image's settings cannot override the site's `.env`.
@@ -274,6 +283,12 @@ into `compose.yml` on its own, and every `./ghost-docker` command adds it the
 same way, so both run the site with your changes and nothing has to be set.
 That includes installation: a `compose.override.yml` already in a new site
 directory is used from the first start.
+
+Further files, or another order, go in `.env`'s `COMPOSE_FILE`, which then
+names every file, `compose.yml` first and `compose.override.yml` too if you
+keep one. The upgrade supervisor and plain `docker compose` read it from
+`.env` as the manager does (see [the Compose invocation
+contract](#the-compose-invocation-contract)).
 
 An override is a manual customization: when a stack update changes a service
 your file also changes, read both. To develop a theme against a local site,

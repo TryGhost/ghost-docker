@@ -49,7 +49,11 @@ export const backupManifestSchema = z.strictObject({
         /** In a checkout, the commit checked out when the backup was taken; a restore needs the same one. */
         commit: nullable,
         profiles: z.array(z.string().min(1)),
-        /** The overrides GD_COMPOSE_OVERRIDES added, relative to the site; the backup holds them. */
+        /**
+         * The Compose files the site ran with besides compose.yml and its
+         * compose.override.yml, in order, relative to the site; the backup
+         * holds them, and its `.env`'s COMPOSE_FILE names them.
+         */
         overrides: z.array(inside),
     }),
     /** Each service the site's configuration selects, by the image Compose resolved for it. */
