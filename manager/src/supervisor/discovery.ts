@@ -7,7 +7,7 @@
 // nothing one-click: an update is only offered while it is known to exist.
 import { gt, major, valid } from 'semver';
 import { pullImage, runOnce, splitReference } from '../docker/client.ts';
-import { order } from '../commands/update.ts';
+import { nightlyOrder } from '../commands/update.ts';
 import {
     ghostChannelOf,
     NIGHTLY_LATEST,
@@ -66,12 +66,10 @@ async function nightlyUpdates(io: Io, metadata: Metadata): Promise<Found> {
             ],
         };
     }
-    try {
-        if ((await order(io, from, latest)) !== 'newer') {
-            return NOTHING;
-        }
-    } catch {
-        // Older than the build the site runs, or not orderable: nothing to offer.
+    // A failure to read the site's build propagates: a failed check, which
+    // discover() reports, keeping the last result. Older or unorderable
+    // builds are nothing to offer; the job orders them again before it runs.
+    if ((await nightlyOrder(io, from, latest)).order !== 'newer') {
         return NOTHING;
     }
     return { oneClick: [offerOf(from.version, latest)], manual: [] };

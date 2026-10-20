@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, test } from 'node:test';
 import * as env from '../src/env.ts';
 import { discover } from '../src/supervisor/discovery.ts';
+import type { Discovery } from '../src/supervisor/store.ts';
 import { harness, ok, type Harness, type ProgramResult } from './helpers.ts';
 import {
     imageApi,
@@ -209,11 +210,11 @@ describe('updating a nightly site', () => {
 });
 
 describe("the supervisor's discovery on a nightly site", () => {
-    const found = () =>
+    const found = (previous?: Discovery) =>
         discover({
             io: h.io(),
             metadata: metadata(),
-            previous: undefined,
+            previous,
             now: new Date(TODAY_BUILT),
         });
 
@@ -228,6 +229,22 @@ describe("the supervisor's discovery on a nightly site", () => {
                 target: { image: 'ghost/nightly', tag: 'latest', digest: TODAY },
             },
         ]);
+    });
+
+    test("reports a failed check, keeping the last offer, when the site's build cannot be read", async () => {
+        publishToday();
+        const earlier = await found();
+        assert.equal(earlier.oneClick.length, 1);
+        // The site's build is neither on the host nor in the registry any more.
+        const api = h.daemon.api;
+        h.daemon.api = (request) =>
+            request.path === `/images/ghost/nightly@${INDEX}/json` ||
+            (request.path === '/images/create' && request.query?.tag === INDEX)
+                ? { status: 404, body: Buffer.from(JSON.stringify({ message: 'no such image' })) }
+                : api?.(request);
+        const discovery = await found(earlier);
+        assert.deepEqual(discovery.oneClick, earlier.oneClick);
+        assert.equal(discovery.diagnostics[0]?.code, 'discovery-failed');
     });
 
     test('offers nothing when latest is the build the site runs, or older', async () => {

@@ -101,22 +101,23 @@ export async function order(io: Io, from: Pin, to: ResolvedGhost): Promise<Direc
                 '  version, or one update cannot order. A major upgrade is not supported yet. Nothing has been changed.',
         );
     }
-    let built: string | null;
+    let builds: NightlyOrder;
     try {
-        built = await pinnedCreated(io, from.image, from.tag, from.digest);
+        builds = await nightlyOrder(io, from, to);
     } catch (error) {
         throw new CliError(
             `the nightly build this site runs, ${reference(from)}, cannot be read to tell when it was built:\n` +
                 `  ${(error as Error).message.split('\n')[0]}\n  Nothing has been changed.`,
         );
     }
-    if (built === null || to.created === null) {
+    const { built } = builds;
+    if (builds.order === 'unknown') {
         throw new CliError(
             `${built === null ? reference(from) : to.reference} does not say when it was built, so update cannot\n` +
                 '  order the two nightly builds. Nothing has been changed.',
         );
     }
-    if (Date.parse(to.created) <= Date.parse(built)) {
+    if (builds.order === 'older') {
         throw new CliError(
             `${to.reference} was built ${to.created}, before the nightly build this site runs (${built}).\n` +
                 '  update never moves a site to an older build: its migrations are not undone. Nothing has been changed.',
@@ -126,6 +127,26 @@ export async function order(io: Io, from: Pin, to: ResolvedGhost): Promise<Direc
 }
 
 export type Direction = 'newer' | 'rebuilt' | 'current';
+
+export interface NightlyOrder {
+    /** `to` against the site's build, by when each was built; `unknown` when either does not say. */
+    readonly order: 'newer' | 'older' | 'unknown';
+    /** When the site's build was built. */
+    readonly built: string | null;
+}
+
+/**
+ * Two nightly builds, ordered by when they were built. It throws only when
+ * the site's own build cannot be read: a failure to check, which discovery
+ * must report rather than take for "nothing newer".
+ */
+export async function nightlyOrder(io: Io, from: Pin, to: ResolvedGhost): Promise<NightlyOrder> {
+    const built = await pinnedCreated(io, from.image, from.tag, from.digest);
+    if (built === null || to.created === null) {
+        return { order: 'unknown', built };
+    }
+    return { order: Date.parse(to.created) > Date.parse(built) ? 'newer' : 'older', built };
+}
 
 /** Where the target is from the site's Ghost; a CliError for what update never does. */
 export function direction(from: Pin, to: ResolvedGhost): Direction {
