@@ -122,6 +122,13 @@ Adding one never changes the site mode:
 | `analytics` | `traffic-analytics` plus the Tinybird one-shot jobs | one long-running Node service (~100-200 MB RSS) and a Tinybird workspace |
 | `activitypub` | `activitypub`, `activitypub-migrate` | one long-running Node service (~150-250 MB RSS), one migration job per start, one extra MySQL database |
 | `mailpit` | `mailpit`, its inbox on `127.0.0.1:${MAILPIT_PORT}` | one long-running Go service (~20-30 MB RSS); its messages in `${MAILPIT_DATA_LOCATION}` |
+| `supervisor` | `supervisor`, the manager image as a service | one long-running Node process; it holds the Docker socket. See [upgrade-supervisor.md](upgrade-supervisor.md) |
+
+`supervisor` reads `SUPERVISOR_UID`, `SUPERVISOR_GID`, `MANAGER_IMAGE_REF`
+and `DOCKER_SOCKET` from `.env`, which `install --with
+supervisor` writes and `self-update` keeps on the release it installs. Every
+site's Ghost mounts the `upgrade` volume read-only, where the supervisor's
+socket is; it stays empty without the supervisor.
 
 `mailpit` is for local sites only: validation rejects it beside `production`,
 where it would catch the site's real mail. `analytics` and `activitypub` are
@@ -130,8 +137,9 @@ only Caddy's routes reach their services, and a local site has no Caddy. Selecti
 Mailpit; Ghost sends to it because `ghost.env` says so (`install --with
 mailpit` writes those settings; see [install.md](install.md#optional-services)).
 
-`supervisor` is reserved for the upgrade supervisor and currently defines no
-service. Any other profile name is rejected by validation.
+`supervisor` runs the upgrade supervisor; see
+[upgrade-supervisor.md](upgrade-supervisor.md). Any other profile name is
+rejected by validation.
 
 ActivityPub and analytics are **per-site**: each site owns its ActivityPub
 database, storage and serving URL, and its own Tinybird credentials, workspace

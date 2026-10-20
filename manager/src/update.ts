@@ -46,12 +46,30 @@ export interface UpdatePlan {
      */
     readonly afterStartup: 'restore' | 'keep';
     /**
+     * Services the update neither starts, stops nor recreates: the supervisor
+     * running it. Empty for a host command.
+     */
+    readonly except?: readonly string[];
+    /**
+     * Told each stage before its side effects begin, and the backup once it
+     * exists, so the supervisor can record where a job stopped
+     * (docs/upgrade-supervisor.md#supervisor-running-a-job).
+     */
+    onStage?(stage: UpdateStage): void;
+    onBackup?(path: string): void;
+    /**
      * Whether to take a consistent backup first. Without one, nothing is
      * paused: the site keeps running until startup recreates it, and recovery
      * before startup still has the snapshot. Default: true.
      */
     readonly backup?: boolean;
 }
+
+/**
+ * `configuring`: writing the new configuration, which may name the target
+ * before anything has started it.
+ */
+export type UpdateStage = 'backing-up' | 'configuring' | 'restarting' | 'verifying' | 'restoring';
 
 export type UpdateOutcome =
     /** `backup` is null when the update was asked to take none. */
@@ -94,8 +112,10 @@ export async function runUpdate(plan: UpdatePlan): Promise<UpdateOutcome> {
     const pause = new WriterPause(io, dir, 'the update');
     let servicesChanged = false;
     let backup: string | null = null;
+    const except = plan.except ?? [];
     try {
         if (plan.backup ?? true) {
+            plan.onStage?.('backing-up');
             heading(io, 'Backing up the site');
             backup = await takeBackup({
                 io,
@@ -104,20 +124,30 @@ export async function runUpdate(plan: UpdatePlan): Promise<UpdateOutcome> {
                 consistent: true,
                 pause,
             });
+            plan.onBackup?.(backup);
             ok(io, 'backup', `${relative(dir, backup)}, checked`);
         }
 
+        plan.onStage?.('configuring');
         await plan.write();
 
         heading(io, 'Starting the services');
         await plan.pull();
 
+        plan.onStage?.('restarting');
         // Set before attempting up: even a failed start may migrate data or accept writes.
         servicesChanged = true;
         pause.end();
-        await upAndWait(io, dir, 'Starting the services and waiting for them to be healthy');
+        await upAndWait(
+            io,
+            dir,
+            'Starting the services and waiting for them to be healthy',
+            '',
+            except,
+        );
         ok(io, 'services', 'healthy, by their own health checks');
 
+        plan.onStage?.('verifying');
         await verifySite(io, dir);
         plan.record?.();
     } catch (error) {
@@ -139,9 +169,10 @@ async function recover(
     const dir = site.dir;
     io.stderr(`\n${describeError(error)}\n`);
     io.stderr(`\n${plan.failing}\n`);
+    plan.onStage?.('restoring');
     const problems: string[] = [];
     if (servicesChanged) {
-        const stopped = await stopServices(io, dir, `Stopping ${plan.to}`);
+        const stopped = await stopServices(io, dir, `Stopping ${plan.to}`, plan.except ?? []);
         if (stopped.error !== null) {
             problems.push(`the services could not be stopped: ${stopped.error}`);
         }

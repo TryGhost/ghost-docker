@@ -16,7 +16,7 @@ FROM docker:28-cli@sha256:625d9431a9f54c5a2bc90f24f0e1c3d55b1349fd857dd85035f98c
 # type declarations, source maps or docs, and the node binary leave this stage.
 FROM node:26-alpine@sha256:0b36e8c136b94cd4fcf02188228e76c31ad5872eef3fec8cbd2eee500cfd9e80 AS deps
 WORKDIR /opt/ghost-docker/manager
-COPY manager/package.json manager/pnpm-lock.yaml ./
+COPY manager/package.json manager/pnpm-lock.yaml manager/pnpm-workspace.yaml ./
 RUN npm install -g corepack@0.36.0 \
     && corepack enable \
     && corepack install \

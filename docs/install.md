@@ -55,7 +55,7 @@ directory, and day-to-day operation is plain `docker compose`.
 ```text
 ghost-docker install [--local | --domain example.com [--admin-domain admin.example.com]
                                 [--email ops@example.com]]
-                     [--name NAME] [--port 2368] [--version 6.61.0] [--with activitypub,mailpit]
+                     [--name NAME] [--port 2368] [--version 6.61.0] [--with activitypub,mailpit,supervisor]
                      [--channel stable|beta | --release vX.Y.Z] [--no-prompt] [--no-start]
 ghost-docker install --import BUNDLE [--name NAME] [--port 2368] [--with mailpit] [--no-prompt] [--no-start]
 ghost-docker install --import BUNDLE [--domain DOMAIN] [--admin-domain DOMAIN] [--email EMAIL] [--no-start]
@@ -70,7 +70,7 @@ ghost-docker install --import BUNDLE [--domain DOMAIN] [--admin-domain DOMAIN] [
 | `--name NAME` | The site's `COMPOSE_PROJECT_NAME`, used as given in either mode: lowercase letters, digits and dashes, at most 45 characters. Omitted: chosen as described under [Identity and secrets](#what-installation-does). |
 | `--port PORT` | The loopback port Ghost is published on, in both modes. Omitted: the first at or above 2368 that is free (see [Ports](#ports-and-your-existing-proxy)). |
 | `--version VERSION` | A Ghost version (`6.61.0`, which means `6.61.0-next-alpine`) or a full image tag (`6-next-alpine`). Resolved to an exact digest. Only the `next` variants' layout runs: an image installed by Ghost-CLI, such as the `-alpine` tags, is refused. |
-| `--with LIST` | `activitypub` for a production site, `mailpit` for a local one. `analytics` is added after installation; see below. |
+| `--with LIST` | `activitypub` for a production site, `mailpit` for a local one, `supervisor` for either. `analytics` is added after installation; see below. |
 | `--channel CHANNEL` | Install the newest release on `stable` or `beta`; see [Releases](#releases). |
 | `--release vX.Y.Z` | Install that release. |
 | `--no-prompt` | Never ask: every input must then be an option. |
@@ -84,9 +84,7 @@ Without one, or with `--no-prompt`, a missing answer is a usage error naming
 the option that supplies it. Every question has an option, so a script never needs to answer
 one.
 
-Exit statuses: `0` installed, `1` failed, `2` a usage error. Options the plan
-documents for later steps (`--with supervisor` in S8) do not exist yet, and
-are usage errors like any unknown option.
+Exit statuses: `0` installed, `1` failed, `2` a usage error.
 
 ### The ACME email
 
@@ -122,6 +120,17 @@ not SMTP, so Mailpit never sees them. A production site cannot select it:
 `--domain` with `--with mailpit` is a usage error, and `config validate`
 rejects `mailpit` beside `production` in `COMPOSE_PROFILES`, because it would
 catch the site's real mail.
+
+`--with supervisor` runs the upgrade supervisor, which performs Ghost updates
+asked for in Ghost Admin: any newer release of the site's Ghost major, as its
+major tag (`6-next-alpine`) points to. Every update it runs
+is `update` with a checked backup first, and majors and stack updates always
+stay on the host. It holds the Docker socket and runs as you. Ghost's side,
+`HttpUpgradeAdapter`, is turned on in `ghost.env` too. Ghost 6.72.0 is the
+first release with it; an older Ghost ignores the setting, and offers updates
+in Admin once it is updated to 6.72.0. It is
+refused under rootless Docker and user-namespace remapping. The protocol,
+ownership and recovery rules are in [upgrade-supervisor.md](upgrade-supervisor.md).
 
 Analytics, for a production site, is set up after installation: its Tinybird
 login is interactive, in a browser, and Ghost waits for the Tinybird jobs to
@@ -788,6 +797,22 @@ another update is refused while it is there.
 
 Exit statuses: `0` updated, or nothing to update; `1` refused or failed; `2` a
 usage error.
+
+### From Ghost Admin: the upgrade supervisor
+
+A site installed `--with supervisor` runs these updates on Ghost Admin's
+request, one at a time, refusing anything it does not offer. Each
+job reports the same outcomes, and needs the same recovery, as `update` above.
+Ghost Admin shows what the supervisor offers and each job's progress.
+
+A request while a job runs, or while another command holds the lock, is
+refused rather than queued. If the supervisor, Docker or the host stops during
+a job, the supervisor reports that job **interrupted** when it starts again and
+leaves the site lock, so nothing else runs until you have checked the site. The
+job's details say what to do, in order: `./ghost-docker check`, remove
+`.ghost-docker.lock`, then start the site or restore the backup the job names,
+and once `check` passes, remove `.ghost-docker-update/`. Logs:
+`docker compose logs -t supervisor`, timestamped by Docker.
 
 ## backup and restore
 

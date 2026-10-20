@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, test } from 'node:test';
+import { recoveryAdvice, type GhostUpdate, type NeedsOperator } from '../src/commands/update.ts';
 import * as env from '../src/env.ts';
 import { acquireLock } from '../src/lock.ts';
 import { SCHEMA_VERSION, writeMetadata } from '../src/meta.ts';
@@ -320,6 +321,75 @@ describe('a failed update', () => {
         assert.match(result.stderr, /the services could not be stopped: cannot stop container/);
         assert.match(result.stderr, /These of its services are still running: db, ghost/);
         assert.equal(setting('GHOST_IMAGE_REF'), `ghost@${NEWER}`);
+    });
+});
+
+describe('recovery advice, as the CLI and the supervisor both give it', () => {
+    const update = {
+        site: { dir: '/site' },
+        from: { version: '6.67.0' },
+        to: { version: '6.68.0' },
+    } as unknown as Pick<GhostUpdate, 'site' | 'from' | 'to'>;
+    const outcome = (overrides: Partial<NeedsOperator>): NeedsOperator => ({
+        state: 'needs-operator',
+        error: new Error('failed'),
+        backup: '/site/backups/20261019-100000',
+        servicesChanged: true,
+        filesBack: false,
+        problems: [],
+        running: [],
+        snapshot: '/site/.ghost-docker-update',
+        ...overrides,
+    });
+    const commands = (advice: ReturnType<typeof recoveryAdvice>) =>
+        advice.choices.map((choice) => choice.commands);
+
+    test('after startup: restore the backup, or fix and start the new Ghost', () => {
+        const advice = recoveryAdvice(update, outcome({}));
+        assert.deepEqual(commands(advice), [
+            ['./ghost-docker restore --yes backups/20261019-100000'],
+            ['docker compose logs ghost', 'docker compose up -d', './ghost-docker check'],
+        ]);
+        assert.match(advice.facts.join('\n'), /may have migrated/);
+        assert.equal(advice.snapshot, '.ghost-docker-update');
+    });
+
+    test('after startup, with recovery itself failed: only the backup is offered', () => {
+        const advice = recoveryAdvice(
+            update,
+            outcome({ problems: ['the services could not be stopped: no'] }),
+        );
+        assert.deepEqual(commands(advice), [
+            ['./ghost-docker restore --yes backups/20261019-100000'],
+        ]);
+        assert.equal(advice.facts[0], 'the services could not be stopped: no');
+    });
+
+    test('before startup, with the files back: start the old Ghost again', () => {
+        const advice = recoveryAdvice(
+            update,
+            outcome({ servicesChanged: false, filesBack: true, problems: ['ghost did not start'] }),
+        );
+        assert.deepEqual(commands(advice), [['docker compose up -d', './ghost-docker check']]);
+    });
+
+    test('before startup, with the files not back: put them back before starting anything', () => {
+        const advice = recoveryAdvice(
+            update,
+            outcome({
+                servicesChanged: false,
+                filesBack: false,
+                problems: ['the files could not be put back: EACCES'],
+            }),
+        );
+        assert.deepEqual(commands(advice), [
+            [
+                'cp -a .ghost-docker-update/files/. .',
+                'docker compose up -d',
+                './ghost-docker check',
+            ],
+        ]);
+        assert.match(advice.facts.join('\n'), /starting the site now would start Ghost 6\.68\.0/);
     });
 });
 

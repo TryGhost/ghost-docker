@@ -42,7 +42,15 @@ import { describeServices } from '../recovery.ts';
 import { compareReleases, isRelease } from '../release.ts';
 import { resolveSite } from '../resolved.ts';
 import { heading, ok, printChecks } from '../report.ts';
-import { COMPOSE_FILE, META_FILE, UPDATE_DIR, type SiteFacts, type SiteMode } from '../site.ts';
+import * as env from '../env.ts';
+import {
+    COMPOSE_FILE,
+    ENV_FILE,
+    META_FILE,
+    UPDATE_DIR,
+    type SiteFacts,
+    type SiteMode,
+} from '../site.ts';
 import { runUpdate, type UpdateOutcome } from '../update.ts';
 import { atLeast, MINIMUM } from '../versions.ts';
 import {
@@ -456,6 +464,13 @@ async function apply(update: Update, backup: boolean): Promise<number> {
         async write() {
             heading(io, 'Writing the stack');
             writePayloadChanges(io, dir, stack, payload);
+            // The upgrade supervisor runs the manager the launcher is pinned to.
+            const envPath = join(dir, ENV_FILE);
+            const settings = readFileSync(envPath, 'utf8');
+            if (env.get(settings, 'MANAGER_IMAGE_REF') !== undefined) {
+                atomicWrite(envPath, env.set(settings, 'MANAGER_IMAGE_REF', to.image!));
+                ok(io, ENV_FILE, `MANAGER_IMAGE_REF=${to.image!}, for the upgrade supervisor`);
+            }
 
             // validate() only warns when Compose cannot resolve the project; here
             // that is the release failing.

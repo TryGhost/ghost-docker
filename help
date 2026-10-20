@@ -35,6 +35,7 @@ DOCUMENTATION:
   docs/configuration.md           Env files, profiles, overrides and image pins
   docs/caddy.md                   Route edits
   docs/bundle-v1.md               Migration bundle contract
+  docs/upgrade-supervisor.md      Ghost updates from Admin: the supervisor's protocol
   docs/architecture.md            Manager invariants and state ownership
   docs/ghost-cli-replacement.md   Remaining work and release gates
 

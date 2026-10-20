@@ -34,7 +34,7 @@ import { loadContext, type Context } from '../context.ts';
 import * as env from '../env.ts';
 import { CliError, describeError, EXIT, UsageError } from '../errors.ts';
 import { atomicWrite, PRIVATE } from '../fs.ts';
-import { resolveGhost, type ResolvedGhost } from '../ghost.ts';
+import { resolveGhost, UPGRADE_ADAPTER, type ResolvedGhost } from '../ghost.ts';
 import { clearUnfinishedImport, Importing, importConflict } from '../import.ts';
 import type { Io, Prompter } from '../io.ts';
 import { isoSeconds, SCHEMA_VERSION, writeMetadata } from '../meta.ts';
@@ -70,6 +70,7 @@ import {
     type Requested,
 } from './common.ts';
 import { collect } from './doctor.ts';
+import { refuseUnsupportedDaemon } from './supervisor.ts';
 
 /** Where a local site's port search starts, and how far it goes. */
 export const DEFAULT_PORT = 2368;
@@ -80,7 +81,7 @@ const PRODUCTION_PORTS = { http: 80, https: 443 } as const;
 /** Compose waits this long for health checks; pulls and builds come before it. */
 
 /** The services `--with` can name. */
-const OPTIONAL_SERVICES = ['activitypub', 'mailpit'];
+const OPTIONAL_SERVICES = ['activitypub', 'mailpit', 'supervisor'];
 
 /** `--with a,b`: each service once. Whether it suits the site's mode is plan's to say. */
 const services = z.string().transform((list, ctx) => {
@@ -173,7 +174,7 @@ const options = z
         with: services
             .default([])
             .describe(
-                'Optional per-site services: activitypub for a production site, mailpit for a local one.',
+                'Optional per-site services: activitypub for a production site, mailpit for a local one, and supervisor (Ghost updates from Admin; docs/upgrade-supervisor.md) for either.',
             ),
         import: z
             .string()
@@ -419,6 +420,9 @@ async function prepare(
     // Asked only now, so nobody answers questions to be told the directory is taken.
     const intent = importing === null ? await plan(flags, io.prompt) : imported(importing, flags);
     await preflight(io, context);
+    if (intent.services.includes('supervisor')) {
+        await refuseUnsupportedDaemon(io, context);
+    }
     const { port, mailpitPort } = await sitePorts(
         io,
         intent.mode,
@@ -613,6 +617,15 @@ function writeEnv(site: Site, created: Created) {
         ['DATABASE_PASSWORD', secret()],
         ['DATABASE_ROOT_PASSWORD', secret()],
     ];
+    if (intent.services.includes('supervisor')) {
+        // It runs as whoever installed the site, on the manager the launcher is pinned to.
+        settings.push(
+            ['SUPERVISOR_UID', String(site.context.caller.uid)],
+            ['SUPERVISOR_GID', String(site.context.caller.gid)],
+            ['MANAGER_IMAGE_REF', site.pin ?? 'ghost-docker:checkout'],
+            ['DOCKER_SOCKET', io.env.GD_HOST_SOCKET || '/var/run/docker.sock'],
+        );
+    }
     if (production) {
         settings.push(
             ['HTTP_PORT', String(PRODUCTION_PORTS.http)],
@@ -839,6 +852,11 @@ function printSummary(site: Site, importing: Importing | null) {
                 ? []
                 : [`  Mailpit      http://127.0.0.1:${site.mailpitPort}, the mail Ghost sends`]),
             ...(importing === null ? [] : [`  Imported     ${importing.description}`]),
+            ...(intent.services.includes('supervisor')
+                ? [
+                      "  Supervisor   running; Ghost Admin offers updates within the site's Ghost major",
+                  ]
+                : []),
             '',
             '.env and ghost.env hold the credentials; back them up.',
             ...next,
@@ -865,6 +883,11 @@ export function ghostEnvTemplate(project: string, services: readonly string[]): 
         // ActivityPub (and analytics, added later) need Ghost's public API.
         ...(services.includes('activitypub') ? [env.serialize('labs__publicAPI', 'true')] : []),
         ...(mailpit ? mailpitMail(project).map(([key, value]) => env.serialize(key, value)) : []),
+        // Set whatever the Ghost: one without the upgrade adapter type never
+        // loads it, and one updated to a Ghost with it then uses it.
+        ...(services.includes('supervisor')
+            ? UPGRADE_ADAPTER.map(([key, value]) => env.serialize(key, value))
+            : []),
         '',
     ].join('\n');
 }

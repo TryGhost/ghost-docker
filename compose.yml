@@ -14,8 +14,8 @@
 #   local       ghost + db, Ghost published on 127.0.0.1:${GHOST_PORT}
 #   production  ghost + db + caddy (HTTPS ingress)
 # Optional, per-site profiles: analytics, activitypub, and for local sites
-# mailpit.
-# `supervisor` is reserved for the upgrade supervisor and defines no service yet.
+# mailpit, and `supervisor`, which runs Ghost updates asked for in Ghost Admin
+# (docs/upgrade-supervisor.md).
 
 x-logging: &default-logging
   driver: ${LOG_DRIVER:-json-file}
@@ -69,6 +69,10 @@ services:
       tinybird__stats__endpoint: ${TINYBIRD_API_URL:-https://api.tinybird.co}
     volumes:
       - ${UPLOAD_LOCATION:-./data/ghost}:${GHOST_CONTENT_PATH:-/home/ghost/content}
+      # The upgrade supervisor's socket (docs/upgrade-supervisor.md#the-socket),
+      # read-only: Ghost connects to it and can never replace it. Empty, and
+      # unused, unless the supervisor runs.
+      - upgrade:/run/ghost-upgrade:ro
     # A real readiness probe: Ghost has booted and is serving its Admin API.
     # A running container or a redirect is not readiness.
     healthcheck:
@@ -143,6 +147,45 @@ services:
       ghost_network:
         aliases:
           - db-${COMPOSE_PROJECT_NAME:-ghost}
+
+  # The upgrade supervisor: the manager image, running Ghost updates that
+  # Ghost Admin asks for, within the host's policy (docs/upgrade-supervisor.md).
+  # It holds the Docker socket, which is host authority, and runs as the
+  # operator who installed the site. Its jobs never start, stop or recreate it.
+  supervisor:
+    image: ${MANAGER_IMAGE_REF:-ghost-docker:checkout}
+    restart: ${RESTART_POLICY:-unless-stopped}
+    profiles: [supervisor]
+    labels:
+      <<: *site-labels
+      org.ghost.docker.role: supervisor
+      org.ghost.docker.lifecycle: long-running
+    logging: *default-logging
+    command: ["supervisor", "run"]
+    # The site at its own absolute host path, as every manager command sees it:
+    # the daemon resolves the binds of the Compose operations it runs there.
+    working_dir: ${PROJECT_DIR:-/}
+    environment:
+      GD_SITE_DIR: ${PROJECT_DIR:-}
+      GD_UID: ${SUPERVISOR_UID:-}
+      GD_GID: ${SUPERVISOR_GID:-}
+      GD_IMAGE: ${MANAGER_IMAGE_REF:-ghost-docker:checkout}
+    volumes:
+      - ${PROJECT_DIR:-/nonexistent}:${PROJECT_DIR:-/nonexistent}
+      # Read-only, so the socket file cannot be replaced from in here. It
+      # limits nothing the API can do: connecting is not a write.
+      - ${DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock:ro
+      - upgrade:/run/ghost-upgrade
+    # Healthy while it answers on its socket, as Ghost would ask it.
+    healthcheck:
+      test: ["CMD", "node", "/opt/ghost-docker/manager/src/supervisor/healthcheck.ts"]
+      interval: 30s
+      timeout: 10s
+      start_period: 300s
+      start_interval: 5s
+      retries: 3
+    networks:
+      - ghost_network
 
   caddy:
     image: caddy:2.10.2-alpine@sha256:953131cfea8e12bfe1c631a36308e9660e4389f0c3dfb3be957044d3ac92d446
@@ -370,6 +413,7 @@ services:
     tty: true
 
 volumes:
+  upgrade:
   caddy_data:
   caddy_config:
   tinybird_files:

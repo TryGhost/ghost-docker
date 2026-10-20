@@ -69,6 +69,8 @@ export interface DaemonInfo {
     architecture: string;
     memoryBytes: number;
     rootless: boolean;
+    /** userns-remap: container uids are not the host's. */
+    usernsRemap: boolean;
 }
 
 export type DaemonResult = { ok: true; info: DaemonInfo } | { ok: false; reason: string };
@@ -102,6 +104,9 @@ export async function daemonInfo(docker: DockerTransport): Promise<DaemonResult>
             architecture: parsed.Architecture,
             memoryBytes: parsed.MemTotal,
             rootless: (parsed.SecurityOptions ?? []).some((option) => option.includes('rootless')),
+            usernsRemap: (parsed.SecurityOptions ?? []).some((option) =>
+                option.includes('name=userns'),
+            ),
         },
     };
 }
