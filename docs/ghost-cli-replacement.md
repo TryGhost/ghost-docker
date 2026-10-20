@@ -13,7 +13,7 @@ Linear](https://linear.app/ghost/issue/PLA-412).
 | --- | --- | --- |
 | Tagged single-site production | S5e production import, S12 qualification | Existing image self-update, local import, backup and restore |
 | Several sites behind shared Caddy | S13 | Existing backup/restore and released-main migration |
-| Admin-driven Ghost upgrades | S7 analytics acceptance, S8 supervisor, S9 core adapter/API, S10 Admin | Existing `update`; S8 protocol before S9; S9 before S10; S13 integration if shipped |
+| Admin-driven Ghost upgrades | S7 analytics acceptance, S9 core adapter/API, S10 Admin | Existing `update` and upgrade supervisor; S9 before S10; S13 integration if shipped |
 | Later extensions | S11 file secrets, S14 service references, S15 nightly transitions, S16 Redis | See each step |
 
 Qualify production on Linux with rootful Docker Engine. Local qualification also covers
@@ -54,24 +54,9 @@ CI. Remaining:
 Acceptance on a site with analytics: the update reruns Tinybird sync from the new
 image and the deploy succeeds. It needs a Tinybird login, so it is run by hand.
 
-### S8 — Supervisor command, protocol, and installer integration
-
-Repo: ghost-docker. The protocol is [upgrade-supervisor.md](upgrade-supervisor.md), the
-contract `HttpUpgradeAdapter` in Ghost core (S9) is built against. Implement the
-supervisor as a long-running command of the manager image, running updates through
-`src/update.ts` as `update` does, and wire `--with supervisor` and the socket's volume.
-
-Acceptance: handwritten requests work before Ghost gains an adapter; duplicate and
-malformed requests, permission violations, and an unreachable supervisor behave correctly; a request
-while a job is active, or while the CLI holds the lock, is refused; a supervisor killed
-mid-job reports that job `interrupted` on its next start, with its backup, and leaves
-the lock for the operator; history stays within its bound. Verify actual socket
-permissions as Ghost's runtime uid. The installer writes the adapter's settings
-whatever the Ghost: an older Ghost ignores them, and its startup never depends on them.
-
 ### S9 — Ghost upgrade adapter and Admin API
 
-Repo: Ghost core. Deps: S8 protocol contract ([upgrade-supervisor.md](upgrade-supervisor.md)).
+Repo: Ghost core. Deps: the supervisor's protocol ([upgrade-supervisor.md](upgrade-supervisor.md)).
 Follow repository adapter/API guidance. Implement `NoopUpgradeAdapter` and, against the
 protocol, `HttpUpgradeAdapter`, permission-checked status/
 request/job APIs, rate limiting, capability reporting, and update-notification metadata.
@@ -105,7 +90,7 @@ promises must match the actual enforced policy.
 
 ### S11 — Optional file-based secrets
 
-Repo: ghost-docker. Deps: the credential consumers in backup, import, restore, `update` and S8.
+Repo: ghost-docker. Deps: the credential consumers in backup, import, restore, `update` and the upgrade supervisor.
 Add Compose secret files and `_FILE` wiring only for Ghost versions known to support it.
 Importing older Ghost 6 images must still work via their supported credential mechanism.
 Migrate without changing existing initialized MySQL credentials accidentally.
@@ -122,7 +107,8 @@ environment-based installs, older imports, restart, and restore still work.
 ### S12 — Single-site release qualification and documentation
 
 Repo: ghost-docker, with cross-repo fixtures. Deps: S5e, plus existing install,
-backup/restore, self-update and released-main migration; qualify S13, S8-S10 and S11 when they have shipped.
+backup/restore, self-update, released-main migration and the upgrade supervisor; qualify S13,
+S9-S10 and S11 when they have shipped.
 Gates the first stable tag and merging `next-docker` into `main`. Include the launcher
 on Linux, macOS and WSL2. Consolidate CI and qualify the actual minimum supported tools
 and image versions. Run fresh local/production install, optional-service variants, CLI
