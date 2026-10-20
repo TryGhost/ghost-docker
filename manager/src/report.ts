@@ -31,9 +31,15 @@ export function printChecks(io: Io, checks: readonly Check[], width = 18): void 
     }
 }
 
-/** One `ok` line. */
-export const ok = (io: Io, label: string, detail = ''): void =>
-    printChecks(io, [{ status: 'ok', label, detail }]);
+/** One line of the given status: `ok(io, 'ghost', 'healthy')`. */
+const line =
+    (status: Check['status']) =>
+    (io: Io, label: string, detail = ''): void =>
+        printChecks(io, [{ status, label, detail }]);
+export const ok = line('ok');
+export const note = line('note');
+export const warn = line('warn');
+export const error = line('error');
 
 /** A section of a command's progress. */
 export const heading = (io: Io, title: string): void => io.stdout(`\n${title}\n`);

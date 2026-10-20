@@ -14,7 +14,7 @@ import { selfUpdateCommand } from './commands/self-update.ts';
 import { supervisorRunCommand } from './commands/supervisor.ts';
 import { updateCommand } from './commands/update.ts';
 import { versionCommand } from './commands/version.ts';
-import { CliError, EXIT, UsageError } from './errors.ts';
+import { CliError, describeError, EXIT, UsageError } from './errors.ts';
 import type { Io } from './io.ts';
 
 /** A command of two words, such as `config get`, is keyed by both. */
@@ -89,7 +89,7 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
         const { values, positionals } = parse(name, command, rest);
         return await command.run(values, positionals, io);
     } catch (error) {
-        io.stderr(`${describe(error)}\n`);
+        io.stderr(`${describeError(error)}\n`);
         return error instanceof CliError ? error.exitCode : EXIT.failure;
     }
 }
@@ -153,15 +153,6 @@ function parse(name: string, command: Command, args: string[]) {
     }
     return { values: result.data, positionals: parsed.positionals };
 }
-
-/** How errors read: ours by their message, anything else as a bug to report. */
-const describe = (error: unknown): string => {
-    if (error instanceof CliError) {
-        return `error: ${error.message}`;
-    }
-    const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
-    return `error: ghost-docker failed unexpectedly. Please report this:\n${detail}`;
-};
 
 /** Two columns, the first padded to its widest entry. */
 const columns = (rows: [string, string][]) => {

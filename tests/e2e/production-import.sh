@@ -34,7 +34,7 @@ SOURCE=/var/www/ghost-e2e
 
 # What this host cannot run fails the run, unless GD_E2E_ALLOW_SKIP=1.
 # shellcheck source=/dev/null
-source "$ROOT/tests/e2e/skip.sh"
+source "$ROOT/tests/e2e/lib.sh"
 require_docker
 
 read -ra GHOST_CLI <<<"${GD_TEST_GHOST_CLI:-ghost}"
@@ -47,26 +47,6 @@ readonly MAIL_FROM="'Import \$Test \"quoted\"' <noreply@example.com>"
 
 SITES=()
 SOURCE_INSTALLED=0
-CURRENT="setup"
-OUT=""
-RC=0
-
-# --- Reporting ---------------------------------------------------------------
-
-step() {
-    CURRENT=$1
-    printf '\n== %s\n' "$1"
-}
-
-ok() { printf '   ok    %s\n' "$1"; }
-
-fail() {
-    printf '\nFAILED in "%s": %s\n' "$CURRENT" "$1" >&2
-    if [[ -n ${2:-} ]]; then
-        printf -- '--- output ---\n%s\n--------------\n' "$2" >&2
-    fi
-    exit 1
-}
 
 # --- Helpers -----------------------------------------------------------------
 
@@ -94,10 +74,6 @@ run_import() {
     OUT=$(GD_IMAGE=$IMAGE "$ALONE/ghost-docker" --dir "$site" install --no-prompt "$@" 2>&1 </dev/null)
     RC=$?
     set -e
-}
-
-expect_output() {
-    grep -qE -- "$1" <<<"$OUT" || fail "the output does not match: $1" "$OUT"
 }
 
 # new_site NAME -> SITE, an empty directory that cleanup takes down, holding
@@ -144,13 +120,14 @@ site_https() {
 
 # --- Cleanup -----------------------------------------------------------------
 
-cleanup() {
-    local rc=$? site
-    trap - EXIT
-    set +e
+# Nothing to clean up until the preparation below has made a work directory.
+teardown() {
+    local site
+    [[ -n $WORK ]] || return 0
     if [[ ${GD_TEST_KEEP:-0} == 1 ]]; then
         printf '\nGD_TEST_KEEP is set; everything was left in %s and %s\n' "$WORK" "$SOURCE" >&2
-        exit "$rc"
+        WORK=""
+        return 0
     fi
     printf '\nCleaning up\n'
     for site in ${SITES[@]+"${SITES[@]}"}; do
@@ -163,10 +140,6 @@ cleanup() {
     fi
     sudo systemctl start nginx >/dev/null 2>&1
     docker run --rm --user 0 --entrypoint rm -v "$WORK:/work" "$IMAGE" -rf /work/sites >/dev/null 2>&1
-    case $WORK in
-        */ghost-docker-production-import-e2e.*) rm -rf -- "$WORK" ;;
-    esac
-    exit "$rc"
 }
 
 # --- Setup -------------------------------------------------------------------
@@ -183,9 +156,7 @@ done
 sudo -n true 2>/dev/null || fail "sudo needs a password here"
 systemctl is-active --quiet nginx || fail "nginx is not running: the existing proxy is part of the scenario"
 [[ ! -e $SOURCE ]] || fail "$SOURCE already exists"
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/ghost-docker-production-import-e2e.XXXXXXXX")
-WORK=$(CDPATH='' cd -- "$WORK" && pwd -P)
-trap cleanup EXIT
+work_dir production-import
 trap 'exit 130' INT
 trap 'exit 143' TERM
 

@@ -1,12 +1,7 @@
-// Importing a staged bundle into a new site: its configuration, its content
-// and its database. A portable bundle has none to load: Ghost creates an empty
-// one, and its content JSON and members CSV are Ghost Admin's to import. The order and the policy are install's; `Importing` is
-// what install calls, at its points, when --import is given. The contract is
+// Importing a staged bundle into a new site: its configuration, content and
+// database. `Importing` is what install calls, at its points, with --import;
+// the pieces that print nothing are in import/. The contract is
 // docs/bundle-v1.md and docs/architecture.md#installation-and-import.
-//
-// The pieces that print nothing and decide no order are in import/:
-// config.ts, what ghost.env receives; database.ts, the client, the dump
-// filter and the row counts.
 import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { lt } from 'semver';
@@ -37,8 +32,8 @@ import { MINIMUM_IMPORT_VERSION, resolveExactGhost, type ResolvedGhost } from '.
 import { replaceMailTransport, sourceConfig, type CarriedConfig } from './import/config.ts';
 import { checkRows, countOf, loadFile, tableCount, withSiteDatabase } from './import/database.ts';
 import type { Io } from './io.ts';
-import { ok, printChecks } from './report.ts';
-import { DATA_DIRS, ENV_FILE, type SiteMode } from './site.ts';
+import { ok, warn } from './report.ts';
+import { DATA_DIRS, ENV_FILE, hostOf, type SiteMode } from './site.ts';
 import { Created } from './undo.ts';
 
 /** Present from the first change an import makes until it has been verified. */
@@ -105,15 +100,6 @@ export function servedHost(url: string, field: string, option: string): string {
                 : `  Name the domain to serve it on with ${option}.\n`) +
             '  Nothing has been changed.',
     );
-}
-
-/** A URL's host, lowercased; empty for one that does not parse. */
-function hostOf(url: string): string {
-    try {
-        return new URL(url).hostname;
-    } catch {
-        return '';
-    }
 }
 
 /**
@@ -258,16 +244,13 @@ export class Importing {
             return { mode: 'production', domain, adminDomain: flags.adminDomain ?? '' };
         }
         if (domain !== hostOf(url)) {
-            printChecks(this.io, [
-                {
-                    status: 'warn',
-                    label: 'admin domain',
-                    detail:
-                        `not carried: the source served Ghost Admin at ${adminUrl}, but this site is on\n` +
-                        `${domain}, not the source's domain. Ghost Admin is served at https://${domain}/ghost/;\n` +
-                        'give --admin-domain for a separate one.',
-                },
-            ]);
+            warn(
+                this.io,
+                'admin domain',
+                `not carried: the source served Ghost Admin at ${adminUrl}, but this site is on\n` +
+                    `${domain}, not the source's domain. Ghost Admin is served at https://${domain}/ghost/;\n` +
+                    'give --admin-domain for a separate one.',
+            );
             return { mode: 'production', domain, adminDomain: '' };
         }
         return {

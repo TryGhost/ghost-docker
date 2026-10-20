@@ -30,7 +30,7 @@ DEFAULT_GHOST=ghost:6-next-alpine
 
 # What this host cannot run fails the run, unless GD_E2E_ALLOW_SKIP=1.
 # shellcheck source=/dev/null
-source "$ROOT/tests/e2e/skip.sh"
+source "$ROOT/tests/e2e/lib.sh"
 require_docker
 
 read -ra GHOST_CLI <<<"${GD_TEST_GHOST_CLI:-npx --yes ghost-cli@1.34.0}"
@@ -46,32 +46,11 @@ readonly OWNER_PASSWORD="Sup3r-secret-pass!"
 # Dollar signs and both kinds of quote: the value that dotenv encoding gets wrong.
 readonly MAIL_FROM="'Import \$Test \"quoted\"' <noreply@example.com>"
 
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/ghost-docker-import-e2e.XXXXXXXX")
-WORK=$(CDPATH='' cd -- "$WORK" && pwd -P)
+work_dir import
 SOURCES=()
 DESTINATIONS=()
-CURRENT="setup"
-OUT=""
-RC=0
 site=""
 port=""
-
-# --- Reporting ---------------------------------------------------------------
-
-step() {
-    CURRENT=$1
-    printf '\n== %s\n' "$1"
-}
-
-ok() { printf '   ok    %s\n' "$1"; }
-
-fail() {
-    printf '\nFAILED in "%s": %s\n' "$CURRENT" "$1" >&2
-    if [[ -n ${2:-} ]]; then
-        printf -- '--- output ---\n%s\n--------------\n' "$2" >&2
-    fi
-    exit 1
-}
 
 # --- Helpers -----------------------------------------------------------------
 
@@ -89,13 +68,12 @@ setting() { GD_IMAGE=$IMAGE "$ALONE/ghost-docker" --dir "$1" config get "$2" 2>/
 
 # Every destination is taken down and its data removed as root, because the
 # database and content belong to the containers' users once they have run.
-cleanup() {
-    local rc=$? site
-    trap - EXIT
-    set +e
+teardown() {
+    local site
     if [[ ${GD_TEST_KEEP:-0} == 1 ]]; then
         printf '\nGD_TEST_KEEP is set; everything was left in %s\n' "$WORK" >&2
-        exit "$rc"
+        WORK=""
+        return 0
     fi
     printf '\nCleaning up\n'
     for site in ${DESTINATIONS[@]+"${DESTINATIONS[@]}"}; do
@@ -107,12 +85,7 @@ cleanup() {
     done
     docker rm -f "$SOURCE_DB_CONTAINER" >/dev/null 2>&1
     docker run --rm --user 0 --entrypoint rm -v "$WORK:/work" "$IMAGE" -rf /work/sites >/dev/null 2>&1
-    case $WORK in
-        */ghost-docker-import-e2e.*) rm -rf -- "$WORK" ;;
-    esac
-    exit "$rc"
 }
-trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 

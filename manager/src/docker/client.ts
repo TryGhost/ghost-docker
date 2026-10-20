@@ -278,6 +278,9 @@ export async function listContainers(
     }));
 }
 
+/** The label compose.yml gives every container of a ghost-docker site, as a filter. */
+export const MANAGED_LABEL = 'org.ghost.docker.managed=true';
+
 const portBindings = z.object({
     HostConfig: z
         .object({
@@ -303,9 +306,9 @@ const portBindings = z.object({
  * containers and is not found here.
  */
 export async function stoppedSiteContainers(docker: DockerTransport): Promise<ContainerFacts[]> {
-    const stopped = (
-        await listContainers(docker, { all: true, labels: ['org.ghost.docker.managed=true'] })
-    ).filter((container) => container.state !== 'running');
+    const stopped = (await listContainers(docker, { all: true, labels: [MANAGED_LABEL] })).filter(
+        (container) => container.state !== 'running',
+    );
     return Promise.all(
         stopped.map(async (container) => {
             const inspected = await call(

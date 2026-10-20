@@ -337,36 +337,23 @@ when it starts.
 
 The update pulls the new image while the site runs, takes a consistent backup
 (the site is down from here), pins the new image and starts the site. On
-success the backup stays in `backups/`. Going back to the earlier Ghost means
-restoring that backup, which discards anything written since.
-
-If it fails before the new Ghost starts, everything is put back
-(**restored**). If it fails after, the new Ghost may have migrated the
-database, so it stops the site and says **the site needs you**. Either:
-
-- `./ghost-docker restore --yes backups/<backup>`: the site as it was before
-  the update, discarding anything written since; or
-- find why Ghost did not start (`docker compose logs ghost`), fix it, then
-  `docker compose up -d` and `./ghost-docker check`.
+success the backup stays in `backups/`; going back to the earlier Ghost means
+restoring it, which discards anything written since. A failure before the new
+Ghost starts puts everything back (**restored**); one after stops the site,
+since the new Ghost may have migrated the database, and says **the site needs
+you**, with the ways on. What it refuses, and the recovery:
+[update](reference.md#update).
 
 Exit statuses: `0` updated, or nothing to update; `1` refused or failed; `2` a
-usage error. Details: [update](reference.md#update).
+usage error.
 
 ### From Ghost Admin: the upgrade supervisor
 
 A site installed `--with supervisor` runs these updates when Ghost Admin asks,
-one at a time, with the same outcomes and recovery as `update`. Ghost Admin
-shows each job's progress.
-
-If the supervisor, Docker or the host stops during a job, the job is reported
-**interrupted** and the site stays locked. Then, in order:
-
-1. `./ghost-docker check`.
-2. Remove `.ghost-docker.lock`.
-3. Start the site, or restore the backup the job names.
-4. Once `check` passes, remove `.ghost-docker-update/`.
-
-Logs: `docker compose logs -t supervisor`. Protocol and recovery rules are in
+one at a time, with the same outcomes and recovery as `update`, and Admin
+shows each job's progress. A job the supervisor could not finish is reported
+**interrupted**, with the operator's steps. Logs: `docker compose logs -t
+supervisor`. The protocol and recovery rules are in
 [upgrade-supervisor.md](upgrade-supervisor.md).
 
 ## self-update
@@ -389,22 +376,14 @@ runs, it stops first and says so.
 
 Files you never edited are replaced. **An edited file is kept**, with the
 release's version beside it as `<file>.new`: compare and merge them. The site
-is down from the backup until the new release starts and verifies.
-
-If it fails before the new release starts, everything is put back
-(**restored**). If it fails after, it stops the site, puts the previous
-release's files back, and says **the site needs you**. Either:
-
-- `./ghost-docker restore --yes backups/<backup>`: the site as it was before
-  the update, discarding anything written since; or
-- if the release did not change the data (`docker compose logs` says),
-  `docker compose up -d` starts the previous release as it is.
-
-Remove `.ghost-docker-update/` once the site is back; another update is
-refused while it is there.
+is down from the backup until the new release starts and verifies. A failure
+before the new release starts puts everything back (**restored**); one after
+stops the site, puts the previous release's files back, and says **the site
+needs you**, with the ways on. What it refuses, and the recovery:
+[self-update](reference.md#self-update).
 
 Exit statuses: `0` updated, or nothing to update; `1` refused or failed; `2` a
-usage error. Details: [self-update](reference.md#self-update).
+usage error.
 
 ### Updating a clone
 
@@ -443,20 +422,11 @@ Ghost's settings into `ghost.env`, pins the `next` image of the exact Ghost
 version running (6.61.0 or later; upgrade older sites on main first), and
 carries `caddy/Caddyfile` over as written. It checks everything before
 changing anything, takes a checked backup, and verifies the site through
-Caddy. Ghost is down from the backup until the new layout starts.
-
-- **Edited stack files** (`compose.yml`, snippets, `mysql-init/`) stop the
-  migration: move such changes into `compose.override.yml` first.
-- **Extra Compose files** you pass with `-f`, such as `compose.ipv6.yml`, must
-  be named in `.env`'s `COMPOSE_FILE`, which must start with `compose.yml`,
-  before you migrate
-  ([configuration](configuration.md#the-compose-invocation-contract)).
-- **If it fails after starting**, `docker compose up -d` starts main's layout
-  on the data again, or `./ghost-docker restore --yes backups/<backup>` puts
-  the databases and content back as they were.
-
-Afterwards, update with `./ghost-docker self-update`, not git. What each
-setting becomes: [Moving from the released main
+Caddy; Ghost is down from the backup until the new layout starts. Edited
+stack files, and Compose files passed with `-f` rather than named in `.env`'s
+`COMPOSE_FILE`, stop it before anything changes. Afterwards, update with
+`./ghost-docker self-update`, not git. What each setting becomes, and the
+recovery: [Moving from the released main
 layout](reference.md#moving-from-the-released-main-layout).
 
 ## backup and restore
@@ -470,15 +440,11 @@ ghost-docker restore [--yes] <backup>
 configuration into a private, timestamped directory such as
 `backups/2026-10-09T14-03-22Z`. Every dump is test-loaded before the backup
 counts: **a backup that fails is an error, and leaves nothing behind.**
-Nothing is rotated or pruned; copy backups off the host to keep them safe.
-
-- By default a backup is **live**, as Ghost-CLI's was: the site keeps running,
-  but the databases and content are captured at slightly different moments.
-- `--consistent` stops Ghost and ActivityPub for the capture, usually seconds
-  to minutes, so everything is from one moment.
-
-Not included: Caddy's certificates (obtained again on start), Tinybird data,
-and Mailpit's inbox.
+Nothing is rotated or pruned; copy backups off the host to keep them safe. By
+default a backup is **live**, as Ghost-CLI's was: the site keeps running, and
+the databases and content are captured at slightly different moments;
+`--consistent` stops Ghost and ActivityPub for the capture, so everything is
+from one moment. What a backup holds, and leaves out: [backup](reference.md#backup).
 
 `restore` works in two places:
 
@@ -490,14 +456,13 @@ and Mailpit's inbox.
   (`docker compose down`) if it is on the same host. A clone's backup restores
   into a clone at the commit it records.
 
-The backup is fully checked, and its images pulled, before anything stops. If
-a restore over a site fails, the site as it was is kept in
-`.ghost-docker-restore/`, with the steps to put it back (removing it needs
-`sudo`, because MySQL owns part of it).
+The backup is fully checked, and its images pulled, before anything stops. A
+restore over a site that fails keeps the site as it was in
+`.ghost-docker-restore/`, with the steps to put it back; what it refuses, and
+the order it works in: [restore](reference.md#restore).
 
 Exit statuses, for both: `0` done; `1` refused or failed; `2` a usage error,
-or a restore over a site without `--yes` and no terminal to ask. Details:
-[backup](reference.md#backup) and [restore](reference.md#restore).
+or a restore over a site without `--yes` and no terminal to ask.
 
 ## Windows
 

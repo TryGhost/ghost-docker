@@ -141,25 +141,17 @@ export function readMetadata(dir: string): MetadataRead {
     return { state: 'present', metadata: parsed.data };
 }
 
-/** Validated before it is written, so a bad document never replaces a good one. */
+/**
+ * Validated before it is written, so a bad document never replaces a good
+ * one. Two writes of the same document are the same bytes: the parse orders
+ * the objects' keys as the schema does, and `payload`, a record, is sorted.
+ */
 export function writeMetadata(dir: string, metadata: Metadata): void {
     const valid = metadataSchema.parse(metadata);
-    atomicWrite(metaPath(dir), `${JSON.stringify(sortKeys(valid), null, 2)}\n`, PRIVATE);
-}
-
-/** Stable output, so two writes of the same document are the same bytes. */
-function sortKeys(value: unknown): unknown {
-    if (Array.isArray(value)) {
-        return value.map(sortKeys);
-    }
-    if (value !== null && typeof value === 'object') {
-        return Object.fromEntries(
-            Object.keys(value)
-                .sort()
-                .map((key) => [key, sortKeys((value as Record<string, unknown>)[key])]),
-        );
-    }
-    return value;
+    valid.payload = Object.fromEntries(
+        Object.entries(valid.payload).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+    );
+    atomicWrite(metaPath(dir), `${JSON.stringify(valid, null, 2)}\n`, PRIVATE);
 }
 
 /** For a person, including for a site with no metadata at all. */

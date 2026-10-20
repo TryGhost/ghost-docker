@@ -20,52 +20,27 @@ MANAGER=ghost-docker:e2e-upgrade-supervisor
 FROM=6.61.0
 
 # shellcheck source=/dev/null
-source "$ROOT/tests/e2e/skip.sh"
+source "$ROOT/tests/e2e/lib.sh"
 require_docker
 command -v jq >/dev/null || {
     printf 'upgrade-supervisor.sh needs jq\n' >&2
     exit 1
 }
 
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/ghost-docker-supervisor-e2e.XXXXXXXX")
-WORK=$(CDPATH='' cd -- "$WORK" && pwd -P)
+work_dir supervisor
 S=$WORK/site
-CURRENT=setup
-OUT=""
-RC=0
 
-cleanup() {
-    local rc=$?
-    set +e
+teardown() {
     [[ -f $S/.env ]] && docker compose --project-directory "$S" -f "$S/compose.yml" \
         --profile '*' down --volumes --remove-orphans --timeout 5 >/dev/null 2>&1
     docker run --rm --user 0 --entrypoint rm -v "$WORK:/work" "$MANAGER" -rf /work/site >/dev/null 2>&1
     docker rmi "$MANAGER" >/dev/null 2>&1
-    case $WORK in */ghost-docker-supervisor-e2e.*) rm -rf -- "$WORK" ;; esac
-    exit "$rc"
 }
-trap cleanup EXIT
-
-step() {
-    CURRENT=$1
-    printf '\n== %s\n' "$1"
-}
-ok() { printf '   ok    %s\n' "$1"; }
-fail() {
-    printf '\nFAILED in "%s": %s\n' "$CURRENT" "$1" >&2
-    [[ -z ${2:-} ]] || printf -- '--- output ---\n%s\n--------------\n' "$2" >&2
+# The supervisor's last words, with a failure.
+on_fail() {
     [[ ! -f $S/.env ]] || docker compose --project-directory "$S" -f "$S/compose.yml" \
         logs --no-color --tail 60 supervisor >&2 2>&1 || true
-    exit 1
 }
-
-run() {
-    set +e
-    OUT=$("$@" 2>&1 </dev/null)
-    RC=$?
-    set -e
-}
-expect_status() { [[ $RC -eq $1 ]] || fail "exited $RC, expected $1" "$OUT"; }
 
 gd() { "$S/ghost-docker" --dir "$S" "$@"; }
 compose_in() { docker compose --project-directory "$S" -f "$S/compose.yml" "$@"; }

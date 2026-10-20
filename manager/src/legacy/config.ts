@@ -1,12 +1,6 @@
-// The released `main` layout's single `.env`, split into this layout's `.env`
-// and `ghost.env` (docs/install.md#moving-from-the-released-main-layout).
-//
-// On `main`, `.env` was both Compose's interpolation source and the ghost
-// service's env_file, so every key in it reached Ghost. Here operator settings
-// stay in `.env`, which Ghost never sees, and Ghost's own configuration moves
-// to `ghost.env`. Which is which is decided the way `config validate` decides
-// it (config.ts): a key Compose interpolates, or an example documents, is an
-// operator setting; anything else was there for Ghost.
+// The released `main` layout's single `.env`, which was both Compose's
+// interpolation source and Ghost's env_file, split into this layout's `.env`
+// and `ghost.env` the way `config validate` tells the two apart (config.ts).
 import * as env from '../env.ts';
 import { CliError } from '../errors.ts';
 import { isContainerOwned } from '../import/config.ts';

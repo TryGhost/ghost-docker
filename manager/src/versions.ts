@@ -27,7 +27,7 @@ export const LOOPBACK_ISOLATED = '28.0.0';
  * Is `version` at least `minimum`? Versions are coerced first: a leading `v`
  * and anything after the numbers (`-beta.1`, `+ce`, `-desktop.1`) are
  * dropped, which is what a minimum-version check needs. Release ordering for
- * the stack itself has its own rules (docs/configuration.md0) and is not this.
+ * the stack itself has its own rules (docs/architecture.md#releases-and-compatibility) and is not this.
  */
 export const atLeast = (version: string, minimum: string): boolean =>
     gte(coerce(version) ?? '0.0.0', minimum);

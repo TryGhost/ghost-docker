@@ -1,12 +1,7 @@
-// The supervisor's private state, one file in the site directory
-// (docs/upgrade-supervisor.md#what-the-supervisor-keeps): its jobs, the IDs
-// of those it pruned, and what discovery last found.
-//
-// Held in memory and written whole, atomically and flushed, after every
-// change. A job's record is the job as the API answers it plus what only the
-// host needs: the stage reached, the backup, whether it holds the lock. The
-// record of the job running when the supervisor stopped is what the
-// interrupted-on-start rule reads.
+// The supervisor's private state, one file in the site directory, held in
+// memory and written whole, atomically, after every change. The record of a
+// job running when the supervisor stopped is what the interrupted-on-start
+// rule reads (docs/upgrade-supervisor.md#what-the-supervisor-keeps).
 import { mkdirSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';

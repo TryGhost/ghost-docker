@@ -33,7 +33,7 @@ import {
     SetAside,
     stopServices,
 } from './recovery.ts';
-import { heading, ok, printChecks } from './report.ts';
+import { heading, ok, printChecks, warn } from './report.ts';
 import { insideSite, resolveConfig, resolveSite } from './resolved.ts';
 import {
     COMPOSE_FILE,
@@ -142,7 +142,7 @@ export async function restoreSite({ io, context, root, yes }: RestoreInput): Pro
     if (aside !== null) {
         const left = await aside.remove();
         if (left !== null) {
-            printChecks(io, [{ status: 'warn', label: RESTORE_DIR, detail: left }]);
+            warn(io, RESTORE_DIR, left);
         }
     }
     summarize(io, dir, root, manifest, target);

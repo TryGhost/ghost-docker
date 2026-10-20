@@ -1,12 +1,8 @@
 // A site's Compose project: its name, chosen once at installation, and who
-// owns it on this daemon.
-//
-// Compose finds a project's containers by name alone. Two directories whose
-// `.env` named the same project would each take the other's containers for
-// their own, and `up` in one would recreate the other's. So a name is chosen
-// that no project on the daemon has, kept in `.env`, and every command that
-// changes a site first asks the daemon whether the project's containers
-// belong to another directory.
+// owns it on this daemon. Compose finds containers by project name alone, so
+// a name is chosen that no project has, and commands that change a site
+// refuse one whose containers another directory made
+// (docs/configuration.md#service-names-on-the-network).
 import { basename } from 'node:path';
 import { adjectives, animals, uniqueNamesGenerator } from 'unique-names-generator';
 import { listContainers } from './docker/client.ts';
@@ -90,15 +86,8 @@ export async function knownProjects(io: Io): Promise<Set<string>> {
     return new Set(containers.map((container) => container.labels[PROJECT_LABEL] ?? ''));
 }
 
-export interface ProjectOwners {
-    /** The project's containers, by name. */
-    readonly containers: readonly string[];
-    /** The directories they were made from, other than `dir`. */
-    readonly foreign: readonly string[];
-}
-
-/** The containers of `project`, and which other directories they belong to. */
-export async function projectOwners(io: Io, project: string, dir: string): Promise<ProjectOwners> {
+/** Why `project` cannot be used from `dir`, or null when no other directory's containers have it. */
+export async function foreignProject(io: Io, project: string, dir: string): Promise<string | null> {
     const containers = await listContainers(io.docker, {
         all: true,
         labels: [`${PROJECT_LABEL}=${project}`],
@@ -110,18 +99,13 @@ export async function projectOwners(io: Io, project: string, dir: string): Promi
             foreign.add(owner);
         }
     }
-    return { containers: containers.map((container) => container.name), foreign: [...foreign] };
-}
-
-/** Why `project` cannot be used from `dir`, or null when nothing else owns it. */
-export async function foreignProject(io: Io, project: string, dir: string): Promise<string | null> {
-    const { containers, foreign } = await projectOwners(io, project, dir);
-    if (foreign.length === 0) {
+    if (foreign.size === 0) {
         return null;
     }
+    const names = containers.map((container) => container.name);
     return (
-        `the Compose project ${project} belongs to ${foreign.join(' and ')}: its containers ` +
-        `(${containers.slice(0, 3).join(', ')}${containers.length > 3 ? ', …' : ''}) were made there, not in ${dir}`
+        `the Compose project ${project} belongs to ${[...foreign].join(' and ')}: its containers ` +
+        `(${names.slice(0, 3).join(', ')}${names.length > 3 ? ', …' : ''}) were made there, not in ${dir}`
     );
 }
 

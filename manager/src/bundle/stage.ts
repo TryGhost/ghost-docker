@@ -1,22 +1,10 @@
-// Reading a migration bundle: unpacked into private staging inside the site
-// directory, and validated there ("Reading the bundle" in docs/bundle-v1.md).
-//
-// Importing a bundle means trusting it: its SQL becomes the site's database
-// and its themes become the site. What is defended here is narrower. Nothing
-// in a bundle can be written outside the staging directory, and nothing in it
-// is anything but a regular file or a directory: every entry is checked as it
-// is read (an absolute path, a `..` component, a symbolic or hard link, a
-// device or any other special entry is refused), and a refusal removes the
-// staging directory with whatever was unpacked before it.
-//
-// Every later step of an import works from the staged copy; the bundle itself
-// is only ever read, and the launcher mounts it read-only.
-//
-// Before anything is unpacked, the bundle is measured from its own entries:
-// tar headers, zip directory sizes (which yauzl holds each entry's stream
-// to), or a directory's files. That is what unpacking can write, whatever
-// the archive's compression, so an import can refuse first when it will not
-// fit.
+// Reading a migration bundle: measured from its own entries, so an import can
+// refuse before it will not fit; unpacked into private staging inside the
+// site directory, every entry checked as it is read; and validated there
+// ("Reading the bundle" in docs/bundle-v1.md). Importing a bundle still means
+// trusting it. What is defended here is narrower: nothing in it is written
+// outside staging, and nothing in it is anything but a regular file or a
+// directory. A refusal removes the staging directory.
 import {
     chmodSync,
     closeSync,

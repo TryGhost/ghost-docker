@@ -14,7 +14,7 @@ const configured = (services: Record<string, Lifecycle>): ResolvedSite => ({
     services: Object.fromEntries(
         Object.entries(services).map(([name, lifecycle]) => [
             name,
-            { image: `${name}:1`, restart: null, mounts: [], networks: [], lifecycle },
+            { image: `${name}:1`, mounts: [], lifecycle },
         ]),
     ),
 });

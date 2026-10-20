@@ -47,7 +47,6 @@ test('Compose resolves the data mounts, the network and the images', async () =>
                 mount.target === '/var/lib/mysql',
         ),
     );
-    assert.deepEqual(resolved.services.db!.networks, [`${owner.project}_ghost_network`]);
     assert.match(resolved.services.db!.image ?? '', /^mysql:[^@]+@sha256:[0-9a-f]{64}$/);
     refuseMovedData(owner.facts(), resolved);
 });

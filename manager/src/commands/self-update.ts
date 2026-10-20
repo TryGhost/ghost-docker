@@ -40,7 +40,7 @@ import {
 import { describeServices } from '../recovery.ts';
 import { compareReleases, isRelease } from '../release.ts';
 import { resolveSite } from '../resolved.ts';
-import { heading, ok, printChecks } from '../report.ts';
+import { heading, note, ok } from '../report.ts';
 import * as env from '../env.ts';
 import { COMPOSE_FILE, ENV_FILE, META_FILE, type SiteFacts, type SiteMode } from '../site.ts';
 import { runUpdate, type UpdateOutcome } from '../update.ts';
@@ -224,21 +224,17 @@ function writePayloadChanges(io: Io, dir: string, stack: string, payload: Payloa
     );
     for (const { file, action } of payload.changes) {
         if (action === 'keep') {
-            printChecks(io, [
-                {
-                    status: 'note',
-                    label: 'kept',
-                    detail: `${file} has been edited, so it was kept. This release's version is ${newPath(file)}`,
-                },
-            ]);
+            note(
+                io,
+                'kept',
+                `${file} has been edited, so it was kept. This release's version is ${newPath(file)}`,
+            );
         } else if (action === 'leave') {
-            printChecks(io, [
-                {
-                    status: 'note',
-                    label: 'kept',
-                    detail: `${file} is no longer part of the stack, but it has been edited, so it was kept`,
-                },
-            ]);
+            note(
+                io,
+                'kept',
+                `${file} is no longer part of the stack, but it has been edited, so it was kept`,
+            );
         }
     }
 }
@@ -430,13 +426,11 @@ async function apply(update: Update, backup: boolean): Promise<number> {
     if (early.exitCode === 0) {
         ok(io, 'images', 'pulled, while the site kept running');
     } else {
-        printChecks(io, [
-            {
-                status: 'note',
-                label: 'images',
-                detail: `not pulled yet (${composeError(early, 2)}); they are pulled once the release is written`,
-            },
-        ]);
+        note(
+            io,
+            'images',
+            `not pulled yet (${composeError(early, 2)}); they are pulled once the release is written`,
+        );
     }
 
     const outcome = await runUpdate({
@@ -490,13 +484,11 @@ function record({ io, site, metadata, from, to, release, payload }: Update): voi
     if (present !== null && present !== metadata.payload[LAUNCHER]) {
         // It holds the pin, so it is always replaced; an edited one is kept beside it.
         cpSync(launcher, join(dir, EDITED_LAUNCHER));
-        printChecks(io, [
-            {
-                status: 'note',
-                label: 'kept',
-                detail: `${LAUNCHER} had been edited; it is replaced, because it holds the pin. Your copy is ${EDITED_LAUNCHER}`,
-            },
-        ]);
+        note(
+            io,
+            'kept',
+            `${LAUNCHER} had been edited; it is replaced, because it holds the pin. Your copy is ${EDITED_LAUNCHER}`,
+        );
     }
     const content = launcherContent(io.env, { image: to.image!, channel: release.channel });
     atomicWrite(launcher, content, 0o755);

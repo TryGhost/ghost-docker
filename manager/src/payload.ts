@@ -1,14 +1,9 @@
 // The release payload: the files compose.yml needs beside it, which the
-// manager image carries and writes into a site directory (docs/architecture.md#releases-and-compatibility).
-//
-// In image mode `install` writes them, with a checksum of each recorded in the
-// metadata so that `self-update` can tell an untouched file from an edited one, and
-// writes a copy of the launcher pinned to the image that installed the site.
-// A local site gets only the files its mode runs: Caddy, and analytics
-// behind it, serve production sites only, so caddy/ and tinybird/ are not
-// written into a local one.
-// In clone mode the site is a checkout of the repository: the files are
-// already there, are used in place, and nothing is written over them.
+// manager image carries and `install` writes into an image-mode site, with a
+// checksum of each recorded in the metadata so `self-update` can tell an
+// untouched file from an edited one, and a launcher pinned to the image. A
+// local site gets only the files its mode uses. A checkout's files are used
+// in place (docs/architecture.md#installation-and-import).
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';

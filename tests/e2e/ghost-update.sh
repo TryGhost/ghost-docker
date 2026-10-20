@@ -21,7 +21,7 @@ FROM=6.61.0
 
 # What this host cannot run fails the run, unless GD_E2E_ALLOW_SKIP=1.
 # shellcheck source=/dev/null
-source "$ROOT/tests/e2e/skip.sh"
+source "$ROOT/tests/e2e/lib.sh"
 require_docker
 for tool in jq curl; do
     command -v "$tool" >/dev/null || {
@@ -33,43 +33,15 @@ done
 OWNER_EMAIL=owner@example.com
 OWNER_PASSWORD='Kept-through-an-upgrade-2026!'
 
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/ghost-docker-ghost-update-e2e.XXXXXXXX")
-WORK=$(CDPATH='' cd -- "$WORK" && pwd -P)
+work_dir ghost-update
 S=$WORK/site
-CURRENT=setup
-OUT=""
-RC=0
 
-cleanup() {
-    local rc=$?
-    set +e
+teardown() {
     [[ -f $S/.env ]] && docker compose --project-directory "$S" -f "$S/compose.yml" \
         down --volumes --remove-orphans --timeout 5 >/dev/null 2>&1
     docker run --rm --user 0 --entrypoint rm -v "$WORK:/work" "$MANAGER" -rf /work/site >/dev/null 2>&1
     docker rmi "$MANAGER" >/dev/null 2>&1
-    case $WORK in */ghost-docker-ghost-update-e2e.*) rm -rf -- "$WORK" ;; esac
-    exit "$rc"
 }
-trap cleanup EXIT
-
-step() {
-    CURRENT=$1
-    printf '\n== %s\n' "$1"
-}
-ok() { printf '   ok    %s\n' "$1"; }
-fail() {
-    printf '\nFAILED in "%s": %s\n' "$CURRENT" "$1" >&2
-    [[ -z ${2:-} ]] || printf -- '--- output ---\n%s\n--------------\n' "$2" >&2
-    exit 1
-}
-
-run() {
-    set +e
-    OUT=$("$@" 2>&1 </dev/null)
-    RC=$?
-    set -e
-}
-expect_status() { [[ $RC -eq $1 ]] || fail "exited $RC, expected $1" "$OUT"; }
 expect_output() { grep -qE -- "$1" <<<"$OUT" || fail "the output does not match: $1" "$OUT"; }
 
 compose_in() { docker compose --project-directory "$S" -f "$S/compose.yml" "$@"; }

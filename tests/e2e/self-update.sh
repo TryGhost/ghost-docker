@@ -31,7 +31,7 @@ R4=v0.0.1-beta.4
 
 # What this host cannot run fails the run, unless GD_E2E_ALLOW_SKIP=1.
 # shellcheck source=/dev/null
-source "$ROOT/tests/e2e/skip.sh"
+source "$ROOT/tests/e2e/lib.sh"
 require_docker
 for tool in jq curl; do
     command -v "$tool" >/dev/null || {
@@ -45,17 +45,12 @@ OWNER_PASSWORD='Kept-through-an-update-2026!'
 SETTING_KEY=updateE2e__marker
 SETTING='kept through the update'
 
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/ghost-docker-update-e2e.XXXXXXXX")
-WORK=$(CDPATH='' cd -- "$WORK" && pwd -P)
-CURRENT=setup
-OUT=""
-RC=0
+work_dir update
 SITES=()
 WRITER=""
 
-cleanup() {
-    local rc=$? site
-    set +e
+teardown() {
+    local site
     [[ -z $WRITER ]] || kill "$WRITER" 2>/dev/null
     for site in ${SITES[@]+"${SITES[@]}"}; do
         [[ -f $site/.env ]] && docker compose --project-directory "$site" -f "$site/compose.yml" \
@@ -63,30 +58,7 @@ cleanup() {
     done
     docker run --rm --user 0 --entrypoint rm -v "$WORK:/work" "$REGISTRY:$R1" -rf /work/sites >/dev/null 2>&1
     docker rmi "$REGISTRY:$R1" "$REGISTRY:$R2" "$REGISTRY:$R3" "$REGISTRY:$R4" >/dev/null 2>&1
-    case $WORK in */ghost-docker-update-e2e.*) rm -rf -- "$WORK" ;; esac
-    exit "$rc"
 }
-trap cleanup EXIT
-
-step() {
-    CURRENT=$1
-    printf '\n== %s\n' "$1"
-}
-ok() { printf '   ok    %s\n' "$1"; }
-fail() {
-    printf '\nFAILED in "%s": %s\n' "$CURRENT" "$1" >&2
-    [[ -z ${2:-} ]] || printf -- '--- output ---\n%s\n--------------\n' "$2" >&2
-    exit 1
-}
-
-run() {
-    set +e
-    OUT=$("$@" 2>&1 </dev/null)
-    RC=$?
-    set -e
-}
-expect_status() { [[ $RC -eq $1 ]] || fail "exited $RC, expected $1" "$OUT"; }
-expect_output() { grep -qE -- "$1" <<<"$OUT" || fail "the output does not match: $1" "$OUT"; }
 
 compose_in() {
     local site=$1
