@@ -10,7 +10,7 @@ body:
 
         Its documentation is [docs/install.md on next-docker](https://github.com/TryGhost/ghost-docker/blob/next-docker/docs/install.md).
 
-        The commands below print no passwords or tokens, but they can show your domain and directory paths: read what you paste. Never paste `.env` or `ghost.env`.
+        Before you paste command output or logs, remove passwords, tokens, and any domains or directory paths you do not want to share. Never paste `.env` or `ghost.env`.
   - type: textarea
     id: what-happened
     attributes:
