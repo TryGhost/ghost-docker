@@ -116,11 +116,16 @@ describe('installation metadata', () => {
     });
 
     test('the same document is written as the same bytes', () => {
-        writeMetadata(h.dir, sample(h.dir));
+        const checksums = { 'compose.yml': 'b'.repeat(64), 'caddy/Caddyfile': 'c'.repeat(64) };
+        writeMetadata(h.dir, { ...sample(h.dir), payload: checksums });
         const first = readFileSync(metaPath(h.dir), 'utf8');
-        // The same document with its keys in another order.
+        // The same document with its keys, the payload's included, in another order.
         const { payload, ghost, ...rest } = sample(h.dir);
-        writeMetadata(h.dir, { payload, ghost: { ...ghost }, ...rest });
+        writeMetadata(h.dir, {
+            payload: { 'caddy/Caddyfile': checksums['caddy/Caddyfile'], ...payload },
+            ghost: { ...ghost },
+            ...rest,
+        });
         assert.equal(readFileSync(metaPath(h.dir), 'utf8'), first);
     });
 

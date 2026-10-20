@@ -143,11 +143,14 @@ export function readMetadata(dir: string): MetadataRead {
 
 /**
  * Validated before it is written, so a bad document never replaces a good
- * one. The parse also orders the keys as the schema does, so two writes of
- * the same document are the same bytes.
+ * one. Two writes of the same document are the same bytes: the parse orders
+ * the objects' keys as the schema does, and `payload`, a record, is sorted.
  */
 export function writeMetadata(dir: string, metadata: Metadata): void {
     const valid = metadataSchema.parse(metadata);
+    valid.payload = Object.fromEntries(
+        Object.entries(valid.payload).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+    );
     atomicWrite(metaPath(dir), `${JSON.stringify(valid, null, 2)}\n`, PRIVATE);
 }
 
