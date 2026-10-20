@@ -15,7 +15,7 @@ import { EXIT } from '../errors.ts';
 import { failed, printChecks, type Check } from '../report.ts';
 import { readSettings } from '../site.ts';
 import type { Io } from '../io.ts';
-import { atLeast, managerVersion, MINIMUM } from '../versions.ts';
+import { atLeast, LOOPBACK_ISOLATED, managerVersion, MINIMUM } from '../versions.ts';
 
 export type { Check };
 
@@ -138,17 +138,33 @@ function dockerDaemon({ daemon }: Facts): Check | null {
     };
 }
 
-function dockerEngine({ daemon }: Facts): Check | null {
+function dockerEngine({ daemon, context }: Facts): Check | null {
     if (!daemon.ok) {
         return null;
     }
+    const label = 'docker engine';
     const version = daemon.info.serverVersion;
-    const recent = atLeast(version, MINIMUM.dockerEngine);
-    return {
-        status: recent ? 'ok' : 'error',
-        label: 'docker engine',
-        detail: recent ? version : `${version} is older than the required ${MINIMUM.dockerEngine}`,
-    };
+    if (!atLeast(version, MINIMUM.dockerEngine)) {
+        return {
+            status: 'error',
+            label,
+            detail: `${version} is older than the required ${MINIMUM.dockerEngine}`,
+        };
+    }
+    // Docker Desktop's VM and rootless port forwarding do not publish through
+    // the host's own packet filter, which is where the older engines leak.
+    const exposed = context.hostOs === 'Linux' && !daemon.info.rootless;
+    if (exposed && !atLeast(version, LOOPBACK_ISOLATED)) {
+        return {
+            status: 'warn',
+            label,
+            detail:
+                `${version}: before ${LOOPBACK_ISOLATED}, machines on this host's local network can reach ports ` +
+                "published on 127.0.0.1, Ghost's among them, bypassing Caddy. Upgrade Docker Engine to " +
+                `${LOOPBACK_ISOLATED} or later`,
+        };
+    }
+    return { status: 'ok', label, detail: version };
 }
 
 function platform({ daemon, context }: Facts): Check | null {

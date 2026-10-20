@@ -532,6 +532,14 @@ this way; production is supported on Linux only. Wherever the host's ports
 cannot be checked after starting, the installer says they were not verified,
 and opening the URL is the check.
 
+Ghost, and Mailpit on a local site, are published on `127.0.0.1` only. On a
+Linux host, Docker Engine before 28.0.0 lets other machines on the same local
+network reach ports published on `127.0.0.1` ([Docker's packet filtering
+documentation](https://docs.docker.com/engine/network/packet-filtering-firewalls/)),
+so there Ghost can be reached directly, around Caddy. `doctor` and `check` warn
+about such an engine; upgrade Docker Engine to 28 or later. Docker Desktop and
+OrbStack, and rootless Docker, publish ports another way and are not affected.
+
 To run Ghost behind your own nginx or Apache instead, point it at
 `127.0.0.1:${GHOST_PORT}` and edit `compose.yml` to drop the `caddy` service or
 move it off 80/443. That is an unsupported manual customization, and stack

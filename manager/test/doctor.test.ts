@@ -84,10 +84,33 @@ describe('the daemon', () => {
     });
 
     test('versions are compared numerically, and suffixes ignored', async () => {
-        for (const version of ['25.0.0', '100.0.0', '28.5.2-ce', '27.10.1+desktop.1']) {
+        for (const version of ['28.0.0', '100.0.0', '28.5.2-ce', '29.10.1+desktop.1']) {
             h.daemon.info = { ...HEALTHY, ServerVersion: version };
             assert.equal((await check('docker engine'))!.status, 'ok', version);
         }
+    });
+
+    test('an engine before 28 on a Linux host is a warning: its loopback ports reach the local network', async () => {
+        for (const version of ['25.0.0', '27.10.1']) {
+            h.daemon.info = { ...HEALTHY, ServerVersion: version };
+            const engine = await check('docker engine');
+            assert.equal(engine!.status, 'warn', version);
+            assert.match(
+                engine!.detail,
+                /before 28\.0\.0, machines on this host's local network can reach/,
+            );
+        }
+    });
+
+    test('an engine before 28 is not a warning where the host packet filter does not publish', async () => {
+        h.daemon.info = { ...HEALTHY, ServerVersion: '27.5.1' };
+        h.env.GD_HOST_OS = 'Darwin';
+        assert.equal((await check('docker engine'))!.status, 'ok');
+
+        h.env.GD_HOST_OS = 'Linux';
+        h.env.GD_ROOTLESS = '1';
+        h.daemon.info = { ...HEALTHY, ServerVersion: '27.5.1', SecurityOptions: ['name=rootless'] };
+        assert.equal((await check('docker engine'))!.status, 'ok');
     });
 
     test("the image's own Compose is reported; its minimum is the image's to hold", async () => {
