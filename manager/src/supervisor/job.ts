@@ -3,7 +3,7 @@
 // update.ts). Its outcome becomes the job's final state; the words the CLI
 // prints for it become the job's diagnostics.
 import { relative } from 'node:path';
-import { describeError } from '../errors.ts';
+import { CliError, describeError } from '../errors.ts';
 import { resolvePinned, type ResolvedGhost } from '../ghost.ts';
 import {
     directionTo,
@@ -26,11 +26,19 @@ const refused = (code: string, message: string): JobOutcome => ({
     diagnostics: [diagnostic(code, 'error', `${message} Nothing has been changed.`)],
 });
 
-/** What the update's own checks refused, under their code; anything else, as it was thrown. */
-const refusedBy = (error: unknown): JobOutcome =>
-    error instanceof Refused
-        ? { state: 'refused', diagnostics: [diagnostic(error.code, 'error', error.message)] }
-        : refused('refused', describeError(error));
+/**
+ * What the update's own checks refused, under their code, in update's words;
+ * those that say nothing has been changed are not told it twice.
+ */
+function refusedBy(error: unknown): JobOutcome {
+    if (!(error instanceof CliError)) {
+        return refused('refused', describeError(error));
+    }
+    const code = error instanceof Refused ? error.code : 'refused';
+    return error.message.endsWith('Nothing has been changed.')
+        ? { state: 'refused', diagnostics: [diagnostic(code, 'error', error.message)] }
+        : refused(code, error.message);
+}
 
 export const ghostJob =
     (io: Io, dir: string): Executor =>
