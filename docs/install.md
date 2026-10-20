@@ -313,6 +313,12 @@ Refused, each with a message that says so:
 - A `portable` bundle of a production site. The exporter makes portable
   bundles of local SQLite sites only; a site that must move through Ghost
   Admin is installed new, then its content and members are imported there.
+- A bundle the site directory's filesystem has no room for, before anything
+  is unpacked. The import needs the bundle's unpacked size, measured from its
+  own entries, which stays staged until the import is verified; for a
+  database bundle, four times `database.sql` for MySQL's tables, indexes and
+  binary log; and 256 MB for a new MySQL. The message names what is needed and
+  what is free.
 
 ### Importing a production site
 

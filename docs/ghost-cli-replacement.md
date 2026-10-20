@@ -28,9 +28,7 @@ outside the planned scope.
 Repo: ghost-docker. `install --import` takes production bundles and the cutover is
 documented in [install.md](install.md#moving-a-production-site). Remaining:
 
-Bound expansion and check space for extracted content and the database restore;
-compressed archive size times 1.5 is insufficient. Do not guess ownership as uid
-1000 under rootless/user namespaces.
+Do not guess ownership as uid 1000 under rootless/user namespaces.
 
 Acceptance, on Linux with rootful Docker Engine and a real Ghost-CLI production
 install (MySQL, systemd, nginx): same-server and cross-host moves following the
