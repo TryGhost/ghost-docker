@@ -106,8 +106,11 @@ image.
 
 - **When it runs:** on start, then every 6 hours, and after each job.
 - **When a check fails** (registry unreachable or rate-limited): the last result
-  is kept, a warning diagnostic records the failed check, and `oneClick` is
-  emptied once the last success is more than 24 hours old.
+  is kept, and a warning diagnostic records the failed check.
+- **Expiry:** a `oneClick` entry stands for 24 hours after the check that found
+  it. The status and request acceptance both apply this when they answer, so
+  an entry read back on start, before the first check finishes, expires on
+  time too.
 - **Stack releases:** found the way `self-update --check` finds them.
 - **Nightly sites:** discovery pulls `ghost/nightly:latest` instead, and orders it
   by when it was built, since two builds can report the same version. Only

@@ -15,7 +15,7 @@ import type { Metadata } from '../meta.ts';
 import { UPDATE_DIR } from '../site.ts';
 import { diagnostic } from './diagnostics.ts';
 import type { Discoverer } from './discovery.ts';
-import { DISCOVERY_EVERY_MS } from './discovery.ts';
+import { DISCOVERY_EVERY_MS, freshOffers } from './discovery.ts';
 import {
     createUpgradeRequestSchema,
     DIAGNOSTICS_KEPT,
@@ -255,7 +255,7 @@ export class Supervisor {
             );
         }
         // The job runs the image discovery found for it, and nothing else.
-        const offer = (this.discovery?.oneClick ?? []).find(
+        const offer = freshOffers(this.discovery, this.now()).find(
             (entry) =>
                 entry.component === request.component && entry.toVersion === request.toVersion,
         );
@@ -513,11 +513,13 @@ export class Supervisor {
             availability,
             backupRequired: true,
             currentVersion: this.options.metadata().ghost.version,
-            oneClick: (discovery?.oneClick ?? []).map(({ component, fromVersion, toVersion }) => ({
-                component,
-                fromVersion,
-                toVersion,
-            })),
+            oneClick: freshOffers(discovery, this.now()).map(
+                ({ component, fromVersion, toVersion }) => ({
+                    component,
+                    fromVersion,
+                    toVersion,
+                }),
+            ),
             manual: discovery?.manual ?? [],
             activeJobId: this.activeId,
             pollAfterMs: this.activeId === null ? POLL_IDLE_MS : POLL_ACTIVE_MS,
