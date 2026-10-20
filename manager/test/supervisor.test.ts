@@ -58,8 +58,12 @@ const done: Executor = async ({ stage, backup }) => {
     return { state: 'done', diagnostics: [] };
 };
 
-/** A supervisor serving on the socket, as `supervisor run` starts one. */
-async function serve(): Promise<Supervisor> {
+/**
+ * A supervisor serving on the socket, as `supervisor run` starts one. Without
+ * `rediscover`, it answers from the discovery it read back on start, as it
+ * does until its first check finishes.
+ */
+async function serve({ rediscover = true } = {}): Promise<Supervisor> {
     const supervisor = new Supervisor({
         io,
         dir,
@@ -72,7 +76,9 @@ async function serve(): Promise<Supervisor> {
     const server = supervisorServer(supervisor, io.stderr);
     servers.push(server);
     await listen(server, socket);
-    await supervisor.rediscover();
+    if (rediscover) {
+        await supervisor.rediscover();
+    }
     return supervisor;
 }
 
@@ -264,6 +270,31 @@ describe('refusals', () => {
         assert.equal(await rejected('6.71.0'), 'target-unapproved');
         assert.equal(await rejected('7.0.0; rm -rf /'), 'target-unapproved');
         assert.equal(readLock(dir).state, 'free');
+    });
+
+    test('an offer read back on start expires 24 hours after its check, before discovery runs again', async () => {
+        const offered = (checked: number) =>
+            new Records(dir).writeDiscovery({
+                oneClick: [
+                    { component: 'ghost', fromVersion: FROM, toVersion: TO, target: TARGET },
+                ],
+                manual: [],
+                succeededAt: { ghost: new Date(Date.now() - checked).toISOString() },
+                diagnostics: [],
+            });
+        const DAY = 24 * 60 * 60_000;
+        new Records(dir).ensure();
+        offered(10 * DAY);
+        await serve({ rediscover: false });
+        assert.deepEqual((await status()).oneClick, []);
+        assert.equal(await rejected(), 'target-unapproved');
+        assert.equal(readLock(dir).state, 'free');
+
+        await stop(servers.pop());
+        offered(DAY - 60_000);
+        await serve({ rediscover: false });
+        assert.equal((await status()).oneClick.length, 1);
+        assert.equal((await ask()).status, 202);
     });
 
     test('a request that fails reading the metadata leaves no lock behind', async () => {

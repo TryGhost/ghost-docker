@@ -27,6 +27,23 @@ export const DISCOVERY_EVERY_MS = 6 * 60 * 60_000;
 /** How long a component's last result stands in for a failed check. */
 export const DISCOVERY_KEPT_MS = 24 * 60 * 60_000;
 
+/**
+ * The one-click offers that still stand at `now`: those of a component whose
+ * last successful check is within DISCOVERY_KEPT_MS. Both the status and a
+ * request's acceptance go through this, so an offer kept from an old
+ * discovery, as one read back on start is, expires on time whether or not
+ * discovery has run since.
+ */
+export function freshOffers(discovery: Discovery | undefined, now: Date): Offer[] {
+    if (discovery === undefined) {
+        return [];
+    }
+    return discovery.oneClick.filter((entry) => {
+        const checked = discovery.succeededAt[entry.component];
+        return checked !== undefined && now.getTime() - Date.parse(checked) < DISCOVERY_KEPT_MS;
+    });
+}
+
 interface Found {
     readonly oneClick: Offer[];
     readonly manual: ManualUpdate[];
@@ -212,12 +229,9 @@ export const discover: Discoverer = async (input) => {
                 continue;
             }
             succeededAt[component] = last;
-            const fresh = now.getTime() - Date.parse(last) < DISCOVERY_KEPT_MS;
-            if (fresh) {
-                oneClick.push(
-                    ...previous.oneClick.filter((entry) => entry.component === component),
-                );
-            }
+            oneClick.push(
+                ...freshOffers(previous, now).filter((entry) => entry.component === component),
+            );
             manual.push(...previous.manual.filter((entry) => entry.component === component));
         }
     }
