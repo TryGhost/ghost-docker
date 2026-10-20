@@ -20,7 +20,6 @@ import { findingErrors, validate } from '../config.ts';
 import { CliError, EXIT, UsageError } from '../errors.ts';
 import { atomicWrite } from '../fs.ts';
 import type { Io } from '../io.ts';
-import { acquireLock } from '../lock.ts';
 import { isReleasedMainLayout, migrateReleasedMain } from '../legacy.ts';
 import {
     isoSeconds,
@@ -43,19 +42,14 @@ import { compareReleases, isRelease } from '../release.ts';
 import { resolveSite } from '../resolved.ts';
 import { heading, ok, printChecks } from '../report.ts';
 import * as env from '../env.ts';
-import {
-    COMPOSE_FILE,
-    ENV_FILE,
-    META_FILE,
-    UPDATE_DIR,
-    type SiteFacts,
-    type SiteMode,
-} from '../site.ts';
+import { COMPOSE_FILE, ENV_FILE, META_FILE, type SiteFacts, type SiteMode } from '../site.ts';
 import { runUpdate, type UpdateOutcome } from '../update.ts';
 import { atLeast, MINIMUM } from '../versions.ts';
 import {
     channelOption,
     installedSite,
+    lockPlanned,
+    refuseUnfinished,
     releaseOf,
     releaseOption,
     requestedRelease,
@@ -361,13 +355,7 @@ export const selfUpdateCommand = defineCommand({
             );
         }
         refuseOldGhost(metadata, from);
-        if (existsSync(join(dir, UPDATE_DIR))) {
-            throw new CliError(
-                `${join(dir, UPDATE_DIR)} is left from an update that did not finish, and holds the files it\n` +
-                    '  would have put back. Once the site is as it should be (./ghost-docker check), remove it\n' +
-                    '  and run ./ghost-docker self-update again. Nothing has been changed.',
-            );
-        }
+        refuseUnfinished(dir, 'self-update');
 
         // A project another directory owns, or running images its configuration
         // does not name, which the backup an update takes would refuse.
@@ -376,7 +364,7 @@ export const selfUpdateCommand = defineCommand({
             await io.busy('Resolving the Compose project', () => resolveSite(io, dir)),
         );
 
-        const lock = acquireLock(dir, `update to ${describeStack(to)}`);
+        const lock = lockPlanned(dir, `update to ${describeStack(to)}`, metadata, 'self-update');
         try {
             return await apply(update, !flags.noBackup);
         } finally {

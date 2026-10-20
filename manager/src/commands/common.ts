@@ -1,12 +1,23 @@
 // What every command about an installed site starts with.
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import { refused } from '../command.ts';
 import { loadContext, type Context } from '../context.ts';
 import { CliError } from '../errors.ts';
 import type { Io } from '../io.ts';
-import type { Metadata } from '../meta.ts';
+import { acquireLock, type Lock } from '../lock.ts';
+import { readMetadata, type Metadata } from '../meta.ts';
 import { channelOf, CHANNELS, isRelease, type Channel } from '../release.ts';
-import { ENV_FILE, readSettings, siteFacts, type SiteFacts } from '../site.ts';
+import {
+    ENV_FILE,
+    META_FILE,
+    readSettings,
+    siteFacts,
+    UPDATE_DIR,
+    type SiteFacts,
+} from '../site.ts';
 import { managerVersion } from '../versions.ts';
 
 export interface InstalledSite {
@@ -53,6 +64,50 @@ export function installedSite(io: Io, { moved = false } = {}): InstalledSite {
         );
     }
     return { context, site };
+}
+
+// --- Planned, then locked ----------------------------------------------------
+
+/** The snapshot an update that did not finish leaves, refused before anything is written over it. */
+export function refuseUnfinished(dir: string, again: string): void {
+    if (existsSync(join(dir, UPDATE_DIR))) {
+        throw new CliError(
+            `${join(dir, UPDATE_DIR)} is left from an update that did not finish, and holds the files it\n` +
+                '  would have put back. Once the site is as it should be (./ghost-docker check), remove it\n' +
+                `  and run ./ghost-docker ${again} again. Nothing has been changed.`,
+        );
+    }
+}
+
+/**
+ * The site lock, for a change planned from `planned` before it was taken:
+ * an update plans, and pulls, while the site keeps running. Another operation
+ * may have changed the site meanwhile, and then the plan describes a site that
+ * is gone, such as a Ghost older than the one that has since migrated the
+ * database. So the site is read again under the lock, and refused unless it
+ * is still the one planned from.
+ */
+export function lockPlanned(
+    dir: string,
+    operation: string,
+    planned: Metadata,
+    again: string,
+): Lock {
+    const lock = acquireLock(dir, operation);
+    try {
+        const read = readMetadata(dir);
+        if (read.state !== 'present' || !isDeepStrictEqual(read.metadata, planned)) {
+            throw new CliError(
+                `${META_FILE} changed while this update was being prepared: another operation changed the site.\n` +
+                    `  Run ./ghost-docker ${again} again, to plan from the site as it is now. Nothing has been changed.`,
+            );
+        }
+        refuseUnfinished(dir, again);
+    } catch (error) {
+        lock.release();
+        throw error;
+    }
+    return lock;
 }
 
 // --- Which release ------------------------------------------------------------

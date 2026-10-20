@@ -224,6 +224,53 @@ describe('refusals that change nothing', () => {
         lock.release();
     });
 
+    test('a site another update changed while this one pulled: never moved back to the older Ghost', async () => {
+        // Another update finishes on 6.69.0 while this one pulls 6.68.0.
+        const newest = {
+            ...metadata().ghost,
+            version: '6.69.0',
+            digest: `sha256:${'6'.repeat(64)}`,
+        };
+        const api = h.daemon.api!;
+        h.daemon.api = (request) => {
+            if (request.method === 'POST' && request.path === '/images/create') {
+                writeFileSync(
+                    join(h.dir, '.ghost-docker.json'),
+                    JSON.stringify({ ...metadata(), ghost: newest }),
+                );
+            }
+            return api(request);
+        };
+        ghost['6.68.0-next-alpine'] = '6.68.0';
+        digests['6.68.0-next-alpine'] = NEWER;
+        const result = await update('6.68.0');
+        assert.equal(result.code, 1);
+        assert.match(
+            result.stderr,
+            /\.ghost-docker\.json changed while this update was being prepared/,
+        );
+        assert.match(result.stderr, /Run \.\/ghost-docker update again/);
+        assert.deepEqual(metadata().ghost, newest);
+        assert.equal(started(), 0);
+        assert.deepEqual(backups(), []);
+        assert.ok(!existsSync(join(h.dir, '.ghost-docker.lock')));
+    });
+
+    test('an unfinished update left while this one pulled is refused under the lock', async () => {
+        const api = h.daemon.api!;
+        h.daemon.api = (request) => {
+            if (request.method === 'POST' && request.path === '/images/create') {
+                mkdirSync(join(h.dir, '.ghost-docker-update'), { recursive: true });
+            }
+            return api(request);
+        };
+        const result = await update();
+        assert.equal(result.code, 1);
+        assert.match(result.stderr, /left from an update that did not finish/);
+        assert.equal(metadata().ghost.version, '6.67.0');
+        assert.ok(!existsSync(join(h.dir, '.ghost-docker.lock')));
+    });
+
     test('an unfinished update’s snapshot is never written over', async () => {
         mkdirSync(join(h.dir, '.ghost-docker-update'));
         const result = await update();
