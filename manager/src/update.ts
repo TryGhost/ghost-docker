@@ -151,33 +151,59 @@ export async function runUpdate(plan: UpdatePlan): Promise<UpdateOutcome> {
         await verifySite(io, dir);
         plan.record?.();
     } catch (error) {
-        return recover(plan, snapshot, pause, backup, servicesChanged, error);
+        io.stderr(`\n${describeError(error)}\n`);
+        io.stderr(`\n${plan.failing}\n`);
+        plan.onStage?.('restoring');
+        return recover({
+            io,
+            dir,
+            snapshot,
+            pause,
+            backup,
+            servicesChanged,
+            error,
+            stopping: `Stopping ${plan.to}`,
+            afterStartup: plan.afterStartup,
+            except,
+        });
     }
     snapshot.remove();
     return { state: 'done', backup };
 }
 
-async function recover(
-    plan: UpdatePlan,
-    snapshot: Snapshot,
-    pause: WriterPause,
-    backup: string | null,
-    servicesChanged: boolean,
-    error: unknown,
-): Promise<UpdateOutcome> {
-    const { io, site } = plan;
-    const dir = site.dir;
-    io.stderr(`\n${describeError(error)}\n`);
-    io.stderr(`\n${plan.failing}\n`);
-    plan.onStage?.('restoring');
+/** Where a failed change to a running site stands, for recover(). */
+export interface Failure {
+    readonly io: Io;
+    readonly dir: string;
+    readonly snapshot: Snapshot;
+    readonly pause: WriterPause;
+    readonly backup: string | null;
+    /** Startup was attempted. */
+    readonly servicesChanged: boolean;
+    readonly error: unknown;
+    /** The spinner's words for stopping the services, as in "Stopping Ghost 6.68.0". */
+    readonly stopping: string;
+    readonly afterStartup: UpdatePlan['afterStartup'];
+    readonly except?: readonly string[];
+}
+
+/**
+ * What is safe after a failure, for every change to a running site: updates
+ * and the released-main migration alike. Prints nothing of its own beyond the
+ * steps it takes; the caller says what the outcome means.
+ */
+export async function recover(
+    failure: Failure,
+): Promise<Exclude<UpdateOutcome, { state: 'done' }>> {
+    const { io, dir, snapshot, pause, backup, servicesChanged, error } = failure;
     const problems: string[] = [];
     if (servicesChanged) {
-        const stopped = await stopServices(io, dir, `Stopping ${plan.to}`, plan.except ?? []);
+        const stopped = await stopServices(io, dir, failure.stopping, failure.except);
         if (stopped.error !== null) {
             problems.push(`the services could not be stopped: ${stopped.error}`);
         }
     }
-    const putBack = !servicesChanged || plan.afterStartup === 'restore';
+    const putBack = !servicesChanged || failure.afterStartup === 'restore';
     let filesBack = false;
     if (problems.length === 0 && putBack) {
         try {
