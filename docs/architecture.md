@@ -76,8 +76,10 @@ Ghost environment.
 `src/resolved.ts` reads effective images, mounts, networks and project identity
 from Compose, including overrides; container identity comes from the daemon.
 Use this resolved view when checking or recording what a site will run, rather
-than inferring it from `.env`. `composeFileList` in `src/compose.ts` owns file
-ordering, and `composeOverrides` derives additional overrides from that list.
+than inferring it from `.env`. `siteComposeFiles` in `src/compose.ts` owns
+file ordering: `.env`'s `COMPOSE_FILE`, or Compose's own default without it,
+so the manager, the upgrade supervisor and plain `docker compose` agree.
+`composeOverrides` derives additional overrides from that list.
 
 `src/project.ts` chooses a stable project name at install. Local names include
 a random adjective/animal pair unused on the daemon; production names derive
@@ -175,13 +177,16 @@ Install/import operate on a fresh destination and do not take this lock.
 
 ### File inventory and backups
 
-`siteFiles` in `src/meta.ts` combines operator paths from `src/site.ts`, additional
-Compose overrides and an image installation's payload. Backup copies that
+`siteFiles` in `src/meta.ts` combines operator paths from `src/site.ts`, the
+additional Compose overrides `COMPOSE_FILE` names and an image installation's
+payload. Backup copies that
 inventory; restore sets it aside together with the backup's recorded files.
 Update snapshots cover operator files and every path that update can replace,
 remove or create. An override is identified by its full path: a nested
 `overrides/compose.override.yml` is an additional file, not the root override.
-Additional overrides outside the site are refused for backup.
+Additional overrides outside the site are refused for backup. Restore runs the
+backup's own `COMPOSE_FILE`, and refuses one that disagrees with the overrides
+its manifest records.
 
 `src/backup.ts` refuses moved/nested data mounts it cannot capture and image drift
 before starting anything for a dump. Stopped long-running containers count: their

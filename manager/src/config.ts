@@ -1,8 +1,9 @@
 // Validate the configuration split (docs/configuration.md). Derive operator keys
 // and container-owned values from Compose instead of maintaining parallel lists.
 // Compose interpolates inactive services too; optional requirements are mode-specific.
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { composeConfig, composeVariables } from './compose.ts';
+import { composeConfig, composeVariables, splitComposeFile } from './compose.ts';
 import { inspectImage } from './docker/client.ts';
 import * as env from './env.ts';
 import { CliError } from './errors.ts';
@@ -10,6 +11,7 @@ import { modeOf, readIfExists } from './fs.ts';
 import type { Io } from './io.ts';
 import type { Check } from './report.ts';
 import {
+    COMPOSE_OVERRIDE_FILE,
     ENV_EXAMPLE_FILE,
     ENV_FILE,
     GHOST_ENV_FILE,
@@ -207,6 +209,24 @@ export async function validateEnv(io: Io, dir: string): Promise<Finding[]> {
                 ),
             );
         }
+    }
+
+    // Compose merges compose.override.yml only when COMPOSE_FILE is unset, or
+    // names it: one an operator wrote and the list leaves out is not run.
+    const composeFile = values.COMPOSE_FILE ?? '';
+    if (
+        composeFile !== '' &&
+        existsSync(join(dir, COMPOSE_OVERRIDE_FILE)) &&
+        !splitComposeFile(dir, composeFile, values.COMPOSE_PATH_SEPARATOR || ':').includes(
+            join(dir, COMPOSE_OVERRIDE_FILE),
+        )
+    ) {
+        findings.push(
+            warning(
+                file,
+                `COMPOSE_FILE does not name ${COMPOSE_OVERRIDE_FILE}, so the site does not run it; add it to COMPOSE_FILE, or remove the file`,
+            ),
+        );
     }
 
     findings.push(...interpolated(file, text), ...privacy(file, path));

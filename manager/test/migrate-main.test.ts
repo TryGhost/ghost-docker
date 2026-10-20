@@ -460,6 +460,37 @@ describe('migrating the released main layout', () => {
         assert.equal(envOf('ghost.env').SMTP_HOST, undefined);
     });
 
+    test("main's COMPOSE_FILE is kept, as it was spelled, for every later command", async () => {
+        writeFileSync(join(h.dir, 'compose.ipv6.yml'), 'services: {}\n');
+        writeFileSync(
+            join(h.dir, '.env'),
+            `${OLD_ENV}COMPOSE_PATH_SEPARATOR=","\nCOMPOSE_FILE="compose.yml,compose.ipv6.yml"\n`,
+        );
+        const result = await migrate();
+        assert.equal(result.code, 0, result.stderr);
+        assert.equal(envOf('.env').COMPOSE_FILE, 'compose.yml,compose.ipv6.yml');
+        assert.equal(envOf('.env').COMPOSE_PATH_SEPARATOR, ',');
+        const up = h.calls.findLast((args) => args[0] === 'docker-compose' && args.includes('up'))!;
+        assert.deepEqual(
+            up.flatMap((arg, index) => (up[index - 1] === '-f' ? [arg] : [])),
+            [join(h.dir, 'compose.yml'), join(h.dir, 'compose.ipv6.yml')],
+        );
+    });
+
+    test('a COMPOSE_FILE that does not start with compose.yml is refused before anything changes', async () => {
+        writeFileSync(join(h.dir, 'compose.ipv6.yml'), 'services: {}\n');
+        writeFileSync(join(h.dir, '.env'), `${OLD_ENV}COMPOSE_FILE="compose.ipv6.yml"\n`);
+        const before = files();
+        const result = await migrate();
+        assert.equal(result.code, 1);
+        assert.match(
+            result.stderr,
+            /\.env's COMPOSE_FILE is compose\.ipv6\.yml: it must start with compose\.yml/,
+        );
+        assert.match(result.stderr, /Nothing has been changed/);
+        assert.deepEqual(files(), before);
+    });
+
     test('a site that is not running is refused: its Ghost version is unknown', async () => {
         h.daemon.containers = [];
         const result = await migrate();

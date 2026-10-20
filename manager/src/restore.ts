@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { backupSiteFiles, readBackup, refuseMovedData } from './backup.ts';
 import { SITE_FILES_DIR, type BackupManifest } from './backup/manifest.ts';
-import { composeFileList, composeOverrides, upAndWait } from './compose.ts';
+import { splitComposeFile, upAndWait } from './compose.ts';
 import type { Context } from './context.ts';
 import {
     DaemonError,
@@ -71,7 +71,6 @@ export async function restoreSite({ io, context, root, yes }: RestoreInput): Pro
     );
 
     const target = classify(context, dir, manifest);
-    refuseOtherOverrides(io, dir, manifest);
     if (target === 'fresh') {
         await refuseTaken(io, root, manifest);
     } else {
@@ -216,38 +215,56 @@ function classify(context: Context, dir: string, manifest: BackupManifest): Targ
 }
 
 /**
- * The site runs with the overrides it was backed up with, which the backup
- * holds; GD_COMPOSE_OVERRIDES must name the same ones, or Compose would run
- * the restored site as another.
+ * The Compose files the backup's site ran with, in order, relative to the
+ * site: what its `.env`'s COMPOSE_FILE names, or compose.yml and its
+ * compose.override.yml when the backup holds one. A list that disagrees with
+ * the overrides the manifest records is refused.
  */
-function refuseOtherOverrides(io: Io, dir: string, manifest: BackupManifest): void {
-    const now = composeOverrides(dir, composeFileList(dir, io.env.GD_COMPOSE_OVERRIDES)).map(
-        (file) => insideSite(dir, file) ?? file,
-    );
-    const recorded = manifest.site.overrides;
-    if (now.join(',') !== recorded.join(',')) {
+function backupComposeFiles(text: string, manifest: BackupManifest): string[] {
+    const values = env.toRecord(text);
+    const recorded = values.COMPOSE_FILE ?? '';
+    // Resolved against the directory the backup was taken in, and named
+    // relative to it, as the site's own files are.
+    const root = manifest.site.dir;
+    const files =
+        recorded === ''
+            ? [
+                  COMPOSE_FILE,
+                  ...(`${SITE_FILES_DIR}/${COMPOSE_OVERRIDE_FILE}` in manifest.files
+                      ? [COMPOSE_OVERRIDE_FILE]
+                      : []),
+              ]
+            : splitComposeFile(root, recorded, values.COMPOSE_PATH_SEPARATOR || ':').map(
+                  (file) => insideSite(root, file) ?? file,
+              );
+    const overrides = files.slice(1).filter((file) => file !== COMPOSE_OVERRIDE_FILE);
+    if (files[0] !== COMPOSE_FILE || overrides.join(',') !== manifest.site.overrides.join(',')) {
         throw new CliError(
-            `the backup was taken with ${recorded.length > 0 ? `GD_COMPOSE_OVERRIDES=${recorded.join(',')}` : 'no GD_COMPOSE_OVERRIDES'}, and this restore runs with ${now.length > 0 ? `GD_COMPOSE_OVERRIDES=${now.join(',')}` : 'none'}.\n` +
-                '  Run it with the same overrides the site ran with. Nothing has been changed.',
+            `the backup's .env has ${recorded === '' ? 'no COMPOSE_FILE' : `COMPOSE_FILE=${recorded}`}, and its manifest records ${manifest.site.overrides.length > 0 ? `the overrides ${manifest.site.overrides.join(', ')}` : 'no overrides'}:\n` +
+                '  the backup does not agree with itself. Nothing has been changed.',
         );
     }
+    return files;
 }
 
 /**
  * What Compose runs the restored site with, other than its directory: the
  * backup's files where the backup holds them (in a checkout, the checkout's
  * own compose.yml, which a checkout's backup does not hold), in the order
- * Compose merges them once they are written, with the overrides the
- * manifest records. Validation reads them there; the restore writes them.
+ * Compose merges them once they are written (backupComposeFiles).
+ * Validation reads them there; the restore writes them.
  */
-function restoredFiles(root: string, dir: string, manifest: BackupManifest): string[] {
-    const held = (file: string) => join(root, SITE_FILES_DIR, file);
-    const holds = (file: string) => `${SITE_FILES_DIR}/${file}` in manifest.files;
-    return [
-        holds(COMPOSE_FILE) ? held(COMPOSE_FILE) : join(dir, COMPOSE_FILE),
-        ...(holds(COMPOSE_OVERRIDE_FILE) ? [held(COMPOSE_OVERRIDE_FILE)] : []),
-        ...manifest.site.overrides.map(held),
-    ];
+function restoredFiles(
+    root: string,
+    dir: string,
+    text: string,
+    manifest: BackupManifest,
+): string[] {
+    return backupComposeFiles(text, manifest).map((file) =>
+        `${SITE_FILES_DIR}/${file}` in manifest.files
+            ? join(root, SITE_FILES_DIR, file)
+            : join(dir, file),
+    );
 }
 
 /**
@@ -279,9 +296,22 @@ function restoredImages(manifest: BackupManifest): Record<string, string> {
     );
 }
 
-/** The restored site's `.env`: the backup's, with this directory as its own, and Ghost pinned (restoredPin). */
+/**
+ * The restored site's `.env`: the backup's, with this directory as its own,
+ * Ghost pinned (restoredPin), and its Compose files (backupComposeFiles) in
+ * COMPOSE_FILE, relative to it: the backup's may name them where it was taken.
+ */
 function restoredEnv(text: string, dir: string, manifest: BackupManifest): string {
     let restored = env.get(text, 'PROJECT_DIR') === dir ? text : env.set(text, 'PROJECT_DIR', dir);
+    const recorded = env.get(text, 'COMPOSE_FILE') ?? '';
+    if (recorded !== '') {
+        const files = backupComposeFiles(text, manifest).join(
+            env.get(text, 'COMPOSE_PATH_SEPARATOR') || ':',
+        );
+        if (files !== recorded) {
+            restored = env.set(restored, 'COMPOSE_FILE', files);
+        }
+    }
     const pin = restoredPin(manifest);
     if (pin !== null) {
         restored = env.set(restored, 'GHOST_IMAGE_REF', pin);
@@ -314,7 +344,7 @@ async function refuseOtherConfiguration(
     try {
         atomicWrite(envFile, restored);
         resolved = await io.busy("Resolving the backup's configuration", () =>
-            resolveConfig(io, dir, { files: restoredFiles(root, dir, manifest), envFile }),
+            resolveConfig(io, dir, { files: restoredFiles(root, dir, text, manifest), envFile }),
         );
     } catch (error) {
         throw new CliError(

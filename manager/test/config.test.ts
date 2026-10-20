@@ -323,32 +323,86 @@ describe('get, set and unset', () => {
     });
 });
 
-test('GD_COMPOSE_OVERRIDES adds -f files after compose.yml, relative to the site', async () => {
-    // ghost.env is what makes validation ask Compose.
-    makeSite(h, LOCAL, { mail__transport: 'SMTP' });
-    h.env.GD_COMPOSE_OVERRIDES = 'compose.ipv6.yml,/abs/extra.yml';
-    await h.run('config', 'validate');
-    const call = h.calls.find((args) => args.includes('config') && args.includes('json'))!;
-    const files = call.flatMap((arg, index) => (call[index - 1] === '-f' ? [arg] : []));
-    assert.deepEqual(files, [
-        join(h.dir, 'compose.yml'),
-        join(h.dir, 'compose.ipv6.yml'),
-        '/abs/extra.yml',
-    ]);
-});
+describe('the Compose files', () => {
+    /** The -f files of the `docker compose config` that validation runs. */
+    const validatedWith = async () => {
+        const result = await h.run('config', 'validate');
+        const call = h.calls.find((args) => args.includes('config') && args.includes('json'));
+        return {
+            result,
+            files: call?.flatMap((arg, index) => (call[index - 1] === '-f' ? [arg] : [])),
+        };
+    };
+    test(".env's COMPOSE_FILE is the -f list, relative to the site", async () => {
+        // ghost.env is what makes validation ask Compose.
+        makeSite(
+            h,
+            { ...LOCAL, COMPOSE_FILE: 'compose.yml:compose.ipv6.yml:/abs/extra.yml' },
+            { mail__transport: 'SMTP' },
+        );
+        assert.deepEqual((await validatedWith()).files, [
+            join(h.dir, 'compose.yml'),
+            join(h.dir, 'compose.ipv6.yml'),
+            '/abs/extra.yml',
+        ]);
+    });
 
-test('the site’s compose.override.yml is used when it exists, before GD_COMPOSE_OVERRIDES, and once', async () => {
-    makeSite(h, LOCAL, { mail__transport: 'SMTP' });
-    writeFileSync(join(h.dir, 'compose.override.yml'), 'services: {}\n');
-    h.env.GD_COMPOSE_OVERRIDES = 'compose.override.yml,compose.ipv6.yml';
-    await h.run('config', 'validate');
-    const call = h.calls.find((args) => args.includes('config') && args.includes('json'))!;
-    const files = call.flatMap((arg, index) => (call[index - 1] === '-f' ? [arg] : []));
-    assert.deepEqual(files, [
-        join(h.dir, 'compose.yml'),
-        join(h.dir, 'compose.override.yml'),
-        join(h.dir, 'compose.ipv6.yml'),
-    ]);
+    test("split on .env's COMPOSE_PATH_SEPARATOR when it sets one", async () => {
+        makeSite(
+            h,
+            { ...LOCAL, COMPOSE_PATH_SEPARATOR: ',', COMPOSE_FILE: 'compose.yml,compose.ipv6.yml' },
+            { mail__transport: 'SMTP' },
+        );
+        assert.deepEqual((await validatedWith()).files, [
+            join(h.dir, 'compose.yml'),
+            join(h.dir, 'compose.ipv6.yml'),
+        ]);
+    });
+
+    test('without COMPOSE_FILE, compose.yml and the site’s compose.override.yml when it exists', async () => {
+        makeSite(h, LOCAL, { mail__transport: 'SMTP' });
+        writeFileSync(join(h.dir, 'compose.override.yml'), 'services: {}\n');
+        assert.deepEqual((await validatedWith()).files, [
+            join(h.dir, 'compose.yml'),
+            join(h.dir, 'compose.override.yml'),
+        ]);
+    });
+
+    test('a COMPOSE_FILE that does not start with compose.yml is refused', async () => {
+        makeSite(
+            h,
+            { ...LOCAL, COMPOSE_FILE: 'compose.ipv6.yml:compose.yml' },
+            {
+                mail__transport: 'SMTP',
+            },
+        );
+        const { result, files } = await validatedWith();
+        assert.equal(result.code, 1);
+        assert.equal(files, undefined);
+        assert.match(
+            result.stderr,
+            /\.env's COMPOSE_FILE is compose\.ipv6\.yml:compose\.yml: it must start with compose\.yml/,
+        );
+    });
+
+    test('a COMPOSE_FILE that leaves out the site’s compose.override.yml is warned about', async () => {
+        makeSite(h, { ...LOCAL, COMPOSE_FILE: 'compose.yml:compose.ipv6.yml' });
+        writeFileSync(join(h.dir, 'compose.override.yml'), 'services: {}\n');
+        const result = await validate();
+        assert.equal(result.code, 0, result.stderr);
+        assert.match(
+            result.stderr,
+            /COMPOSE_FILE does not name compose\.override\.yml, so the site does not run it/,
+        );
+        writeFileSync(
+            join(h.dir, '.env'),
+            readFileSync(join(h.dir, '.env'), 'utf8').replace(
+                'compose.yml:compose.ipv6.yml',
+                'compose.yml:compose.override.yml:compose.ipv6.yml',
+            ),
+        );
+        assert.doesNotMatch((await validate()).stderr, /does not name compose\.override\.yml/);
+    });
 });
 
 test('Compose gets only what it needs of the manager’s environment, so .env is what it interpolates', () => {

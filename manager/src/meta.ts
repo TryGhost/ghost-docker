@@ -80,8 +80,8 @@ export function requireMetadata(dir: string, why: string): Metadata {
 
 /**
  * The site's own files, the one inventory a backup keeps, a restore replaces
- * and sets aside, and an update snapshots: the operator's, the overrides
- * GD_COMPOSE_OVERRIDES adds (relative to the site), and in image mode the
+ * and sets aside, and an update snapshots: the operator's, the other Compose
+ * files `.env`'s COMPOSE_FILE names (relative to the site), and in image mode the
  * stack files and launcher it runs, so a restore anywhere runs exactly the
  * images this one did.
  */

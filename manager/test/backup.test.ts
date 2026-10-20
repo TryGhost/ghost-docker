@@ -16,6 +16,7 @@ import {
     writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, test } from 'node:test';
 import * as tar from 'tar';
@@ -71,6 +72,17 @@ let loads: { database: string; sql: string }[];
 let mounts: Record<string, { type: string; source: string; target: string }[]>;
 
 const readSite = (file: string, dir = h.dir) => readFileSync(join(dir, file), 'utf8');
+/** Sets one key in the site's `.env`, as `config set` would. */
+const setEnv = (key: string, value: string) =>
+    writeFileSync(join(h.dir, '.env'), env.set(readSite('.env'), key, value));
+/** Rewrites the backup's `.env` and its checksum, as an older or another manager wrote it. */
+function editBackupEnv(root: string, edit: (text: string) => string): void {
+    const text = edit(readFileSync(join(root, 'site', '.env'), 'utf8'));
+    writeFileSync(join(root, 'site', '.env'), text);
+    const manifest = JSON.parse(readFileSync(join(root, 'manifest.json'), 'utf8'));
+    manifest.files['site/.env'] = createHash('sha256').update(text).digest('hex');
+    writeFileSync(join(root, 'manifest.json'), JSON.stringify(manifest));
+}
 const backups = () =>
     existsSync(join(h.dir, 'backups')) ? readdirSync(join(h.dir, 'backups')).sort() : [];
 const composed = (command: string) => compose.filter((args) => args[0] === command);
@@ -508,7 +520,12 @@ describe('backup records what the site runs', () => {
                 }
                 mkdirSync(join(h.dir, 'overrides'), { recursive: true });
                 writeFileSync(join(h.dir, file), original);
-                h.env.GD_COMPOSE_OVERRIDES = file;
+                setEnv(
+                    'COMPOSE_FILE',
+                    ['compose.yml', ...(rootOverride ? ['compose.override.yml'] : []), file].join(
+                        ':',
+                    ),
+                );
                 const root = await backUp();
                 const read = readBackupManifest(root);
                 assert.equal(read.state, 'present');
@@ -527,12 +544,12 @@ describe('backup records what the site runs', () => {
     }
 
     test('an override outside the site is refused', async () => {
-        h.env.GD_COMPOSE_OVERRIDES = '/etc/ghost/compose.extra.yml';
+        setEnv('COMPOSE_FILE', 'compose.yml:/etc/ghost/compose.extra.yml');
         const result = await h.run('backup');
         assert.equal(result.code, 1);
         assert.match(
             result.stderr,
-            /GD_COMPOSE_OVERRIDES names \/etc\/ghost\/compose\.extra\.yml, which is outside the site/,
+            /the site's Compose files include \/etc\/ghost\/compose\.extra\.yml, which is outside the site/,
         );
         assert.deepEqual(backups(), []);
     });
@@ -639,7 +656,7 @@ describe('restore over the site', () => {
 
     test('an override the restore replaces is set aside with the rest, and kept when it fails', async () => {
         writeFileSync(join(h.dir, 'compose.custom.yml'), '# as backed up\n');
-        h.env.GD_COMPOSE_OVERRIDES = 'compose.custom.yml';
+        setEnv('COMPOSE_FILE', 'compose.yml:compose.custom.yml');
         const root = await backUp();
         writeFileSync(join(h.dir, 'compose.custom.yml'), '# edited since\n');
         loaded = { ghost: { ...ROWS.ghost, posts: 2 } };
@@ -789,9 +806,9 @@ describe('restore over the site', () => {
         };
     };
 
-    test("the backup's own override is checked, whatever GD_COMPOSE_OVERRIDES spells it as", async () => {
+    test("the backup's own override is checked, whatever COMPOSE_FILE spells it as", async () => {
         writeFileSync(join(h.dir, 'compose.custom.yml'), '# as backed up\n');
-        h.env.GD_COMPOSE_OVERRIDES = join(h.dir, 'compose.custom.yml');
+        setEnv('COMPOSE_FILE', `compose.yml:${join(h.dir, 'compose.custom.yml')}`);
         const root = await backUp();
         writeFileSync(join(h.dir, 'compose.custom.yml'), '# edited since\n');
         h.calls.length = 0;
@@ -803,6 +820,8 @@ describe('restore over the site', () => {
             files: [join(root, 'site', 'compose.yml'), join(root, 'site', 'compose.custom.yml')],
         });
         assert.equal(readSite('compose.custom.yml'), '# as backed up\n');
+        // Recorded relative to the site, wherever it is restored.
+        assert.equal(env.get(readSite('.env'), 'COMPOSE_FILE'), 'compose.yml:compose.custom.yml');
     });
 
     test('data at its own place, named by an absolute path, is restored over the site', async () => {
@@ -999,17 +1018,17 @@ describe('check and the project', () => {
 });
 
 describe('restore and the overrides', () => {
-    test('is refused when GD_COMPOSE_OVERRIDES is not what the backup was taken with', async () => {
+    test("is refused when the backup's .env and manifest disagree", async () => {
         writeFileSync(join(h.dir, 'compose.ipv6.yml'), 'services: {}\n');
-        h.env.GD_COMPOSE_OVERRIDES = 'compose.ipv6.yml';
+        setEnv('COMPOSE_FILE', 'compose.yml:compose.ipv6.yml');
         const root = await backUp();
-        delete h.env.GD_COMPOSE_OVERRIDES;
+        editBackupEnv(root, (text) => env.set(text, 'COMPOSE_FILE', 'compose.yml'));
         compose = [];
         const result = await h.run('restore', '--yes', root);
         assert.equal(result.code, 1);
         assert.match(
             result.stderr,
-            /the backup was taken with GD_COMPOSE_OVERRIDES=compose\.ipv6\.yml, and this restore runs with none/,
+            /the backup's \.env has COMPOSE_FILE=compose\.yml, and its manifest records the overrides compose\.ipv6\.yml:\n +the backup does not agree with itself\. Nothing has been changed\./,
         );
         assert.deepEqual(composed('down'), []);
     });
@@ -1054,6 +1073,34 @@ describe('restore into a new directory', () => {
             ),
         );
         assert.deepEqual(readdirSync(fresh), []);
+    });
+
+    test("runs the backup's Compose files, as its .env records them", async () => {
+        writeFileSync(join(h.dir, 'compose.ipv6.yml'), '# as backed up\n');
+        setEnv('COMPOSE_FILE', 'compose.yml:compose.ipv6.yml');
+        const root = await backUp();
+        into(fresh);
+        h.calls.length = 0;
+        const result = await h.run('restore', root);
+        assert.equal(result.code, 0, result.stderr);
+        const check = h.calls.find(
+            (args) => args[0] === 'docker-compose' && args.includes('--env-file'),
+        )!;
+        assert.deepEqual(
+            check.flatMap((arg, index) => (check[index - 1] === '-f' ? [arg] : [])),
+            [join(root, 'site', 'compose.yml'), join(root, 'site', 'compose.ipv6.yml')],
+        );
+        assert.equal(readSite('compose.ipv6.yml', fresh), '# as backed up\n');
+        assert.equal(
+            env.get(readSite('.env', fresh), 'COMPOSE_FILE'),
+            'compose.yml:compose.ipv6.yml',
+        );
+        // Every later Compose run is of the restored files.
+        const up = h.calls.findLast((args) => args[0] === 'docker-compose' && args.includes('up'))!;
+        assert.deepEqual(
+            up.flatMap((arg, index) => (up[index - 1] === '-f' ? [arg] : [])),
+            [join(fresh, 'compose.yml'), join(fresh, 'compose.ipv6.yml')],
+        );
     });
 
     test('writes the site with its new path, from the backup alone', async () => {

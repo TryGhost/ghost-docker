@@ -152,17 +152,19 @@ export async function refuseDrift(io: Io, resolved: ResolvedSite): Promise<void>
 }
 
 /**
- * The overrides GD_COMPOSE_OVERRIDES adds, relative to the site, so a backup
- * holds them; one outside the site is refused, since a restore could not
- * bring it back.
+ * The Compose files the site runs with besides compose.yml and its
+ * compose.override.yml (`.env`'s COMPOSE_FILE), relative to the site, so a
+ * backup holds them; one outside the site is refused, since a restore could
+ * not bring it back.
  */
 export function siteOverrides(resolved: ResolvedSite): string[] {
     return composeOverrides(resolved.dir, resolved.files).map((file) => {
         const inside = insideSite(resolved.dir, file);
         if (inside === null) {
             throw new CliError(
-                `GD_COMPOSE_OVERRIDES names ${file}, which is outside the site; a backup could not hold it.\n` +
-                    '  Move it into the site directory and name it relative to it. Nothing has been changed.',
+                `the site's Compose files include ${file}, which is outside the site; a backup could not hold it.\n` +
+                    "  Move it into the site directory and name it relative to it in .env's COMPOSE_FILE\n" +
+                    '  (./ghost-docker config set .env COMPOSE_FILE ...). Nothing has been changed.',
             );
         }
         return inside;

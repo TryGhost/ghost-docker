@@ -81,11 +81,20 @@ test('every profile is `*` to Compose, so undo finds whatever a failed install s
 
 for (const rootOverride of [false, true]) {
     for (const absolute of [false, true]) {
-        test(`nested compose.override.yml is effective and inventoried (root ${rootOverride}, absolute ${absolute})`, async () => {
+        test(`a nested compose.override.yml COMPOSE_FILE names is effective and inventoried (root ${rootOverride}, absolute ${absolute})`, async () => {
             const dir = mkdtempSync(join(tmpdir(), 'gd-overrides-'));
             try {
                 mkdirSync(join(dir, 'overrides'));
-                writeFileSync(join(dir, '.env'), 'COMPOSE_PROJECT_NAME=gd-overrides\n');
+                const file = 'overrides/compose.override.yml';
+                const named = [
+                    'compose.yml',
+                    ...(rootOverride ? ['compose.override.yml'] : []),
+                    absolute ? join(dir, file) : file,
+                ];
+                writeFileSync(
+                    join(dir, '.env'),
+                    `COMPOSE_PROJECT_NAME=gd-overrides\nCOMPOSE_FILE=${named.join(':')}\n`,
+                );
                 writeFileSync(
                     join(dir, 'compose.yml'),
                     'services:\n  reader:\n    image: alpine:base\n',
@@ -96,12 +105,8 @@ for (const rootOverride of [false, true]) {
                         'services:\n  reader:\n    image: alpine:root\n',
                     );
                 }
-                const file = 'overrides/compose.override.yml';
                 writeFileSync(join(dir, file), 'services:\n  reader:\n    image: alpine:nested\n');
-                const overrideIo = realIo({
-                    env: { ...io.env, GD_COMPOSE_OVERRIDES: absolute ? join(dir, file) : file },
-                });
-                const site = await resolveConfig(overrideIo, dir);
+                const site = await resolveConfig(io, dir);
                 assert.equal(site.services.reader?.image, 'alpine:nested');
                 assert.deepEqual(siteOverrides(site), [file]);
             } finally {
