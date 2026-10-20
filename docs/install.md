@@ -13,6 +13,9 @@ As with Ghost-CLI's `ghost install`, a site is a production one unless
 a copy of the launcher into the site, and every later command is
 `./ghost-docker ...` from there.
 
+This is a beta. To report a problem or send feedback, see
+[Reporting a problem](#reporting-a-problem).
+
 ## Releases
 
 A release is a version of the manager image, `ghcr.io/tryghost/ghost-docker`,
@@ -977,3 +980,17 @@ distribution. Inside WSL the host is Linux and everything here applies. Install
 into the Linux filesystem (for example `~/my-site`), not under `/mnt/c`: file
 permissions are not enforced there, so `.env` would not be private, and MySQL's
 data directory is unreliable on it.
+
+## Reporting a problem
+
+[Open an issue with the beta's form](https://github.com/TryGhost/ghost-docker/issues/new?template=next-docker-beta.yml). It labels the issue
+`next-docker` and asks for what triage needs first:
+
+- what happened, and the command and its output;
+- `./ghost-docker version`, or the install command you ran if there is no site
+  yet;
+- the platform, and the kind of site;
+- `./ghost-docker doctor` and `./ghost-docker check`, from the site directory.
+
+Remove passwords, tokens, and anything you would rather not share from what
+you paste, logs included. Never paste `.env` or `ghost.env`.
