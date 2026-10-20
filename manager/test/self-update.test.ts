@@ -147,20 +147,7 @@ describe('an update between releases', () => {
         // and verified, in that order.
         assert.deepEqual(
             compose.map((args) => args[0]),
-            [
-                'config',
-                'pull',
-                'config',
-                'ps',
-                'stop',
-                'exec',
-                'ps',
-                'config',
-                'config',
-                'pull',
-                'up',
-                'ps',
-            ],
+            ['config', 'pull', 'config', 'ps', 'stop', 'exec', 'ps', 'config', 'pull', 'up', 'ps'],
         );
         assert.equal(pulledWith(0), join(stack, 'compose.yml'));
         assert.equal(pulledWith(1), join(h.dir, 'compose.yml'));

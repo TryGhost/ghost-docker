@@ -7,9 +7,8 @@ import { readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { compare, major, valid } from 'semver';
 import { refuseDrift } from '../backup.ts';
-import { composeConfig } from '../compose.ts';
 import { defineCommand, flag } from '../command.ts';
-import { findingErrors, validate } from '../config.ts';
+import { requireValid } from '../config.ts';
 import * as env from '../env.ts';
 import { CliError, EXIT, UsageError } from '../errors.ts';
 import { atomicWrite } from '../fs.ts';
@@ -316,24 +315,7 @@ export function ghostUpdatePlan(
             ok(io, ENV_FILE, `GHOST_IMAGE_REF=${to.reference}`);
             ok(io, META_FILE, `records Ghost ${to.version}`);
 
-            // validate() only warns when Compose cannot resolve the project; here
-            // that is the new pin failing.
-            const resolved = await io.busy('Resolving the Compose project', () =>
-                composeConfig(io, dir),
-            );
-            if (!resolved.ok) {
-                throw new CliError(
-                    `Compose cannot resolve the project with Ghost ${to.version}: ${resolved.reason}`,
-                );
-            }
-            const findings = await io.busy('Validating the configuration', () => validate(io, dir));
-            const errors = findingErrors(findings);
-            if (errors) {
-                throw new CliError(
-                    `the configuration does not validate with Ghost ${to.version}:\n${errors}`,
-                );
-            }
-            ok(io, 'configuration', `valid with Ghost ${to.version}`);
+            await requireValid(io, dir, `Ghost ${to.version}`);
         },
         // Pulled before the site stopped.
         async pull() {},
