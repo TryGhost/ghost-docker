@@ -408,11 +408,16 @@ export function placeAdminFiles(
 
 /**
  * MySQL's data directory grows by more than the dump it loads: the tables with
- * their indexes, about twice the dump's text, and the binary log, which
- * records every row loaded.
+ * their indexes, and the binary log, which records every row loaded. Measured
+ * with MySQL 8.0.44 as this stack runs it, a dump of long posts grew it by 3.1
+ * times (tables 2.1, binary log 1.0) and one of many small member rows by 3.7
+ * (tables 2.9, binary log 0.8).
  */
-const DATABASE_GROWTH = 3;
-/** A new MySQL's own files before anything is loaded: redo and undo logs, system tables. */
+const DATABASE_GROWTH = 4;
+/**
+ * A new MySQL's own files before anything is loaded: 210 MB measured, most of
+ * it the 100 MB redo log, then system tables, undo and temporary tablespaces.
+ */
 const MYSQL_BASE = 256 * 1024 ** 2;
 
 /**
@@ -457,6 +462,8 @@ export async function readBundle(
     let staged: StagedBundle;
     try {
         staged = await io.busy('Unpacking and checking the bundle', async () => {
+            // What an interrupted attempt left staged is replaced, so it is not counted against this one.
+            removeStaging(dir);
             checkRoom(io, dir, await measureBundle(bundle));
             return stageBundle(dir, bundle);
         });

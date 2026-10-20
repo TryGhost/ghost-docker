@@ -642,10 +642,12 @@ describe('refusals that change nothing', () => {
         writeFileSync(join(path, 'database.sql'), Buffer.alloc(100 * 1024 ** 2));
         // Room for the unpacked bundle and a new MySQL, not for loading the dump.
         h.daemon.freeBytes = 500 * 1024 ** 2;
+        // What an interrupted attempt left staged is not counted against this one: it is replaced.
+        mkdirSync(join(h.dir, '.import', 'bundle'), { recursive: true });
         await refusedWith(
             ['--import', path],
             1,
-            /there is not room for this import in .*: it needs about 657 MB and\n +500 MB is free\. That is 101 MB for the unpacked bundle and 556 MB for\n +MySQL to load its 100 MB database\.\n +Free some space, or import onto a larger disk\. Nothing has been changed\./,
+            /there is not room for this import in .*: it needs about 757 MB and\n +500 MB is free\. That is 101 MB for the unpacked bundle and 656 MB for\n +MySQL to load its 100 MB database\.\n +Free some space, or import onto a larger disk\. Nothing has been changed\./,
         );
     });
 

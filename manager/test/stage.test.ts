@@ -468,6 +468,28 @@ describe('measuring a bundle before it is unpacked', () => {
         assert.ok(statSync(join(work, 'bundle.tgz')).size < MB);
     });
 
+    test('directories a zip names only as parents are counted once each', async () => {
+        const flat = await measureBundle(
+            zip('flat.zip', [
+                { name: 'a/b/one', data: 'x' },
+                { name: 'a/b/two', data: 'x' },
+                { name: 'a/three', data: 'x' },
+            ]),
+        );
+        const explicit = await measureBundle(
+            zip('explicit.zip', [
+                { name: 'a/', mode: 0o040755 },
+                { name: 'a/b/', mode: 0o040755 },
+                { name: 'a/b/one', data: 'x' },
+                { name: 'a/b/two', data: 'x' },
+                { name: 'a/three', data: 'x' },
+            ]),
+        );
+        // Two directories and three files, a block each.
+        assert.equal(flat.total, 5 * 4096);
+        assert.equal(explicit.total, flat.total);
+    });
+
     test('a portable bundle has no database to load', async () => {
         assert.equal((await measureBundle(bundleDir(fixture('portable')))).database, 0);
     });

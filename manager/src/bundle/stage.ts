@@ -108,14 +108,33 @@ export interface BundleSize {
     readonly database: number;
 }
 
-/** Sums entries as they are read. The database file is at the root, or under one directory. */
-function sizer(): { add: (name: string, size: number) => void; size: () => BundleSize } {
+/**
+ * Sums entries as they are read. Unpacking also makes every directory an
+ * archive names only as a parent, so each directory counts once, whether or
+ * not it has an entry of its own. The database file is at the root, or under
+ * one directory.
+ */
+function sizer(): {
+    add: (name: string, size: number, directory: boolean) => void;
+    size: () => BundleSize;
+} {
     let total = 0;
     let database = 0;
+    const directories = new Set<string>();
     return {
-        add: (name, size) => {
-            total += blocks(size);
+        add: (name, size, directory) => {
             const parts = clean(name).split('/');
+            for (let depth = 1; depth <= parts.length; depth += 1) {
+                const path = parts.slice(0, depth).join('/');
+                if ((depth < parts.length || directory) && !directories.has(path)) {
+                    directories.add(path);
+                    total += BLOCK;
+                }
+            }
+            if (directory) {
+                return;
+            }
+            total += blocks(size);
             if (parts.length <= 2 && parts.at(-1) === DATABASE_FILE) {
                 database = Math.max(database, size);
             }
@@ -166,7 +185,8 @@ function copyDirectory(bundle: string, target: string): void {
 function measureDirectory(bundle: string): BundleSize {
     const sum = sizer();
     for (const entry of walk(bundle)) {
-        sum.add(entry.name, entry.type === 'file' ? statSync(join(bundle, entry.name)).size : 0);
+        const directory = entry.type === 'directory';
+        sum.add(entry.name, directory ? 0 : statSync(join(bundle, entry.name)).size, directory);
     }
     return sum.size();
 }
@@ -227,7 +247,8 @@ async function measureTar(bundle: string): Promise<BundleSize> {
         await tar.t({
             file: bundle,
             strict: true,
-            onReadEntry: (entry) => sum.add(entry.path, entry.size),
+            onReadEntry: (entry) =>
+                sum.add(entry.path, entry.size, TAR_TYPES[entry.type] === 'directory'),
         });
     } catch {
         throw new BundleRefused(NOT_AN_ARCHIVE);
@@ -292,7 +313,7 @@ async function measureZip(bundle: string): Promise<BundleSize> {
         zip = await openZip(bundle);
         const sum = sizer();
         for (const entry of await zipEntries(zip)) {
-            sum.add(entry.fileName, entry.uncompressedSize);
+            sum.add(entry.fileName, entry.uncompressedSize, zipType(entry) === 'directory');
         }
         return sum.size();
     } catch (error) {
