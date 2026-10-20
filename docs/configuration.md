@@ -137,8 +137,9 @@ only Caddy's routes reach their services, and a local site has no Caddy. Selecti
 Mailpit; Ghost sends to it because `ghost.env` says so (`install --with
 mailpit` writes those settings; see [install.md](install.md#optional-services)).
 
-`supervisor` is reserved for the upgrade supervisor and currently defines no
-service. Any other profile name is rejected by validation.
+`supervisor` runs the upgrade supervisor; see
+[upgrade-supervisor.md](upgrade-supervisor.md). Any other profile name is
+rejected by validation.
 
 ActivityPub and analytics are **per-site**: each site owns its ActivityPub
 database, storage and serving URL, and its own Tinybird credentials, workspace

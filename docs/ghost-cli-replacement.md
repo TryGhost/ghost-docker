@@ -66,8 +66,8 @@ malformed requests, permission violations, and an unreachable supervisor behave 
 while a job is active, or while the CLI holds the lock, is refused; a supervisor killed
 mid-job reports that job `interrupted` on its next start, with its backup, and leaves
 the lock for the operator; history stays within its bound. Verify actual socket
-permissions as Ghost's runtime uid. Installer must not enable the adapter on a Ghost
-that does not ship it.
+permissions as Ghost's runtime uid. The installer writes the adapter's settings
+whatever the Ghost: an older Ghost ignores them, and its startup never depends on them.
 
 ### S9 — Ghost upgrade adapter and Admin API
 
@@ -81,7 +81,7 @@ status without making unrelated Ghost startup depend on supervisor availability.
 Acceptance: adapter/controller tests, API permission tests, protocol tests against a test socket,
 version compatibility, and initialization ordering. Keep Admin UI separate.
 
-Use adapter type `upgrade` and enable the HTTP adapter only for a compatible Ghost version. API endpoints are status, create request and fetch job;
+Use adapter type `upgrade`; a Ghost without it ignores the HTTP adapter's settings. API endpoints are status, create request and fetch job;
 owner/admin only, with a rate-limited POST and normal Admin auth.
 
 ### S10 — Admin update experience

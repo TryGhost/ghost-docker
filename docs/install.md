@@ -55,7 +55,7 @@ directory, and day-to-day operation is plain `docker compose`.
 ```text
 ghost-docker install [--local | --domain example.com [--admin-domain admin.example.com]
                                 [--email ops@example.com]]
-                     [--name NAME] [--port 2368] [--version 6.61.0] [--with activitypub,mailpit]
+                     [--name NAME] [--port 2368] [--version 6.61.0] [--with activitypub,mailpit,supervisor]
                      [--channel stable|beta | --release vX.Y.Z] [--no-prompt] [--no-start]
 ghost-docker install --import BUNDLE [--name NAME] [--port 2368] [--with mailpit] [--no-prompt] [--no-start]
 ghost-docker install --import BUNDLE [--domain DOMAIN] [--admin-domain DOMAIN] [--email EMAIL] [--no-start]
@@ -70,7 +70,7 @@ ghost-docker install --import BUNDLE [--domain DOMAIN] [--admin-domain DOMAIN] [
 | `--name NAME` | The site's `COMPOSE_PROJECT_NAME`, used as given in either mode: lowercase letters, digits and dashes, at most 45 characters. Omitted: chosen as described under [Identity and secrets](#what-installation-does). |
 | `--port PORT` | The loopback port Ghost is published on, in both modes. Omitted: the first at or above 2368 that is free (see [Ports](#ports-and-your-existing-proxy)). |
 | `--version VERSION` | A Ghost version (`6.61.0`, which means `6.61.0-next-alpine`) or a full image tag (`6-next-alpine`). Resolved to an exact digest. Only the `next` variants' layout runs: an image installed by Ghost-CLI, such as the `-alpine` tags, is refused. |
-| `--with LIST` | `activitypub` for a production site, `mailpit` for a local one. `analytics` is added after installation; see below. |
+| `--with LIST` | `activitypub` for a production site, `mailpit` for a local one, `supervisor` for either. `analytics` is added after installation; see below. |
 | `--channel CHANNEL` | Install the newest release on `stable` or `beta`; see [Releases](#releases). |
 | `--release vX.Y.Z` | Install that release. |
 | `--no-prompt` | Never ask: every input must then be an option. |
@@ -84,9 +84,7 @@ Without one, or with `--no-prompt`, a missing answer is a usage error naming
 the option that supplies it. Every question has an option, so a script never needs to answer
 one.
 
-Exit statuses: `0` installed, `1` failed, `2` a usage error. Options the plan
-documents for later steps (`--with supervisor` in S8) do not exist yet, and
-are usage errors like any unknown option.
+Exit statuses: `0` installed, `1` failed, `2` a usage error.
 
 ### The ACME email
 
