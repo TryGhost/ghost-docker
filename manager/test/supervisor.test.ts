@@ -33,7 +33,14 @@ const io = {
     stderr: (text: string) => void logged.push(text),
 } as unknown as Io;
 
-const metadata = () => ({ ghost: { version: FROM } }) as unknown as Metadata;
+/** The site's metadata, or an error when `metadataError` says it cannot be read. */
+let metadataError: Error | null;
+const metadata = () => {
+    if (metadataError !== null) {
+        throw metadataError;
+    }
+    return { ghost: { version: FROM } } as unknown as Metadata;
+};
 
 const discover: Discoverer = async ({ now }) => ({
     oneClick: [{ component: 'ghost', fromVersion: FROM, toVersion: TO, target: TARGET }],
@@ -130,6 +137,7 @@ beforeEach(() => {
     socket = join(root, 's.sock');
     logged = [];
     execute = done;
+    metadataError = null;
     servers = [];
 });
 afterEach(async () => {
@@ -255,6 +263,14 @@ describe('refusals', () => {
         await serve();
         assert.equal(await rejected('6.71.0'), 'target-unapproved');
         assert.equal(await rejected('7.0.0; rm -rf /'), 'target-unapproved');
+        assert.equal(readLock(dir).state, 'free');
+    });
+
+    test('a request that fails reading the metadata leaves no lock behind', async () => {
+        await serve();
+        metadataError = new Error('.ghost-docker.json does not exist');
+        const answer = await ask();
+        assert.notEqual(answer.status, 202);
         assert.equal(readLock(dir).state, 'free');
     });
 

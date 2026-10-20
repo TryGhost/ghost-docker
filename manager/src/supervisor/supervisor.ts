@@ -266,6 +266,8 @@ export class Supervisor {
             );
         }
 
+        // Read before the lock: nothing would release it if this threw.
+        const fromVersion = this.options.metadata().ghost.version;
         let lock: Lock;
         try {
             lock = acquireLock(this.dir, operationOf(id, request.toVersion), this.now());
@@ -281,7 +283,7 @@ export class Supervisor {
                 id,
                 state: 'pending',
                 component: request.component,
-                fromVersion: this.options.metadata().ghost.version,
+                fromVersion,
                 toVersion: request.toVersion,
                 createdAt: at,
                 updatedAt: at,
