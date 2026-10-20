@@ -22,11 +22,11 @@ export class CliError extends Error {
     }
 }
 
-/** An error as the operator sees it: a CliError's message, anything else with its stack. */
+/** An error as the operator sees it: a CliError's message; anything else is a bug, with its stack. */
 export const describeError = (error: unknown): string =>
     error instanceof CliError
         ? `error: ${error.message}`
-        : `error: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`;
+        : `error: ghost-docker failed unexpectedly. Please report this:\n${error instanceof Error ? (error.stack ?? error.message) : String(error)}`;
 
 export class UsageError extends CliError {
     constructor(message: string) {

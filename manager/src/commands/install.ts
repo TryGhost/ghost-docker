@@ -1,27 +1,10 @@
 // `install`: a local or production site, configured, started and verified.
-//
-// The order matters, and each part has one reason to be where it is. `run`
-// takes the parts in this order, each in a function of its own:
-//
-//   1. Refusals that need nothing: options, an existing site, files the
-//      payload would overwrite. Nothing has been changed, except that an
-//      import first removes what an earlier, unfinished one left behind.
-//   2. With --import, the bundle, which says what kind of site this is and
-//      which Ghost version it runs. `Importing` (import.ts) is everything an
-//      import adds, called at its points below.
-//   3. Preflight (doctor's checks), ports Docker knows are taken, the exact
-//      Ghost image, and a project name no other directory's containers have
-//      (project.ts). Still nothing has been changed.
-//   4. Writing: payload and launcher (image mode), `.env`, `ghost.env`, data
-//      directories, an import's content and database, routes, metadata. From
-//      here a failure removes what this installation created (undo.ts), so
-//      the same command can simply be run again.
-//   5. Starting and verifying, unless --no-start.
-//
-// Installation never stops or reconfigures anything already running. A port
-// held by a Docker container is refused before anything is written; one held
-// by anything else is found when Compose starts the services, whose error
-// names it.
+// `run` takes the parts in order, each a function of its own: refusals that
+// need nothing; with --import, the bundle (import.ts); preflight, ports, the
+// exact Ghost image and a free project name, still changing nothing; then
+// writing, from which point a failure removes what was created (undo.ts);
+// then starting and verifying. What each step does, and refuses, is
+// docs/reference.md#what-installation-does.
 import { randomBytes } from 'node:crypto';
 import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -30,7 +13,7 @@ import { ALL_PROFILES, compose, upAndWait } from '../compose.ts';
 import { z } from 'zod';
 import { defineCommand, flag, refused } from '../command.ts';
 import { findingErrors, validate } from '../config.ts';
-import { loadContext, type Context } from '../context.ts';
+import type { Context } from '../context.ts';
 import * as env from '../env.ts';
 import { CliError, describeError, EXIT, UsageError } from '../errors.ts';
 import { atomicWrite, PRIVATE } from '../fs.ts';
@@ -55,7 +38,7 @@ import {
     writeLauncher,
     writePayload,
 } from '../payload.ts';
-import { failed, heading, ok, printChecks } from '../report.ts';
+import { failed, heading, note, ok, printChecks } from '../report.ts';
 import {
     DATA_DIRS,
     ENV_FILE,
@@ -73,6 +56,7 @@ import {
     releaseOf,
     releaseOption,
     requestedRelease,
+    siteContext,
     type ManagerRelease,
     type Requested,
 } from './common.ts';
@@ -373,13 +357,8 @@ export const installCommand = defineCommand({
     async run(flags, _positionals, io) {
         // 1. Refusals. The options were checked as they were parsed.
         const release = requestedRelease(flags.channel, flags.release, '--release');
-        const context = loadContext(io.env);
+        const context = siteContext(io);
         const dir = context.siteDir;
-        if (io.cwd() !== dir) {
-            throw new CliError(
-                `working in ${io.cwd()}, but the launcher gave the site directory as ${dir}`,
-            );
-        }
         await clearUnfinishedImport(io, context, dir, flags.import !== undefined);
         const target = refuseOccupied(io, context, dir);
 
@@ -699,7 +678,7 @@ async function writeGhostEnv(
     atomicWrite(path, ghostEnvTemplate(project, intent.services) + (carried?.text ?? ''), PRIVATE);
     ok(io, GHOST_ENV_FILE, carried?.detail ?? 'Ghost application settings');
     for (const { key, reason } of carried?.skipped ?? []) {
-        printChecks(io, [{ status: 'note', label: 'not carried', detail: `${key}: ${reason}` }]);
+        note(io, 'not carried', `${key}: ${reason}`);
     }
 }
 

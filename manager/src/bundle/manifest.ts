@@ -1,13 +1,7 @@
-// The migration bundle v1 manifest, as a zod schema: docs/bundle-v1.md.
-//
-// This is the single definition of the manifest. It depends on nothing but
-// zod, so that it can be published and used unchanged by the exporter
-// (`ghost migrate-export` in Ghost-CLI) as well as by the importer here: the
-// two sides then cannot disagree about what a bundle is. Keep it that way;
-// importer policy (which kinds and sources this release imports) is not
-// written here.
-//
-// The messages describe the field and are printed after its path, as
+// The migration bundle v1 manifest, as a zod schema: docs/bundle-v1.md. It is
+// the single definition of the manifest and depends on nothing but zod, so
+// the exporter (`ghost migrate-export`) can use it unchanged; importer policy
+// is not written here. Messages are printed after the field's path, as
 // `database.rows.posts: is not a row count`.
 import { z } from 'zod';
 

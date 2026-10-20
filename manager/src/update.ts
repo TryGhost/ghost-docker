@@ -1,13 +1,9 @@
-// The one executor of an update to a running site: self-update and `update`
-// (Ghost) are each a plan for it, and the supervisor will be another caller.
-// It returns what happened rather than printing it, so each caller says it in
-// its own words and the supervisor can record it as a job's outcome.
-//
-// Attempting service startup is the recovery boundary
-// (docs/architecture.md#recovery). Before it, a failure puts the files back
-// and resumes the writers it paused. After it, the services are stopped and
-// the data is left as it is: even a failed start may have migrated it or
-// accepted writes, so the backup is never loaded over it.
+// The one executor of an update to a running site: self-update, `update` and
+// the supervisor are each a plan for it. It returns what happened rather than
+// printing it. Attempting service startup is the recovery boundary: before it
+// a failure puts the files back and resumes the paused writers; after it the
+// services are stopped and the data left as it is, never loaded over
+// (docs/architecture.md#recovery).
 import { relative } from 'node:path';
 import { takeBackup } from './backup.ts';
 import { upAndWait } from './compose.ts';

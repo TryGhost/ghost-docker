@@ -36,7 +36,7 @@ import { DATABASE_MS, tableCount, withSiteDatabase } from './import/database.ts'
 import type { Io } from './io.ts';
 import { isoSeconds, siteFiles, type Metadata } from './meta.ts';
 import { git } from './process.ts';
-import { ok, printChecks } from './report.ts';
+import { error, ok, warn } from './report.ts';
 import {
     imageDrift,
     insideSite,
@@ -306,13 +306,11 @@ function thisManager(io: Io): BackupManifest['manager'] {
 async function checkedOut(io: Io, dir: string): Promise<string | null> {
     const head = await git(io, dir, ['rev-parse', '--verify', 'HEAD']);
     if (!head.ok) {
-        printChecks(io, [
-            {
-                status: 'warn',
-                label: 'commit',
-                detail: `git cannot read the checkout (${head.stderr || 'no answer'}), so the backup does not record its commit`,
-            },
-        ]);
+        warn(
+            io,
+            'commit',
+            `git cannot read the checkout (${head.stderr || 'no answer'}), so the backup does not record its commit`,
+        );
         return null;
     }
     const commit = head.stdout.trim();
@@ -588,9 +586,7 @@ export async function takeBackup({
         try {
             await resume();
         } catch (resumeError) {
-            printChecks(io, [
-                { status: 'error', label: 'writers', detail: (resumeError as Error).message },
-            ]);
+            error(io, 'writers', (resumeError as Error).message);
         }
         if (startedDb) {
             await compose(io, { dir })`stop db`;

@@ -37,11 +37,7 @@ export interface Mount {
 export interface ResolvedService {
     /** The image Compose resolves, or null for one it would build. */
     readonly image: string | null;
-    /** Its restart policy; null when it has none. */
-    readonly restart: string | null;
     readonly mounts: readonly Mount[];
-    /** The networks it joins, by the names Docker knows them by. */
-    readonly networks: readonly string[];
     readonly lifecycle: Lifecycle;
 }
 
@@ -82,18 +78,15 @@ export async function resolveConfig(
         throw new CliError(`Compose cannot resolve the project: ${resolved.reason}`);
     }
     const { project } = resolved;
-    const name = (key: string) => project.networks[key]?.name || `${project.name}_${key}`;
     const services: Record<string, ResolvedService> = {};
     for (const [service, definition] of Object.entries(project.services)) {
         services[service] = {
             image: definition.image ?? null,
-            restart: definition.restart ?? null,
             mounts: definition.volumes.map(({ type, source, target }) => ({
                 type,
                 source,
                 target,
             })),
-            networks: Object.keys(definition.networks).map(name),
             lifecycle:
                 definition.labels[LIFECYCLE_LABEL] === 'one-shot' ? 'one-shot' : 'long-running',
         };

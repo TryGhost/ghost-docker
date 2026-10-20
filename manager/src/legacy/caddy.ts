@@ -1,15 +1,8 @@
 // The operator's own Caddyfile from the released `main` layout, carried into
-// this layout's routes as it is (docs/install.md#moving-from-the-released-main-layout).
-//
-// On `main`, caddy/Caddyfile was copied from Caddyfile.example and edited by
-// hand. It read DOMAIN, ADMIN_DOMAIN and ACTIVITYPUB_TARGET from Caddy's
-// environment and imported main's snippets, which take no arguments, by
-// relative path. Here Caddy has no environment and the snippets take
-// arguments. Rather than rewrite the operator's routes into this layout's
-// shape, the file is kept as written: the three variables are filled in, and
-// its snippet imports point at main's snippets, kept beside it. Bare service
-// upstreams (`ghost:2368`) still resolve on the site's own network. Caddy
-// itself then decides whether the result loads, before anything is changed.
+// this layout's routes as written: the variables main's Caddy read from its
+// environment filled in, and its snippet imports pointed at main's snippets,
+// kept beside it. Caddy then decides whether the result loads, before
+// anything is changed (docs/caddy.md#routes-moved-from-the-released-main-layout).
 import { join } from 'node:path';
 
 /** The original, kept beside the routes it became; .gitignore leaves it out. */

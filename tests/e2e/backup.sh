@@ -57,7 +57,7 @@ SQL
 
 # What this host cannot run fails the run, unless GD_E2E_ALLOW_SKIP=1.
 # shellcheck source=/dev/null
-source "$ROOT/tests/e2e/skip.sh"
+source "$ROOT/tests/e2e/lib.sh"
 require_docker
 port_free() { ! (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
 if ! port_free 80 || ! port_free 443; then
@@ -72,49 +72,20 @@ for tool in jq curl; do
     }
 done
 
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/ghost-docker-backup-e2e.XXXXXXXX")
-WORK=$(CDPATH='' cd -- "$WORK" && pwd -P)
-CURRENT=setup
-OUT=""
-RC=0
+work_dir backup
 SITES=()
 
 # Every site is taken down and its data removed as root, because MySQL's data
 # directory belongs to MySQL's user once it has run.
-cleanup() {
-    local rc=$? site
-    set +e
+teardown() {
+    local site
     [[ -z ${HOLDER:-} ]] || kill "$HOLDER" 2>/dev/null
     for site in ${SITES[@]+"${SITES[@]}"}; do
         [[ -f $site/.env ]] && docker compose --project-directory "$site" -f "$site/compose.yml" \
             down --volumes --remove-orphans --timeout 5 >/dev/null 2>&1
     done
     docker run --rm --user 0 --entrypoint rm -v "$WORK:/work" "$IMAGE" -rf /work/sites >/dev/null 2>&1
-    case $WORK in */ghost-docker-backup-e2e.*) rm -rf -- "$WORK" ;; esac
-    exit "$rc"
 }
-trap cleanup EXIT
-
-step() {
-    CURRENT=$1
-    printf '\n== %s\n' "$1"
-}
-ok() { printf '   ok    %s\n' "$1"; }
-fail() {
-    printf '\nFAILED in "%s": %s\n' "$CURRENT" "$1" >&2
-    [[ -z ${2:-} ]] || printf -- '--- output ---\n%s\n--------------\n' "$2" >&2
-    exit 1
-}
-
-# run COMMAND... -> sets OUT (stdout and stderr) and RC, never exits
-run() {
-    set +e
-    OUT=$("$@" 2>&1 </dev/null)
-    RC=$?
-    set -e
-}
-expect_status() { [[ $RC -eq $1 ]] || fail "exited $RC, expected $1" "$OUT"; }
-expect_output() { grep -qE -- "$1" <<<"$OUT" || fail "the output does not match: $1" "$OUT"; }
 
 # compose_in SITE ARGS... -- Compose as an operator runs it, from the host.
 compose_in() {

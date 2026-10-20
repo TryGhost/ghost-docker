@@ -104,138 +104,26 @@ jobs:
       - name: Launcher end to end
         run: tests/e2e/launcher.sh
 
-  # Real installations on Docker Engine: from the image alone and from a
-  # clone, local and production, with the host's ports probed by the manager.
-  # GitHub's macOS runners have no Docker daemon, so the macOS half of this
-  # (OrbStack or Docker Desktop) is run by hand.
-  install-linux:
-    name: Install on Linux
+  # Each end-to-end script on Docker Engine, one job each; its header says
+  # what it covers. Import runs Ghost-CLI on the host, so that job gets Node
+  # too. GitHub's macOS runners have no Docker daemon, so the macOS half of
+  # install (OrbStack or Docker Desktop) is run by hand.
+  e2e-linux:
+    name: ${{ matrix.name }} on Linux
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - uses: ./.github/actions/docker-hub
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          token: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Install end to end
-        run: tests/e2e/install.sh
-
-  # Real updates on Docker Engine: between three releases built from this
-  # checkout (one that does not validate), and between two commits of a clone
-  # (one whose Ghost never becomes healthy).
-  self-update-linux:
-    name: Self-update on Linux
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - uses: ./.github/actions/docker-hub
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          token: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Self-update end to end
-        run: tests/e2e/self-update.sh
-
-  # Real Ghost updates on Docker Engine: from the oldest `next` image to the
-  # newest Ghost 6, across its migrations, and one that never becomes healthy.
-  ghost-update-linux:
-    name: Ghost update on Linux
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - uses: ./.github/actions/docker-hub
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          token: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Ghost update end to end
-        run: tests/e2e/ghost-update.sh
-
-  # The upgrade supervisor on Docker Engine: its socket's access as
-  # Ghost's uid, refusals, a supervisor killed mid-job, and a request by hand
-  # that updates Ghost.
-  upgrade-supervisor-linux:
-    name: Upgrade supervisor on Linux
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - uses: ./.github/actions/docker-hub
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          token: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Upgrade supervisor end to end
-        run: tests/e2e/upgrade-supervisor.sh
-
-  # Ghost's nightly channel on Docker Engine: a site installed on an older
-  # nightly build and moved to the latest by the upgrade supervisor.
-  ghost-nightly-linux:
-    name: Ghost nightly channel on Linux
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - uses: ./.github/actions/docker-hub
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          token: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Ghost nightly end to end
-        run: tests/e2e/ghost-nightly.sh
-
-  # An installation of the released main layout, migrated by the served
-  # launcher: refusals before any change, recovery after a failed start, and
-  # the migration keeping its project, data, routes and overrides.
-  migrate-main-linux:
-    name: Migration from the released main layout on Linux
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - uses: ./.github/actions/docker-hub
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          token: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Migration end to end
-        run: tests/e2e/migrate-main.sh
-
-  # Real backups and restores on Docker Engine: a production site with ActivityPub
-  # backed up, restored over itself and into a new directory, the lock
-  # refusing a second operation, and a dump that fails.
-  backup-linux:
-    name: Backup and restore on Linux
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - uses: ./.github/actions/docker-hub
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          token: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Backup and restore end to end
-        run: tests/e2e/backup.sh
-
-  # Real Ghost-CLI sites, on SQLite and MySQL, exported with the released
-  # exporter and imported through the launcher. Ghost-CLI runs on the host, so
-  # this needs Node there too; the runner's own mysqldump serves the exporter.
-  import-linux:
-    name: Import on Linux
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: Install, script: install }
+          - { name: Self-update, script: self-update }
+          - { name: Ghost update, script: ghost-update }
+          - { name: Upgrade supervisor, script: upgrade-supervisor }
+          - { name: Ghost nightly channel, script: ghost-nightly }
+          - { name: Migration from the released main layout, script: migrate-main }
+          - { name: Backup and restore, script: backup }
+          - { name: Import, script: import, node: "22" }
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -245,11 +133,12 @@ jobs:
           token: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        if: matrix.node
         with:
-          node-version: "22"
+          node-version: ${{ matrix.node }}
 
-      - name: Import end to end
-        run: tests/e2e/import.sh
+      - name: ${{ matrix.name }} end to end
+        run: tests/e2e/${{ matrix.script }}.sh
 
   # A real Ghost-CLI production site (MySQL, systemd, nginx on port 80, an
   # admin domain) moved to Docker on the same server, as docs/install.md says:
@@ -315,14 +204,8 @@ jobs:
       - scripts
       - integration-linux
       - launcher-linux
-      - install-linux
-      - self-update-linux
-      - ghost-update-linux
-      - upgrade-supervisor-linux
-      - ghost-nightly-linux
-      - migrate-main-linux
-      - backup-linux
-      - import-linux
+      - e2e-linux
+      - production-import-linux
       - launcher-macos
     if: always()
     runs-on: ubuntu-latest

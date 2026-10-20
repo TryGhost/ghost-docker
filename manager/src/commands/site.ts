@@ -5,21 +5,19 @@ import { defineCommand } from '../command.ts';
 import { composeProjects, composePs, type ServiceState } from '../compose.ts';
 import { findingChecks, validate } from '../config.ts';
 import { loadContext } from '../context.ts';
-import { listContainers } from '../docker/client.ts';
+import { listContainers, MANAGED_LABEL } from '../docker/client.ts';
 import { CliError, EXIT } from '../errors.ts';
 import { withSiteDatabase } from '../import/database.ts';
 import type { Io } from '../io.ts';
 import { describeLock, readLock } from '../lock.ts';
 import { describeMetadata, readMetadata } from '../meta.ts';
-import { foreignProject } from '../project.ts';
+import { foreignProject, PROJECT_LABEL } from '../project.ts';
 import { failed, printChecks, type Check } from '../report.ts';
 import { imageDrift, observeSite, resolveSite, type ResolvedSite } from '../resolved.ts';
 import { hasProfile, readSettings, RESTORE_DIR } from '../site.ts';
 import { verifyIngress } from '../verify.ts';
 import { installedSite } from './common.ts';
 import { collect } from './doctor.ts';
-
-const MANAGED_LABEL = 'org.ghost.docker.managed=true';
 
 // --- check --------------------------------------------------------------------
 
@@ -314,7 +312,7 @@ export const listCommand = defineCommand({
         }
         const modes = new Map(
             containers.map((container) => [
-                container.labels['com.docker.compose.project'] ?? '',
+                container.labels[PROJECT_LABEL] ?? '',
                 container.labels['org.ghost.docker.mode'] ?? '',
             ]),
         );

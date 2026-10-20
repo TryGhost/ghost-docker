@@ -38,7 +38,7 @@ MAIN_REPOSITORY=${GD_MAIN_REPOSITORY:-https://github.com/TryGhost/ghost-docker.g
 RELEASED_MAIN=${GD_RELEASED_MAIN:-origin/main}
 
 # shellcheck source=/dev/null
-source "$ROOT/tests/e2e/skip.sh"
+source "$ROOT/tests/e2e/lib.sh"
 require_docker
 for tool in git curl; do
     command -v "$tool" >/dev/null || {
@@ -47,43 +47,15 @@ for tool in git curl; do
     }
 done
 
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/ghost-docker-migrate-e2e.XXXXXXXX")
-WORK=$(CDPATH='' cd -- "$WORK" && pwd -P)
+work_dir migrate
 S=$WORK/sites/main-site
-CURRENT=setup
-OUT=""
-RC=0
 
-cleanup() {
-    local rc=$?
-    set +e
+teardown() {
     [[ -f $S/compose.yml ]] && docker compose --project-directory "$S" -f "$S/compose.yml" \
         --profile '*' down --volumes --remove-orphans --timeout 5 >/dev/null 2>&1
     docker run --rm --user 0 --entrypoint rm -v "$WORK:/work" "$IMAGE" -rf /work/sites >/dev/null 2>&1
     docker rmi "$IMAGE" >/dev/null 2>&1
-    case $WORK in */ghost-docker-migrate-e2e.*) rm -rf -- "$WORK" ;; esac
-    exit "$rc"
 }
-trap cleanup EXIT
-
-step() {
-    CURRENT=$1
-    printf '\n== %s\n' "$1"
-}
-ok() { printf '   ok    %s\n' "$1"; }
-fail() {
-    printf '\nFAILED in "%s": %s\n' "$CURRENT" "$1" >&2
-    [[ -z ${2:-} ]] || printf -- '--- output ---\n%s\n--------------\n' "$2" >&2
-    exit 1
-}
-run() {
-    set +e
-    OUT=$("$@" 2>&1 </dev/null)
-    RC=$?
-    set -e
-}
-expect_status() { [[ $RC -eq $1 ]] || fail "exited $RC, expected $1" "$OUT"; }
-expect_output() { grep -qE -- "$1" <<<"$OUT" || fail "the output does not match: $1" "$OUT"; }
 
 compose_in() { docker compose --project-directory "$S" -f "$S/compose.yml" "$@"; }
 # served ARGS... -- the launcher as docker.ghost.org serves it, piped into bash

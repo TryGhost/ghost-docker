@@ -3,7 +3,7 @@
 // The launcher is the only thing that can know these: it runs on the host, the
 // manager does not. They arrive as GD_* environment variables and are checked
 // here, once, so that a manager started by hand without them fails with a
-// sentence instead of misbehaving later. The contract is docs/configuration.md0.
+// sentence instead of misbehaving later. The contract is docs/architecture.md#host-boundary.
 import { z } from 'zod';
 import { CliError } from './errors.ts';
 

@@ -118,7 +118,9 @@ describe('installation metadata', () => {
     test('the same document is written as the same bytes', () => {
         writeMetadata(h.dir, sample(h.dir));
         const first = readFileSync(metaPath(h.dir), 'utf8');
-        writeMetadata(h.dir, { ...sample(h.dir) });
+        // The same document with its keys in another order.
+        const { payload, ghost, ...rest } = sample(h.dir);
+        writeMetadata(h.dir, { payload, ghost: { ...ghost }, ...rest });
         assert.equal(readFileSync(metaPath(h.dir), 'utf8'), first);
     });
 

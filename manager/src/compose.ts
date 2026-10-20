@@ -319,19 +319,14 @@ const resolvedMount = z.looseObject({
 
 const resolvedService = z.looseObject({
     image: z.string().optional(),
-    restart: z.string().optional(),
     environment: z.record(z.string(), z.union([z.string(), z.null()])).optional(),
     volumes: z.array(resolvedMount).default([]),
-    networks: z.record(z.string(), z.unknown()).default({}),
     labels: z.record(z.string(), z.string()).default({}),
 });
 
 const resolvedProject = z.looseObject({
     name: z.string().default(''),
     services: z.record(z.string(), resolvedService).default({}),
-    networks: z
-        .record(z.string(), z.looseObject({ name: z.string().optional() }).nullable())
-        .default({}),
 });
 
 export type ResolvedProject = z.infer<typeof resolvedProject>;

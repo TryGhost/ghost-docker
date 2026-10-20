@@ -15,44 +15,11 @@ set -euo pipefail
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd -P)
 # What this host cannot run fails the run, unless GD_E2E_ALLOW_SKIP=1.
 # shellcheck source=/dev/null
-source "$ROOT/tests/e2e/skip.sh"
+source "$ROOT/tests/e2e/lib.sh"
 LAUNCHER=$ROOT/ghost-docker
 BASH_BIN=${GD_TEST_BASH:-$(command -v bash)}
 
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/ghost-docker-launcher-e2e.XXXXXXXX")
-WORK=$(CDPATH='' cd -- "$WORK" && pwd -P)
-CURRENT=setup
-OUT=""
-RC=0
-
-cleanup() {
-    local rc=$?
-    case $WORK in */ghost-docker-launcher-e2e.*) rm -rf -- "$WORK" ;; esac
-    exit "$rc"
-}
-trap cleanup EXIT
-
-step() {
-    CURRENT=$1
-    printf '\n== %s\n' "$1"
-}
-ok() { printf '   ok    %s\n' "$1"; }
-fail() {
-    printf '\nFAILED in "%s": %s\n' "$CURRENT" "$1" >&2
-    [[ -z ${2:-} ]] || printf -- '--- output ---\n%s\n--------------\n' "$2" >&2
-    exit 1
-}
-
-# run COMMAND... -> sets OUT (stdout and stderr) and RC, never exits
-run() {
-    set +e
-    OUT=$("$@" 2>&1 </dev/null)
-    RC=$?
-    set -e
-}
-expect_status() { [[ $RC -eq $1 ]] || fail "exited $RC, expected $1" "$OUT"; }
-expect_output() { grep -qE -- "$1" <<<"$OUT" || fail "the output does not match: $1" "$OUT"; }
-refute_output() { ! grep -qE -- "$1" <<<"$OUT" || fail "the output should not match: $1" "$OUT"; }
+work_dir launcher
 
 # --- A stand-in docker ---------------------------------------------------------
 #
@@ -345,6 +312,7 @@ step "Piped from curl"
 set +e
 OUT=$(FAKE_DOCKER=ok PATH="$FAKE:$PATH" env ${fake_socket_env[@]+"${fake_socket_env[@]}"} \
     "$BASH_BIN" -s -- --dir "$SITE" version <"$LAUNCHER" 2>&1)
+# shellcheck disable=SC2034 # read by lib.sh's expect_status
 RC=$?
 set -e
 expect_status 0

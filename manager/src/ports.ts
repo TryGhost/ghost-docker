@@ -1,15 +1,9 @@
 // Host ports a site would publish, and which Docker containers hold them.
-//
-// Compose refuses a port a running container holds, but only once it is
-// starting the site, after the site's files are written, and it cannot see a
-// stopped site's ports at all, nor choose a free one. So install and a
-// restore into a new directory ask the daemon first.
-//
-// A running container's port is a conflict now, and is refused. A stopped
-// site's port is only a conflict if both sites run at once, which someone who
-// runs one site at a time never does: a chosen port skips it, but a port asked
-// for is only warned about, and `docker compose up` names it if it ever does
-// collide.
+// Compose refuses a port a running container holds only once it starts the
+// site, and cannot see a stopped site's ports or choose a free one, so
+// install and a restore into a new directory ask the daemon first. A running
+// container's port is refused; a stopped site's is skipped when a port is
+// chosen and only warned about when one is asked for (docs/reference.md#ports).
 import { listContainers, stoppedSiteContainers } from './docker/client.ts';
 import type { Io } from './io.ts';
 

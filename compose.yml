@@ -36,7 +36,6 @@ services:
     profiles: [local, production]
     labels:
       <<: *site-labels
-      org.ghost.docker.role: ghost
       org.ghost.docker.lifecycle: long-running
     logging: *default-logging
     # Loopback only: production ingress is Caddy, and a bring-your-own proxy
@@ -116,7 +115,6 @@ services:
     profiles: [local, production]
     labels:
       <<: *site-labels
-      org.ghost.docker.role: db
       org.ghost.docker.lifecycle: long-running
     logging: *default-logging
     expose:
@@ -158,7 +156,6 @@ services:
     profiles: [supervisor]
     labels:
       <<: *site-labels
-      org.ghost.docker.role: supervisor
       org.ghost.docker.lifecycle: long-running
     logging: *default-logging
     command: ["supervisor", "run"]
@@ -193,7 +190,6 @@ services:
     profiles: [production]
     labels:
       <<: *site-labels
-      org.ghost.docker.role: caddy
       org.ghost.docker.lifecycle: long-running
     logging: *default-logging
     ports:
@@ -225,7 +221,6 @@ services:
     profiles: [analytics]
     labels:
       <<: *site-labels
-      org.ghost.docker.role: traffic-analytics
       org.ghost.docker.lifecycle: long-running
     logging: *default-logging
     expose:
@@ -251,7 +246,6 @@ services:
     profiles: [activitypub]
     labels:
       <<: *site-labels
-      org.ghost.docker.role: activitypub
       org.ghost.docker.lifecycle: long-running
     logging: *default-logging
     expose:
@@ -287,7 +281,6 @@ services:
     profiles: [mailpit]
     labels:
       <<: *site-labels
-      org.ghost.docker.role: mailpit
       org.ghost.docker.lifecycle: long-running
     logging: *default-logging
     # The inbox, on the loopback interface only, like Ghost. SMTP stays on the
@@ -326,7 +319,6 @@ services:
     profiles: [activitypub]
     labels:
       <<: *site-labels
-      org.ghost.docker.role: activitypub-migrate
       org.ghost.docker.lifecycle: one-shot
     logging: *default-logging
     environment:
@@ -345,7 +337,6 @@ services:
     profiles: [analytics]
     labels:
       <<: *site-labels
-      org.ghost.docker.role: tinybird-login
       org.ghost.docker.lifecycle: one-shot
     logging: *default-logging
     working_dir: /home/tinybird
@@ -364,7 +355,6 @@ services:
     profiles: [analytics]
     labels:
       <<: *site-labels
-      org.ghost.docker.role: tinybird-sync
       org.ghost.docker.lifecycle: one-shot
     logging: *default-logging
     command: >
@@ -394,7 +384,6 @@ services:
     profiles: [analytics]
     labels:
       <<: *site-labels
-      org.ghost.docker.role: tinybird-deploy
       org.ghost.docker.lifecycle: one-shot
     logging: *default-logging
     working_dir: /data/tinybird

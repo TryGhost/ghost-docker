@@ -1,23 +1,11 @@
-// Dotenv, as Docker Compose reads it: the one encoder and the one parser.
-//
-// An env file is data. It is never sourced or evaluated, and it is never
-// parsed by anything but this file, so reading and rewriting cannot disagree
-// about where a value starts and ends.
-//
-// Compose interpolates dotenv values even inside double quotes, so a literal
-// `$` is written `$$`, and double quotes are the only form that can represent
-// every value. The rules are in docs/configuration.md ("Value encoding") and
-// are verified by a round trip through real containers in tests/e2e/install.sh.
-//
-// Reading follows Compose's own parser (compose-go's dotenv package), not a
-// generic dotenv library: an unquoted value is literal but for `$$`, a single
-// quoted one is literal but for `\'`, and only a double-quoted one has
-// backslash escapes. test/integration/compose.test.ts checks every case in
-// test/dotenv.ts against the Compose in the image.
-//
-// A value whose quotes span several lines is valid dotenv but is not editable
-// here: it is skipped when listing keys, and reading or writing it fails with a
-// message saying to edit it by hand. Nothing written here ever produces one.
+// Dotenv, as Docker Compose reads it: the one encoder and the one parser. An
+// env file is data, never sourced or evaluated, and nothing else parses it,
+// so reading and rewriting cannot disagree about where a value ends. The
+// rules are Compose's own (compose-go's dotenv), as docs/configuration.md
+// ("Value encoding") states them; test/integration/compose.test.ts checks
+// every case in test/dotenv.ts against the Compose in the image. A value
+// whose quotes span several lines is not editable here, and nothing written
+// here produces one.
 
 /** How a value is written on its line. */
 export type Quoting = 'double' | 'single' | 'unquoted' | 'multiline';

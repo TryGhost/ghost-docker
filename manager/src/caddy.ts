@@ -1,13 +1,6 @@
-// A production site's Caddy routes, written once by `install` (docs/caddy.md).
-//
-//   caddy/Caddyfile        tracked, generic; imports the directories below
-//   caddy/sites/site.caddy written by install, then the operator's to edit
-//   caddy/custom/*.caddy   the operator's own sites
-//   caddy/global/*.caddy   the operator's global options
-//   caddy/snippets/*       imported by absolute path, with arguments
-//
-// After installation the manager never rewrites site.caddy, as Ghost-CLI
-// never rewrote the nginx file it generated.
+// A production site's Caddy routes, written once by `install` into
+// caddy/sites/site.caddy and never rewritten, as Ghost-CLI never rewrote the
+// nginx file it generated. The layout of caddy/ is docs/caddy.md.
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { atomicWrite } from './fs.ts';

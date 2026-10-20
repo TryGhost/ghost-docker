@@ -1,27 +1,11 @@
 // Joining a site's network, so its services can be spoken to directly
-// (clients.ts) rather than through programs run inside its containers.
-//
-// The manager is a container on the default bridge. 127.0.0.1 is itself, and
-// the host's ports are out of reach, but the daemon will attach it to any
-// network for as long as it needs one:
-//
-//   - The network is discovered, never guessed: it is the one the site's
-//     running containers share, as the daemon reports them, so a network
-//     renamed or made external by an override is found the same way.
-//   - Each service is addressed by its per-site alias (`db-<project>`), which
-//     stays unambiguous on a network several sites share; a service without
-//     one is addressed by its IP address on that network.
-//   - The manager joins only a network that exists, because a container on
-//     it is running, and leaves it when the work is done, failed or not,
-//     before anything can take the site down: `compose down` cannot remove a
-//     network a container is still attached to.
-//   - Several phases may hold the same network at once; the attachment is
-//     counted, and the last to finish leaves. One the manager already had
-//     before it asked is never taken away.
-//
-// This is direct service access. It proves a service answers on the site's
-// network, not that the site is reachable through its ingress, which
-// verify.ts asks of Caddy separately.
+// (clients.ts). The manager is a container on the default bridge, where
+// 127.0.0.1 is itself; the daemon attaches it to the network the site's
+// running containers share, discovered rather than guessed, and detaches it
+// when the last phase holding it finishes, before anything can take the site
+// down. An attachment the manager already had is never taken away. Services
+// are addressed by their per-site alias, or by address when an override
+// removed it (docs/architecture.md#verification-and-service-access).
 import type { ServiceState } from './compose.ts';
 import {
     connectNetwork,
@@ -33,6 +17,7 @@ import {
 } from './docker/client.ts';
 import { DaemonTimeout, DaemonUnreachable, type DockerTransport } from './docker/transport.ts';
 import type { Io } from './io.ts';
+import { PROJECT_LABEL } from './project.ts';
 
 /** The manager could not join the site's network, or the services are not on one. */
 export class NetworkUnavailable extends Error {}
@@ -50,9 +35,6 @@ export interface SiteNetwork {
     /** Null when the service has no running container on the network. */
     address: (service: string) => ServiceAddress | null;
 }
-
-/** The label Compose gives every container of a project. */
-const PROJECT_LABEL = 'com.docker.compose.project';
 
 /** How many phases of this process hold each network, per daemon. */
 interface Hold {

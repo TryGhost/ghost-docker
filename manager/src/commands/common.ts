@@ -114,7 +114,7 @@ export function lockPlanned(
 
 /**
  * The release the command line asked for. The launcher has already chosen the
- * image from these options (docs/configuration.md0); the manager checks them again, so a
+ * image from these options (docs/install.md#releases); the manager checks them again, so a
  * manager started any other way reads them the same, and records them.
  */
 export interface Requested {

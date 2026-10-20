@@ -1,32 +1,11 @@
 // Migration 0001-compose-profiles: an installation of the released `main`
-// layout, moved onto this one. It is how such a site comes to `self-update`
-// (docs/install.md#moving-from-the-released-main-layout).
-//
-// A `main` installation is a git clone that updates with `git pull`. It has no
-// launcher and no metadata; its compose.yml has no site-mode profiles; its one
-// `.env` is both Compose's settings and Ghost's configuration; its Caddyfile
-// is an untracked, hand-edited file; it runs a Ghost-CLI-layout Ghost image.
-// The served launcher, run in it as `self-update`, starts this release's
-// manager, which finds no metadata and that layout, and does the following:
-//
-//   1. Works out everything, changing nothing: the project's name, as Compose
-//      and the running containers have it, so volumes and certificates stay
-//      the site's; the Ghost version that runs, and the `next` image of
-//      exactly it; the new `.env`, `ghost.env` and routes, resolved by Compose
-//      with the operator's overrides and loaded by Caddy. Anything it cannot
-//      carry over stops it here, saying what to resolve.
-//   2. Keeps a copy of every file it will write, stops Ghost (and
-//      ActivityPub), writes the release's files and the site's own, and takes
-//      a checked backup of the databases and content.
-//   3. Starts the site on the new layout and verifies it.
-//
-// Recovery follows self-update's (docs/architecture.md#recovery): before
-// startup is attempted the old files are put back and Ghost started again as
-// it was; after, the services are stopped, the old files put back, and the
-// data left as it is, for the operator.
-//
-// Completion is recorded by what it writes: the metadata. A site with it is
-// never migrated again, so a second run is an ordinary self-update.
+// layout (a clone with one `.env`, a hand-edited Caddyfile, no launcher and
+// no metadata), moved onto this one by the served launcher's `self-update`.
+// It decides everything before changing anything, then follows self-update's
+// recovery boundary; writing the metadata is what completes it, so a second
+// run is an ordinary self-update. What each setting becomes is
+// docs/reference.md#moving-from-the-released-main-layout, and the invariants
+// docs/architecture.md#migration-from-the-released-main-layout.
 import {
     copyFileSync,
     cpSync,
@@ -87,7 +66,7 @@ import { takenPorts } from './ports.ts';
 import { git } from './process.ts';
 import { describeServices, Snapshot } from './recovery.ts';
 import { observeSite, resolveConfig, resolveSite, type ResolvedSite } from './resolved.ts';
-import { heading, ok, printChecks } from './report.ts';
+import { heading, note, ok } from './report.ts';
 import {
     COMPOSE_FILE,
     ENV_EXAMPLE_FILE,
@@ -769,7 +748,7 @@ function write(plan: Plan): Metadata {
     atomicWrite(join(dir, GHOST_ENV_FILE), plan.ghostEnv, PRIVATE);
     ok(io, GHOST_ENV_FILE, `${plan.split.ghost.length} Ghost settings, moved from .env`);
     for (const { key, reason } of plan.split.dropped) {
-        printChecks(io, [{ status: 'note', label: 'not carried', detail: `${key}: ${reason}` }]);
+        note(io, 'not carried', `${key}: ${reason}`);
     }
     atomicWrite(join(dir, SITE_FILE), plan.routes, 0o644);
     writeSnippets(dir, plan.snippets);
