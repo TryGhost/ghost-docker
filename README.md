@@ -48,7 +48,8 @@ Linux. There is no native Windows launcher.
 | [`compose.yml`](compose.yml) | The stack: Ghost, MySQL, Caddy, and optional analytics and ActivityPub services |
 | [`caddy/`](caddy) | The tracked Caddyfile and snippets, and where the site's routes go |
 | [`.env.example`](.env.example), [`ghost.env.example`](ghost.env.example) | Operator settings and Ghost application settings, deliberately separate |
-| [`docs/install.md`](docs/install.md) | Installing a site, and how it is verified |
+| [`docs/install.md`](docs/install.md) | Installing, importing, updating and backing up a site |
+| [`docs/reference.md`](docs/reference.md) | What each command checks, refuses and recovers, in detail |
 | [`docs/configuration.md`](docs/configuration.md) | The configuration contract: env files, value encoding, site modes and overrides |
 | [`docs/caddy.md`](docs/caddy.md) | The site's routes, and how to change them |
 | [`docs/bundle-v1.md`](docs/bundle-v1.md) | The Ghost-CLI migration bundle format |

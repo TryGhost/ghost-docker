@@ -9,7 +9,7 @@ criteria live in the [roadmap](ghost-cli-replacement.md).
 
 | Subject | Authoritative home |
 | --- | --- |
-| Commands, installation, migration steps and operator recovery | [install.md](install.md) |
+| Commands, installation, migration steps and operator recovery | [install.md](install.md), with detailed behaviour in [reference.md](reference.md) |
 | Environment encoding, profiles, overrides and image pins | [configuration.md](configuration.md) |
 | Routes and operator edits | [caddy.md](caddy.md) |
 | Migration bundle format, source requirements and fidelity | [bundle-v1.md](bundle-v1.md) |
@@ -164,7 +164,7 @@ for Ghost's Admin site endpoint. Production requests reach Caddy on the site's n
 the public/admin Host and SNI, and must return the configured canonical site URL.
 A healthy proxy or a certificate alone does not prove the route reaches this
 site. Published host ports are reported separately: the manager's loopback is
-not the host's. [Installation verification](install.md#how-a-site-is-verified) documents
+not the host's. [Installation verification](reference.md#how-a-site-is-verified) documents
 operator-visible results, including pending certificates before DNS cutover.
 
 ## Recovery
