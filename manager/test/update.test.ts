@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, test } from 'node:test';
-import { recoveryAdvice, type GhostUpdate, type NeedsOperator } from '../src/commands/update.ts';
+import { recoveryAdvice, type GhostUpdate, type NeedsOperator } from '../src/ghost-update.ts';
 import * as env from '../src/env.ts';
 import { acquireLock } from '../src/lock.ts';
 import { SCHEMA_VERSION, writeMetadata } from '../src/meta.ts';
