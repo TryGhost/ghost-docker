@@ -16,6 +16,14 @@ export const MINIMUM = {
 } as const;
 
 /**
+ * Before Docker Engine 28.0.0, a port published on 127.0.0.1 of a Linux host
+ * can be reached by other machines on the same L2 network: around Caddy, to
+ * Ghost directly. Older engines are supported, with a warning
+ * (docs/install.md#ports-and-your-existing-proxy).
+ */
+export const LOOPBACK_ISOLATED = '28.0.0';
+
+/**
  * Is `version` at least `minimum`? Versions are coerced first: a leading `v`
  * and anything after the numbers (`-beta.1`, `+ce`, `-desktop.1`) are
  * dropped, which is what a minimum-version check needs. Release ordering for
