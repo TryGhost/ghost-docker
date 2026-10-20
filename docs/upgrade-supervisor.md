@@ -83,6 +83,8 @@ without rules of its own for any component.
 | --- | --- | --- |
 | Newer Ghost in the site's major | `oneClick` | — |
 | The next Ghost major exists | `manual` | Major upgrades are not run from Admin. Points to the operator guide. |
+| A nightly site's `latest` is a newer build of its major ([Ghost channel](configuration.md#ghost-channel)) | `oneClick` | — |
+| A nightly site's `latest` is of the next major | `manual` | Major upgrades are not run from Admin. |
 | Newer stack release on the site's channel (image installations) | `manual` | The update replaces the supervisor itself. `./ghost-docker self-update`. |
 | A newer Ghost of the site's major that needs a newer stack | `manual` | Names the stack release it needs. Reserved: no release declares this yet. |
 
@@ -107,6 +109,9 @@ image.
   is kept, a warning diagnostic records the failed check, and `oneClick` is
   emptied once the last success is more than 24 hours old.
 - **Stack releases:** found the way `self-update --check` finds them.
+- **Nightly sites:** discovery pulls `ghost/nightly:latest` instead, and orders it
+  by when it was built, since two builds can report the same version. Only
+  nightly sites see nightly builds.
 
 ### Target allowlisting
 

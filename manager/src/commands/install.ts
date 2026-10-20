@@ -34,7 +34,14 @@ import { loadContext, type Context } from '../context.ts';
 import * as env from '../env.ts';
 import { CliError, describeError, EXIT, UsageError } from '../errors.ts';
 import { atomicWrite, PRIVATE } from '../fs.ts';
-import { resolveGhost, UPGRADE_ADAPTER, type ResolvedGhost } from '../ghost.ts';
+import {
+    channelImage,
+    GHOST_CHANNELS,
+    ghostChannelOf,
+    resolveGhost,
+    UPGRADE_ADAPTER,
+    type ResolvedGhost,
+} from '../ghost.ts';
 import { clearUnfinishedImport, Importing, importConflict } from '../import.ts';
 import type { Io, Prompter } from '../io.ts';
 import { isoSeconds, SCHEMA_VERSION, writeMetadata } from '../meta.ts';
@@ -169,7 +176,25 @@ const options = z
             .string()
             .optional()
             .describe(
-                'A Ghost version (6.61.0) or image tag (6-next-alpine). Resolved to an exact digest.',
+                'A Ghost version (6.61.0) or image tag (6-next-alpine); on the nightly channel, a build date (20261015) or latest. Resolved to an exact digest.',
+            ),
+        ghostImage: z
+            .string()
+            .regex(
+                /^[a-z0-9][a-z0-9.-]*(:[0-9]+)?(\/[a-z0-9]+([._-][a-z0-9]+)*)*$/,
+                refused(
+                    'must be an image repository, such as localhost:5000/ghost, without a tag or digest',
+                ),
+            )
+            .optional()
+            .describe(
+                "Ghost's image repository, for testing your own builds of Ghost, such as localhost:5000/ghost. --version names its tag. Default: ghost.",
+            ),
+        ghostChannel: z
+            .enum(GHOST_CHANNELS, refused('must be stable or nightly'))
+            .default('stable')
+            .describe(
+                "Ghost's channel: stable releases, or nightly builds of Ghost's main branch (ghost/nightly), for testing only. Default: stable.",
             ),
         with: services
             .default([])
@@ -199,6 +224,15 @@ const options = z
                 : null) ??
             (flags.channel !== undefined && flags.release !== undefined
                 ? 'choose --channel or --release, not both'
+                : null) ??
+            (flags.import !== undefined && flags.ghostChannel === 'nightly'
+                ? '--ghost-channel nightly cannot be combined with --import: an import runs at the source site’s exact Ghost release'
+                : null) ??
+            (flags.ghostImage !== undefined && flags.ghostChannel === 'nightly'
+                ? 'choose --ghost-image or --ghost-channel nightly, not both: the channel is its image'
+                : null) ??
+            (flags.ghostImage !== undefined && flags.import !== undefined
+                ? '--ghost-image cannot be combined with --import: an import runs on the published Ghost release'
                 : null) ??
             (flags.import === undefined ? null : importConflict(flags));
         if (conflict !== null) {
@@ -432,7 +466,9 @@ async function prepare(
 
     heading(io, 'Resolving the Ghost image');
     const ghost = await io.busy('Resolving the Ghost image', () =>
-        importing === null ? resolveGhost(io, flags.version) : importing.resolveGhost(),
+        importing === null
+            ? resolveGhost(io, flags.version, flags.ghostImage ?? channelImage(flags.ghostChannel))
+            : importing.resolveGhost(),
     );
     ok(io, 'ghost', `${ghost.image}:${ghost.tag} is Ghost ${ghost.version}, ${ghost.reference}`);
 
@@ -847,6 +883,11 @@ function printSummary(site: Site, importing: Importing | null) {
             `  Ghost Admin  ${admin}/ghost/`,
             `  Project      ${site.project} (${site.profiles}), in ${site.dir}`,
             `  Ghost        ${ghost.version}, ${ghost.reference}`,
+            ...(ghostChannelOf(ghost.image) === 'nightly'
+                ? [
+                      `  Channel      nightly: a build of Ghost's main branch, for testing, ${production ? 'which this production site should not run' : 'never for production'}`,
+                  ]
+                : []),
             `  Loopback     127.0.0.1:${site.port}`,
             ...(site.mailpitPort === null
                 ? []

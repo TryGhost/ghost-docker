@@ -209,6 +209,10 @@ export interface ImageApi {
     readonly manager?: () => string;
     /** Each tag pulled, in order. */
     readonly pulls?: string[];
+    /** The repository Ghost's tags are in: `ghost`, or `ghost/nightly`. */
+    readonly repository?: string;
+    /** When each tag's image was built; none when not named. */
+    readonly created?: Readonly<Record<string, string>>;
 }
 
 /** The daemon's answers about the images an image-mode command reads. */
@@ -219,21 +223,34 @@ export const imageApi =
         digests = {},
         manager,
         pulls,
+        repository = 'ghost',
+        created = {},
     }: ImageApi = {}) =>
     ({ method, path, query }: DockerRequest): DockerResponse | undefined => {
+        const digestOf = (tag: string) => digests[tag] ?? INDEX;
+        /** A tag, or the tag a digest is of. */
+        const known = (ref: string) =>
+            ref.startsWith('sha256:')
+                ? Object.keys(ghost).find((tag) => digestOf(tag) === ref)
+                : ref in ghost
+                  ? ref
+                  : undefined;
         if (method === 'POST' && path === '/images/create') {
             const tag = query?.tag ?? '';
             pulls?.push(tag);
-            return query?.fromImage !== 'ghost' || tag in ghost
+            return query?.fromImage !== repository || known(tag) !== undefined
                 ? { status: 200, body: Buffer.from('{"status":"Pulled"}\n') }
-                : json(404, { message: `manifest for ghost:${tag} not found` });
+                : json(404, { message: `manifest for ${repository}:${tag} not found` });
         }
-        const tag = /^\/images\/ghost:(.+)\/json$/.exec(path)?.[1];
-        if (method === 'GET' && tag !== undefined && tag in ghost) {
-            const digest = digests[tag] ?? INDEX;
+        const escaped = repository.replace('/', '\\/');
+        const ref = new RegExp(`^/images/${escaped}[:@](.+)/json$`).exec(path)?.[1];
+        const tag = ref === undefined ? undefined : known(ref);
+        if (method === 'GET' && tag !== undefined) {
+            const digest = digestOf(tag);
             return json(200, {
                 Id: digest,
-                RepoDigests: [`ghost@${digest}`],
+                Created: created[tag] ?? '',
+                RepoDigests: [`${repository}@${digest}`],
                 Config: {
                     Env: [
                         `GHOST_VERSION=${ghost[tag]}`,

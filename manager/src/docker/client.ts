@@ -163,6 +163,7 @@ export async function pullImage(
 
 const imageInspect = z.object({
     Id: z.string(),
+    Created: z.string().default(''),
     RepoDigests: z.array(z.string()).nullable().default([]),
     Config: z
         .looseObject({ Env: z.array(z.string()).nullable().default([]) })
@@ -174,6 +175,8 @@ export interface ImageFacts {
     readonly id: string;
     readonly repoDigests: readonly string[];
     readonly env: Readonly<Record<string, string>>;
+    /** When it was built, as the image says; null when it does not. */
+    readonly created: string | null;
 }
 
 /** An image the daemon holds, or null when it has none by that reference. */
@@ -194,7 +197,8 @@ export async function inspectImage(
                 env[entry.slice(0, equals)] = entry.slice(equals + 1);
             }
         }
-        return { id: image.Id, repoDigests: image.RepoDigests ?? [], env };
+        const created = Number.isNaN(Date.parse(image.Created)) ? null : image.Created;
+        return { id: image.Id, repoDigests: image.RepoDigests ?? [], env, created };
     } catch (error) {
         if (error instanceof DaemonError && error.status === 404) {
             return null;
