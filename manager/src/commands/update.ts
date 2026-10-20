@@ -3,7 +3,7 @@
 // supervisor share. Ghost runs its own migrations when it starts, so once
 // startup is attempted the site is never switched back to the older Ghost:
 // that does not undo them. See docs/architecture.md#recovery.
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { compare, major, valid } from 'semver';
 import { refuseDrift } from '../backup.ts';
@@ -23,14 +23,13 @@ import {
     type ResolvedGhost,
 } from '../ghost.ts';
 import type { Io } from '../io.ts';
-import { acquireLock } from '../lock.ts';
 import { requireMetadata, siteFiles, writeMetadata, type Metadata } from '../meta.ts';
 import { describeServices } from '../recovery.ts';
 import { resolveSite } from '../resolved.ts';
 import { heading, ok } from '../report.ts';
-import { ENV_FILE, META_FILE, UPDATE_DIR, type SiteFacts } from '../site.ts';
+import { ENV_FILE, META_FILE, type SiteFacts } from '../site.ts';
 import { runUpdate, type UpdateOutcome, type UpdatePlan } from '../update.ts';
-import { installedSite } from './common.ts';
+import { installedSite, lockPlanned, refuseUnfinished } from './common.ts';
 import { z } from 'zod';
 
 const options = z.object({
@@ -213,12 +212,8 @@ export const updateCommand = defineCommand({
             );
         }
         // Before anything else: the site an unfinished update left may be down.
-        if (!flags.check && existsSync(join(dir, UPDATE_DIR))) {
-            throw new CliError(
-                `${join(dir, UPDATE_DIR)} is left from an update that did not finish, and holds the files it\n` +
-                    '  would have put back. Once the site is as it should be (./ghost-docker check), remove it\n' +
-                    '  and run ./ghost-docker update again. Nothing has been changed.',
-            );
+        if (!flags.check) {
+            refuseUnfinished(dir, 'update');
         }
         // Pulled while the site keeps running: the slowest step, kept out of the outage.
         const variant = variantOf(from.tag);
@@ -252,7 +247,7 @@ export const updateCommand = defineCommand({
             await io.busy('Resolving the Compose project', () => resolveSite(io, dir)),
         );
 
-        const lock = acquireLock(dir, `update Ghost to ${to.version}`);
+        const lock = lockPlanned(dir, `update Ghost to ${to.version}`, metadata, 'update');
         try {
             return await apply(update, !flags.noBackup);
         } finally {

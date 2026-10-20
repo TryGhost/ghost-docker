@@ -390,6 +390,27 @@ describe('refusals that change nothing', () => {
         lock.release();
     });
 
+    test('a site another operation changed while this one prepared is refused under the lock', async () => {
+        const path = join(h.dir, '.ghost-docker.json');
+        const changed = JSON.parse(readFileSync(path, 'utf8'));
+        changed.ghost = { ...changed.ghost, version: '6.69.0', digest: `sha256:${'6'.repeat(64)}` };
+        const api = h.daemon.api!;
+        h.daemon.api = (request) => {
+            writeFileSync(path, JSON.stringify(changed));
+            return api(request);
+        };
+        const result = await update();
+        assert.equal(result.code, 1);
+        assert.match(
+            result.stderr,
+            /\.ghost-docker\.json changed while this update was being prepared/,
+        );
+        assert.match(result.stderr, /Run \.\/ghost-docker self-update again/);
+        assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), changed);
+        assert.ok(!existsSync(join(h.dir, '.ghost-docker.lock')));
+        assert.ok(!existsSync(join(h.dir, '.ghost-docker-update')));
+    });
+
     test('an unfinished update’s snapshot is never written over', async () => {
         mkdirSync(join(h.dir, '.ghost-docker-update'));
         const result = await update();
