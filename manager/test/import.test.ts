@@ -637,6 +637,18 @@ describe('refusals that change nothing', () => {
         assert.ok(!calls.some(({ args: called }) => called[0] !== 'config'), 'Compose ran');
     };
 
+    test('a bundle the filesystem has no room for is refused before it is unpacked', async () => {
+        const path = bundle(fixture('mysql-dump'));
+        writeFileSync(join(path, 'database.sql'), Buffer.alloc(100 * 1024 ** 2));
+        // Room for the unpacked bundle and a new MySQL, not for loading the dump.
+        h.daemon.freeBytes = 500 * 1024 ** 2;
+        await refusedWith(
+            ['--import', path],
+            1,
+            /there is not room for this import in .*: it needs about 657 MB and\n +500 MB is free\. That is 101 MB for the unpacked bundle and 556 MB for\n +MySQL to load its 100 MB database\.\n +Free some space, or import onto a larger disk\. Nothing has been changed\./,
+        );
+    });
+
     test('options that cannot be combined with an import are usage errors', async () => {
         const path = bundle(local('mysql-data'));
         for (const option of ['--domain', '--admin-domain']) {

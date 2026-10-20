@@ -11,7 +11,14 @@ import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from
 import { basename, join } from 'node:path';
 import { lt } from 'semver';
 import { CONTENT_ROOT, type BundleManifest } from './bundle/manifest.ts';
-import { BundleRefused, removeStaging, stageBundle, type StagedBundle } from './bundle/stage.ts';
+import {
+    BundleRefused,
+    measureBundle,
+    removeStaging,
+    stageBundle,
+    type BundleSize,
+    type StagedBundle,
+} from './bundle/stage.ts';
 import { isHostname } from './caddy.ts';
 import { ServiceUnreachable } from './clients.ts';
 import {
@@ -400,6 +407,43 @@ export function placeAdminFiles(
 }
 
 /**
+ * MySQL's data directory grows by more than the dump it loads: the tables with
+ * their indexes, about twice the dump's text, and the binary log, which
+ * records every row loaded.
+ */
+const DATABASE_GROWTH = 3;
+/** A new MySQL's own files before anything is loaded: redo and undo logs, system tables. */
+const MYSQL_BASE = 256 * 1024 ** 2;
+
+/**
+ * What an import writes under the site directory. The unpacked bundle stays
+ * staged until the import is verified, its content renamed into place rather
+ * than copied, and the database is loaded from it.
+ */
+function importNeeds({ total, database }: BundleSize): number {
+    return total + MYSQL_BASE + database * DATABASE_GROWTH;
+}
+
+const mb = (bytes: number) => Math.ceil(bytes / 1024 ** 2);
+
+/** Refuses, before anything is unpacked, an import the site's filesystem has no room for. */
+function checkRoom(io: Io, dir: string, size: BundleSize): void {
+    const free = io.freeBytes(dir);
+    const needs = importNeeds(size);
+    if (free === null || free >= needs) {
+        return;
+    }
+    throw new CliError(
+        `there is not room for this import in ${dir}: it needs about ${mb(needs)} MB and\n` +
+            `  ${mb(free)} MB is free. That is ${mb(size.total)} MB for the unpacked bundle` +
+            (size.database > 0
+                ? ` and ${mb(needs - size.total)} MB for\n  MySQL to load its ${mb(size.database)} MB database.`
+                : ` and ${mb(MYSQL_BASE)} MB for MySQL.`) +
+            '\n  Free some space, or import onto a larger disk. Nothing has been changed.',
+    );
+}
+
+/**
  * Stages and validates the bundle, then applies this release's policy to it.
  * A refusal leaves the site directory as it was.
  */
@@ -412,7 +456,10 @@ export async function readBundle(
     io.stdout('Reading the bundle\n');
     let staged: StagedBundle;
     try {
-        staged = await io.busy('Unpacking and checking the bundle', () => stageBundle(dir, bundle));
+        staged = await io.busy('Unpacking and checking the bundle', async () => {
+            checkRoom(io, dir, await measureBundle(bundle));
+            return stageBundle(dir, bundle);
+        });
     } catch (error) {
         if (error instanceof BundleRefused) {
             throw new BundleRefused(

@@ -17,7 +17,7 @@ import {
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, test } from 'node:test';
 import { crc32, gzipSync } from 'node:zlib';
-import { STAGING, stageBundle, type StagedBundle } from '../src/bundle/stage.ts';
+import { measureBundle, STAGING, stageBundle, type StagedBundle } from '../src/bundle/stage.ts';
 import { harness, type Harness } from './helpers.ts';
 import { fixture, type Manifest } from './site.ts';
 
@@ -434,5 +434,48 @@ describe('archives that are not bundles', () => {
         const source = bundleDir(fixture('mysql-dump'));
         rmSync(join(source, 'content'), { recursive: true });
         await refused(source, /no content\/ directory/);
+    });
+});
+
+describe('measuring a bundle before it is unpacked', () => {
+    const MB = 1024 ** 2;
+    /** A bundle whose 3 MB database compresses to almost nothing. */
+    const big = (name = 'bundle') => {
+        const source = bundleDir(fixture('mysql-dump'), name);
+        writeFileSync(join(source, 'database.sql'), Buffer.alloc(3 * MB));
+        return source;
+    };
+
+    test('every form is measured by what it unpacks to, not by its own size', async () => {
+        const source = big();
+        bundleDir(fixture('mysql-dump'), 'wrapped');
+        writeFileSync(join(work, 'wrapped', 'database.sql'), Buffer.alloc(3 * MB));
+        const wrapped = join(work, 'wrapped.tgz');
+        execFileSync('tar', ['-czf', wrapped, '-C', work, 'wrapped']);
+        for (const bundle of [
+            source,
+            tarOf(source, 'bundle.tgz'),
+            tarOf(source, 'bundle.tar', '-cf'),
+            wrapped,
+            zipOf(source, 'bundle.zip'),
+        ]) {
+            const size = await measureBundle(bundle);
+            assert.equal(size.database, 3 * MB, bundle);
+            // The database in whole blocks, and a block at least for each other entry.
+            assert.ok(size.total >= 3 * MB + 4 * 4096, `${bundle}: ${size.total}`);
+            assert.ok(size.total < 3 * MB + 64 * 4096, `${bundle}: ${size.total}`);
+        }
+        assert.ok(statSync(join(work, 'bundle.tgz')).size < MB);
+    });
+
+    test('a portable bundle has no database to load', async () => {
+        assert.equal((await measureBundle(bundleDir(fixture('portable')))).database, 0);
+    });
+
+    test('an archive that cannot be read is refused as when it is unpacked', async () => {
+        const cut = join(work, 'cut.tgz');
+        writeFileSync(cut, readFileSync(tarOf(big(), 'whole.tgz')).subarray(0, 200));
+        await assert.rejects(measureBundle(cut), /not an archive made by `ghost migrate-export`/);
+        await assert.rejects(measureBundle(join(work, 'missing')), /there is no bundle at/);
     });
 });

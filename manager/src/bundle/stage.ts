@@ -11,6 +11,12 @@
 //
 // Every later step of an import works from the staged copy; the bundle itself
 // is only ever read, and the launcher mounts it read-only.
+//
+// Before anything is unpacked, the bundle is measured from its own entries:
+// tar headers, zip directory sizes (which yauzl holds each entry's stream
+// to), or a directory's files. That is what unpacking can write, whatever
+// the archive's compression, so an import can refuse first when it will not
+// fit.
 import {
     chmodSync,
     closeSync,
@@ -31,7 +37,13 @@ import { pipeline } from 'node:stream/promises';
 import * as tar from 'tar';
 import yauzl from 'yauzl';
 import { CliError } from '../errors.ts';
-import { CONTENT_ROOT, namedFiles, readManifest, type BundleManifest } from './manifest.ts';
+import {
+    CONTENT_ROOT,
+    DATABASE_FILE,
+    namedFiles,
+    readManifest,
+    type BundleManifest,
+} from './manifest.ts';
 
 /** The staging directory, inside the site directory. */
 export const STAGING = '.import';
@@ -84,6 +96,34 @@ const clean = (name: string) => name.replace(/^(\.\/)+/, '').replace(/\/$/, '');
  */
 const isAppleDouble = (name: string) => basename(name).startsWith('._');
 
+/** The filesystem's allocation unit: every file takes whole blocks. */
+const BLOCK = 4096;
+const blocks = (size: number) => Math.max(1, Math.ceil(size / BLOCK)) * BLOCK;
+
+/** What a bundle takes once unpacked. */
+export interface BundleSize {
+    /** Every entry, in whole blocks. */
+    readonly total: number;
+    /** Its database file, which is loaded into MySQL; 0 when it has none. */
+    readonly database: number;
+}
+
+/** Sums entries as they are read. The database file is at the root, or under one directory. */
+function sizer(): { add: (name: string, size: number) => void; size: () => BundleSize } {
+    let total = 0;
+    let database = 0;
+    return {
+        add: (name, size) => {
+            total += blocks(size);
+            const parts = clean(name).split('/');
+            if (parts.length <= 2 && parts.at(-1) === DATABASE_FILE) {
+                database = Math.max(database, size);
+            }
+        },
+        size: () => ({ total, database }),
+    };
+}
+
 // --- Directories --------------------------------------------------------------
 
 /** Every entry under `root`, relative to it, not following links. */
@@ -121,6 +161,14 @@ function copyDirectory(bundle: string, target: string): void {
             copyFileSync(join(bundle, entry.name), destination);
         }
     }
+}
+
+function measureDirectory(bundle: string): BundleSize {
+    const sum = sizer();
+    for (const entry of walk(bundle)) {
+        sum.add(entry.name, entry.type === 'file' ? statSync(join(bundle, entry.name)).size : 0);
+    }
+    return sum.size();
 }
 
 // --- Tar archives -----------------------------------------------------------
@@ -172,6 +220,21 @@ async function unpackTar(bundle: string, target: string): Promise<void> {
     }
 }
 
+/** The sizes in a tar archive's headers, read without writing anything. */
+async function measureTar(bundle: string): Promise<BundleSize> {
+    const sum = sizer();
+    try {
+        await tar.t({
+            file: bundle,
+            strict: true,
+            onReadEntry: (entry) => sum.add(entry.path, entry.size),
+        });
+    } catch {
+        throw new BundleRefused(NOT_AN_ARCHIVE);
+    }
+    return sum.size();
+}
+
 // --- Zip archives -------------------------------------------------------------
 
 const S_IFMT = 0o170000;
@@ -212,6 +275,33 @@ function zipType(entry: yauzl.Entry): EntryType {
     return mode === 0 || mode === S_IFREG ? 'file' : 'special';
 }
 
+/** Why a zip could not be read. */
+function zipRefusal(error: unknown): BundleRefused {
+    // yauzl refuses unsafe names itself, before they are ever handed over.
+    const message = (error as Error).message;
+    const unsafe = /^(?:invalid relative path|absolute path): (.*)$/.exec(message);
+    return unsafe
+        ? new BundleRefused(`the archive holds a path that leaves the bundle: ${unsafe[1]}`)
+        : new BundleRefused(NOT_AN_ARCHIVE);
+}
+
+/** The sizes in a zip's central directory; unpacking cannot write more. */
+async function measureZip(bundle: string): Promise<BundleSize> {
+    let zip: yauzl.ZipFile | undefined;
+    try {
+        zip = await openZip(bundle);
+        const sum = sizer();
+        for (const entry of await zipEntries(zip)) {
+            sum.add(entry.fileName, entry.uncompressedSize);
+        }
+        return sum.size();
+    } catch (error) {
+        throw zipRefusal(error);
+    } finally {
+        zip?.close();
+    }
+}
+
 async function unpackZip(bundle: string, target: string): Promise<void> {
     let zip: yauzl.ZipFile;
     let entries: yauzl.Entry[];
@@ -219,15 +309,7 @@ async function unpackZip(bundle: string, target: string): Promise<void> {
         zip = await openZip(bundle);
         entries = await zipEntries(zip);
     } catch (error) {
-        // yauzl refuses unsafe names itself, before they are ever handed over.
-        const message = (error as Error).message;
-        const unsafe = /^(?:invalid relative path|absolute path): (.*)$/.exec(message);
-        if (unsafe) {
-            throw new BundleRefused(
-                `the archive holds a path that leaves the bundle: ${unsafe[1]}`,
-            );
-        }
-        throw new BundleRefused(NOT_AN_ARCHIVE);
+        throw zipRefusal(error);
     }
     try {
         for (const entry of entries) {
@@ -270,8 +352,10 @@ function magic(path: string, length: number): Buffer {
     }
 }
 
-/** Copies or unpacks the bundle into the empty `target`. */
-async function unpack(bundle: string, target: string): Promise<void> {
+type BundleForm = 'directory' | 'zip' | 'tar';
+
+/** What the bundle is: by content, not by name. */
+function formOf(bundle: string): BundleForm {
     let stats;
     try {
         stats = statSync(bundle);
@@ -279,11 +363,29 @@ async function unpack(bundle: string, target: string): Promise<void> {
         throw new BundleRefused(`there is no bundle at ${bundle}`);
     }
     if (stats.isDirectory()) {
-        copyDirectory(bundle, target);
-    } else if (!stats.isFile()) {
+        return 'directory';
+    }
+    if (!stats.isFile()) {
         throw new BundleRefused(`${bundle} is neither a bundle directory nor an archive`);
-    } else if (magic(bundle, 2).toString('latin1') === 'PK') {
-        // By content, not by name.
+    }
+    return magic(bundle, 2).toString('latin1') === 'PK' ? 'zip' : 'tar';
+}
+
+/** What unpacking the bundle writes, measured without writing anything. */
+export async function measureBundle(bundle: string): Promise<BundleSize> {
+    const form = formOf(bundle);
+    if (form === 'directory') {
+        return measureDirectory(bundle);
+    }
+    return form === 'zip' ? measureZip(bundle) : measureTar(bundle);
+}
+
+/** Copies or unpacks the bundle into the empty `target`. */
+async function unpack(bundle: string, target: string): Promise<void> {
+    const form = formOf(bundle);
+    if (form === 'directory') {
+        copyDirectory(bundle, target);
+    } else if (form === 'zip') {
         await unpackZip(bundle, target);
     } else {
         await unpackTar(bundle, target);
