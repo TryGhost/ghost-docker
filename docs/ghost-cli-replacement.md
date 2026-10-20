@@ -13,7 +13,7 @@ Linear](https://linear.app/ghost/issue/PLA-412).
 | --- | --- | --- |
 | Tagged single-site production | S5e production import, S12 qualification | Existing image self-update, local import, backup and restore |
 | Several sites behind shared Caddy | S13 | Existing backup/restore and released-main migration |
-| Admin-driven Ghost upgrades | S7 analytics acceptance, S9 core adapter/API, S10 Admin | Existing `update` and upgrade supervisor; S9 before S10; S13 integration if shipped |
+| Admin-driven Ghost upgrades | S9 core adapter/API, S10 Admin | Existing `update` and upgrade supervisor; S9 before S10; S13 integration if shipped |
 | Later extensions | S11 file secrets, S14 service references, S15 nightly transitions, S16 Redis | See each step |
 
 Qualify production on Linux with rootful Docker Engine. Local qualification also covers
@@ -42,17 +42,6 @@ assets, redirects and configuration preserved.
 its recovery, and the admin domain in CI; the cross-host move is run by hand. This replaces `main`'s
 `scripts/migrate.sh`; S12 must not merge `next-docker` into `main` before these
 scenarios pass.
-
-### S7 — Host-driven Ghost upgrades
-
-Repo: ghost-docker. `./ghost-docker update [version|latest]` moves a site within its
-Ghost major, through the update executor self-update shares (`src/update.ts`), as
-[install.md](install.md#update) describes. `tests/e2e/ghost-update.sh` covers an
-upgrade across real migrations, a target that fails after startup, and refusals in
-CI. Remaining:
-
-Acceptance on a site with analytics: the update reruns Tinybird sync from the new
-image and the deploy succeeds. It needs a Tinybird login, so it is run by hand.
 
 ### S9 — Ghost upgrade adapter and Admin API
 
@@ -113,7 +102,8 @@ Gates the first stable tag and merging `next-docker` into `main`. Include the la
 on Linux, macOS and WSL2. Consolidate CI and qualify the actual minimum supported tools
 and image versions. Run fresh local/production install, optional-service variants, CLI
 migration, legacy stack update, Ghost upgrade/recovery, supervisor/Admin, and restore
-scenarios. Before merging, pin the migration tests' `GD_RELEASED_MAIN`
+scenarios. On a site with analytics, `update` must rerun Tinybird sync from the new
+image and the deploy must succeed; it needs a Tinybird login, so it is run by hand. Before merging, pin the migration tests' `GD_RELEASED_MAIN`
 (default `origin/main`, in `manager/test/site.ts`, `tests/e2e/migrate-main.sh` and
 the manager CI job) to `main`'s last commit, and rerun them. Include Linux runtime tests and macOS-compatible shell/configuration checks.
 Record the [compatibility baseline](architecture.md#compatibility): the exact metadata
