@@ -7,7 +7,7 @@
 import { relative } from 'node:path';
 import { takeBackup } from './backup.ts';
 import { upAndWait } from './compose.ts';
-import { describeError } from './errors.ts';
+import { CliError, describeError } from './errors.ts';
 import type { Io } from './io.ts';
 import type { Metadata } from './meta.ts';
 import { runningServices, Snapshot, stopServices } from './recovery.ts';
@@ -92,6 +92,95 @@ export type UpdateOutcome =
           /** Where the files as they were are kept. */
           readonly snapshot: string;
       };
+
+/** One way out for the operator: what it does, and the commands, run in the site directory. */
+export interface RecoveryChoice {
+    readonly does: string;
+    readonly commands: readonly string[];
+}
+
+/**
+ * What the operator needs after an update that needs them, whoever ran it:
+ * the CLI prints it, the supervisor records it as the job's diagnostic.
+ * Paths are relative to the site.
+ */
+export interface RecoveryAdvice {
+    /** What recovery could not do, then what state the site is in. */
+    readonly facts: readonly string[];
+    /** Empty when there is nothing safe to suggest beyond the facts. */
+    readonly choices: readonly RecoveryChoice[];
+    /** Where the files as they were are kept, to remove once the site is right. */
+    readonly snapshot: string;
+}
+
+/** How a caller words its update: what the site was on, and what the operation is called. */
+export interface OutcomeWording {
+    /** As in "Ghost 6.68.0", "v1.2.0" or "the released main layout". */
+    readonly from: string;
+    /** As in "the update" or "the migration". */
+    readonly operation: string;
+}
+
+const keptBackup = (dir: string, backup: string | null, operation: string): string[] =>
+    backup === null
+        ? []
+        : [`The backup taken before ${operation} is kept in ${relative(dir, backup)}.`];
+
+/** A failure before startup, as the operator hears it: the site is as it was. */
+export function reportRestored(
+    io: Io,
+    dir: string,
+    outcome: Extract<UpdateOutcome, { state: 'restored' }>,
+    { from, operation }: OutcomeWording,
+): never {
+    const { resumed } = outcome;
+    io.stderr(
+        [
+            '',
+            `Restored: the site is back on ${from}, with its files as they were` +
+                (resumed.length > 0
+                    ? `. Its services were not changed; ${resumed.join(' and ')}, stopped for ${operation}, ${resumed.length > 1 ? 'are' : 'is'} running again.`
+                    : '. Its services were not changed.'),
+            ...keptBackup(dir, outcome.backup, operation),
+            '',
+        ].join('\n'),
+    );
+    throw new CliError(`${operation} failed; ${from} was restored.`);
+}
+
+/** A failure the operator must resolve, with the advice the caller worked out. */
+export function reportNeedsOperator(
+    io: Io,
+    dir: string,
+    outcome: Extract<UpdateOutcome, { state: 'needs-operator' }>,
+    advice: RecoveryAdvice,
+    { operation }: OutcomeWording,
+): never {
+    const lines = ['', 'The site needs you.', ...advice.facts.map((fact) => `  ${fact}`), ''];
+    if (advice.choices.length === 0) {
+        lines.push(...keptBackup(dir, outcome.backup, operation), '');
+    } else {
+        lines.push(
+            advice.choices.length === 1
+                ? 'In the site directory:'
+                : 'Choose one, in the site directory:',
+        );
+        for (const choice of advice.choices) {
+            lines.push(
+                `  - ${choice.does}:`,
+                ...choice.commands.map((command) => `      ${command}`),
+            );
+        }
+        lines.push('');
+    }
+    lines.push(
+        `The files as they were before ${operation} are in ${advice.snapshot}/files.`,
+        `Once the site is as it should be (./ghost-docker check), remove ${advice.snapshot}.`,
+        '',
+    );
+    io.stderr(lines.join('\n'));
+    throw new CliError(`${operation} failed, and the site needs the operator.`);
+}
 
 /** The update, with the site lock held and nothing left from an earlier one in UPDATE_DIR. */
 export async function runUpdate(plan: UpdatePlan): Promise<UpdateOutcome> {

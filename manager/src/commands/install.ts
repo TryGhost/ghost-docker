@@ -27,7 +27,7 @@ import {
 } from '../ghost.ts';
 import { clearUnfinishedImport, Importing, importConflict } from '../import.ts';
 import type { Io, Prompter } from '../io.ts';
-import { isoSeconds, SCHEMA_VERSION, writeMetadata } from '../meta.ts';
+import { installationMetadata, writeMetadata } from '../meta.ts';
 import {
     isCheckout,
     makeDirectories,
@@ -42,9 +42,11 @@ import { failed, heading, note, ok, printChecks } from '../report.ts';
 import {
     DATA_DIRS,
     ENV_FILE,
+    generatedSettings,
     GHOST_ENV_FILE,
     MAILPIT_DATA_DIR,
     META_FILE,
+    profileConflict,
     type SiteMode,
 } from '../site.ts';
 import { takenPorts } from '../ports.ts';
@@ -280,20 +282,14 @@ const imported = (importing: Importing, flags: Flags): Plan =>
 
 /** What a site of its mode cannot be, however its domains were given. */
 function checked(intent: Plan): Plan {
-    if (intent.mode === 'local' && intent.services.includes('activitypub')) {
-        throw new UsageError(
-            '--with activitypub is for production sites only: a local site has no Caddy to route to it',
-        );
+    for (const service of intent.services) {
+        const conflict = profileConflict(intent.mode, service);
+        if (conflict !== null) {
+            throw new UsageError(`--with ${service} ${conflict}`);
+        }
     }
-    if (intent.mode === 'production') {
-        if (intent.adminDomain !== '' && intent.adminDomain === intent.domain) {
-            throw new UsageError('--admin-domain must differ from --domain');
-        }
-        if (intent.services.includes('mailpit')) {
-            throw new UsageError(
-                "--with mailpit is for local sites only: it would catch a production site's real mail",
-            );
-        }
+    if (intent.adminDomain !== '' && intent.adminDomain === intent.domain) {
+        throw new UsageError('--admin-domain must differ from --domain');
     }
     return intent;
 }
@@ -607,31 +603,20 @@ function writeStack(site: Site, created: Created) {
 }
 
 function writeEnv(site: Site, created: Created) {
-    const { io, dir, intent, ghost, production } = site;
-    const settings: [string, string][] = [
-        ['COMPOSE_PROFILES', site.profiles],
-        ['SITE_MODE', intent.mode],
-        ['COMPOSE_PROJECT_NAME', site.project],
-        ['PROJECT_DIR', dir],
-        ['NODE_ENV', production ? 'production' : 'development'],
-        ['URL', site.url],
-        ['GHOST_IMAGE', ghost.image],
-        ['GHOST_VERSION', ghost.tag],
-        ['GHOST_IMAGE_REF', ghost.reference],
-        ['GHOST_CONTENT_PATH', ghost.contentPath],
-        ['GHOST_TINYBIRD_PATH', ghost.tinybirdPath],
-        ['GHOST_PORT', String(site.port)],
-        ...(site.mailpitPort === null
-            ? []
-            : [['MAILPIT_PORT', String(site.mailpitPort)] as [string, string]]),
-        ['RESTART_POLICY', production ? 'unless-stopped' : 'no'],
-        ['DATABASE_HOST', 'db'],
-        ['DATABASE_PORT', '3306'],
-        ['DATABASE_NAME', 'ghost'],
-        ['DATABASE_USER', 'ghost'],
-        ['DATABASE_PASSWORD', secret()],
-        ['DATABASE_ROOT_PASSWORD', secret()],
-    ];
+    const { io, dir, intent, ghost } = site;
+    const settings = generatedSettings({
+        mode: intent.mode,
+        profiles: site.profiles.split(','),
+        project: site.project,
+        dir,
+        url: site.url,
+        adminUrl: intent.adminDomain ? `https://${intent.adminDomain}` : '',
+        ghost,
+        port: site.port,
+        mailpitPort: site.mailpitPort,
+        ports: { http: String(PRODUCTION_PORTS.http), https: String(PRODUCTION_PORTS.https) },
+        database: { user: 'ghost', password: secret(), rootPassword: secret() },
+    });
     if (intent.services.includes('supervisor')) {
         // It runs as whoever installed the site, on the manager the launcher is pinned to.
         settings.push(
@@ -640,15 +625,6 @@ function writeEnv(site: Site, created: Created) {
             ['MANAGER_IMAGE_REF', site.pin ?? 'ghost-docker:checkout'],
             ['DOCKER_SOCKET', io.env.GD_HOST_SOCKET || '/var/run/docker.sock'],
         );
-    }
-    if (production) {
-        settings.push(
-            ['HTTP_PORT', String(PRODUCTION_PORTS.http)],
-            ['HTTPS_PORT', String(PRODUCTION_PORTS.https)],
-        );
-        if (intent.adminDomain) {
-            settings.push(['ADMIN_URL', `https://${intent.adminDomain}`]);
-        }
     }
     const path = join(dir, ENV_FILE);
     created.file(path);
@@ -735,37 +711,26 @@ function writeSiteRoutes({ io, dir, production, project, intent }: Site, created
 
 function writeSiteMetadata(site: Site, created: Created) {
     const { io, dir, clone, intent, ghost } = site;
-    const { version, channel } = site.release;
     created.file(join(dir, META_FILE));
-    writeMetadata(dir, {
-        schemaVersion: SCHEMA_VERSION,
-        installedAt: isoSeconds(),
-        updatedAt: null,
-        mode: intent.mode,
-        channel: clone ? null : channel,
-        source: clone ? 'checkout' : 'image',
-        stack: {
-            version,
-            ref: clone ? null : version,
-            image: site.pin,
-            previous: null,
-        },
-        site: {
-            project: site.project,
-            dir,
-            url: site.url,
-            domain: intent.domain || null,
-            adminDomain: intent.adminDomain || null,
-        },
-        ghost: {
-            image: ghost.image,
-            tag: ghost.tag,
-            version: ghost.version,
-            digest: ghost.digest,
-        },
-        profiles: site.profiles.split(','),
-        payload: created.checksums,
-    });
+    writeMetadata(
+        dir,
+        installationMetadata({
+            mode: intent.mode,
+            channel: clone ? null : site.release.channel,
+            source: clone ? 'checkout' : 'image',
+            stack: { version: site.release.version, image: site.pin },
+            site: {
+                project: site.project,
+                dir,
+                url: site.url,
+                domain: intent.domain,
+                adminDomain: intent.adminDomain,
+            },
+            ghost,
+            profiles: site.profiles.split(','),
+            payload: created.checksums,
+        }),
+    );
     ok(io, META_FILE, 'installation metadata');
 }
 

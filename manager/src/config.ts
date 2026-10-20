@@ -15,13 +15,12 @@ import {
     ENV_EXAMPLE_FILE,
     ENV_FILE,
     GHOST_ENV_FILE,
-    hasProfile,
     hostOf,
-    LOCAL_ONLY_PROFILES,
     OPTIONAL_PROFILES,
-    PRODUCTION_ONLY_PROFILES,
+    profileConflict,
     SITE_MODES,
     siteMode,
+    splitProfiles,
     unknownProfiles,
 } from './site.ts';
 
@@ -115,26 +114,10 @@ export async function validateEnv(io: Io, dir: string): Promise<Finding[]> {
             ),
         );
     }
-    if (mode === 'production') {
-        for (const profile of LOCAL_ONLY_PROFILES.filter((each) => hasProfile(profiles, each))) {
-            findings.push(
-                error(
-                    file,
-                    `COMPOSE_PROFILES selects ${profile}, which is for local sites only: in production it would catch the site's real mail`,
-                ),
-            );
-        }
-    }
-    if (mode === 'local') {
-        for (const profile of PRODUCTION_ONLY_PROFILES.filter((each) =>
-            hasProfile(profiles, each),
-        )) {
-            findings.push(
-                error(
-                    file,
-                    `COMPOSE_PROFILES selects ${profile}, which is for production sites only: a local site has no Caddy to route to it`,
-                ),
-            );
+    for (const profile of splitProfiles(profiles)) {
+        const conflict = mode === null ? null : profileConflict(mode, profile);
+        if (conflict !== null) {
+            findings.push(error(file, `COMPOSE_PROFILES selects ${profile}, which ${conflict}`));
         }
     }
     const declared = values.SITE_MODE;

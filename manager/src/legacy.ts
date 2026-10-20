@@ -14,9 +14,8 @@ import {
     readdirSync,
     readFileSync,
     rmSync,
-    statSync,
 } from 'node:fs';
-import { dirname, join, relative } from 'node:path';
+import { join, relative } from 'node:path';
 import { refuseMovedData, siteOverrides, takeBackup } from './backup.ts';
 import { renderRoutes, SITE_FILE } from './caddy.ts';
 import { freeOnHost } from './commands/install.ts';
@@ -53,14 +52,15 @@ import {
     type SplitEnv,
 } from './legacy/config.ts';
 import { acquireLock } from './lock.ts';
-import { isoSeconds, SCHEMA_VERSION, writeMetadata, type Metadata } from './meta.ts';
+import { installationMetadata, writeMetadata, type Metadata } from './meta.ts';
 import {
     LAUNCHER,
-    launcherContent,
     managerPin,
     payloadFiles,
-    sha256,
     stackDir,
+    writeLauncher,
+    writePayload,
+    type Written,
 } from './payload.ts';
 import { takenPorts } from './ports.ts';
 import { git } from './process.ts';
@@ -71,6 +71,7 @@ import {
     COMPOSE_FILE,
     ENV_EXAMPLE_FILE,
     ENV_FILE,
+    generatedSettings,
     GHOST_ENV_FILE,
     hostOf,
     META_FILE,
@@ -82,7 +83,7 @@ import {
     type SiteFacts,
     type SiteSettings,
 } from './site.ts';
-import { recover as recoverSite } from './update.ts';
+import { recover as recoverSite, reportNeedsOperator, reportRestored } from './update.ts';
 import { verifySite } from './verify.ts';
 import { atLeast } from './versions.ts';
 import { WriterPause } from './writers.ts';
@@ -304,28 +305,23 @@ async function prepare(
     );
     const profiles = ['production', ...oldProfiles];
     const generated: [string, string][] = [
-        ['COMPOSE_PROFILES', profiles.join(',')],
-        ['SITE_MODE', 'production'],
-        ['COMPOSE_PROJECT_NAME', project],
-        ['PROJECT_DIR', dir],
-        ['NODE_ENV', 'production'],
-        ['URL', `https://${domain}`],
-        ...(adminDomain ? [['ADMIN_URL', `https://${adminDomain}`] as [string, string]] : []),
-        ['GHOST_IMAGE', ghost.image],
-        ['GHOST_VERSION', ghost.tag],
-        ['GHOST_IMAGE_REF', ghost.reference],
-        ['GHOST_CONTENT_PATH', ghost.contentPath],
-        ['GHOST_TINYBIRD_PATH', ghost.tinybirdPath],
-        ['GHOST_PORT', String(port)],
-        ['RESTART_POLICY', 'unless-stopped'],
-        ['HTTP_PORT', old.HTTP_PORT || '80'],
-        ['HTTPS_PORT', old.HTTPS_PORT || '443'],
-        ['DATABASE_HOST', 'db'],
-        ['DATABASE_PORT', '3306'],
-        ['DATABASE_NAME', 'ghost'],
-        ['DATABASE_USER', old.DATABASE_USER || 'ghost'],
-        ['DATABASE_PASSWORD', old.DATABASE_PASSWORD!],
-        ['DATABASE_ROOT_PASSWORD', old.DATABASE_ROOT_PASSWORD!],
+        ...generatedSettings({
+            mode: 'production',
+            profiles,
+            project,
+            dir,
+            url: `https://${domain}`,
+            adminUrl: adminDomain ? `https://${adminDomain}` : '',
+            ghost,
+            port,
+            mailpitPort: null,
+            ports: { http: old.HTTP_PORT || '80', https: old.HTTPS_PORT || '443' },
+            database: {
+                user: old.DATABASE_USER || 'ghost',
+                password: old.DATABASE_PASSWORD!,
+                rootPassword: old.DATABASE_ROOT_PASSWORD!,
+            },
+        }),
         ['DATABASE_EXTRA_DATABASES', 'activitypub'],
         ['UPLOAD_LOCATION', old.UPLOAD_LOCATION || './data/ghost'],
         ['MYSQL_DATA_LOCATION', old.MYSQL_DATA_LOCATION || './data/mysql'],
@@ -723,24 +719,15 @@ async function apply(plan: Plan): Promise<number> {
 /** The release's files, the site's own, and the metadata, written last. */
 function write(plan: Plan): Metadata {
     const { io, dir, stack, files } = plan;
-    const checksums: Record<string, string> = {};
+    const written: Written = { checksums: {}, files: [], directories: [] };
 
     if (plan.hadCaddyfile) {
         copyFileSync(join(dir, LEGACY_CADDYFILE), join(dir, KEPT_CADDYFILE));
         ok(io, KEPT_CADDYFILE, 'your caddy/Caddyfile, kept for reference');
     }
-    for (const file of files) {
-        const source = join(stack, file);
-        const target = join(dir, file);
-        const content = readFileSync(source);
-        mkdirSync(dirname(target), { recursive: true, mode: 0o755 });
-        atomicWrite(target, content, statSync(source).mode & 0o777);
-        checksums[file] = sha256(content);
-    }
+    writePayload(dir, stack, files, written);
     ok(io, 'stack files', `${files.length} files of ${describeRelease(plan.release)}`);
-    const launcher = launcherContent(io.env, { image: plan.pin, channel: plan.release.channel });
-    atomicWrite(join(dir, LAUNCHER), launcher, 0o755);
-    checksums[LAUNCHER] = sha256(launcher);
+    writeLauncher(dir, io.env, { image: plan.pin, channel: plan.release.channel }, written);
     ok(io, LAUNCHER, `the launcher, pinned to ${plan.pin}`);
 
     atomicWrite(join(dir, ENV_FILE), plan.env, PRIVATE);
@@ -757,35 +744,22 @@ function write(plan: Plan): Metadata {
     }
     ok(io, SITE_FILE, 'the site’s routes; yours to edit');
 
-    const metadata: Metadata = {
-        schemaVersion: SCHEMA_VERSION,
-        installedAt: isoSeconds(),
-        updatedAt: null,
+    const metadata = installationMetadata({
         mode: 'production',
         channel: plan.release.channel,
         source: 'image',
-        stack: {
-            version: plan.release.version,
-            ref: plan.release.version,
-            image: plan.pin,
-            previous: null,
-        },
+        stack: { version: plan.release.version, image: plan.pin },
         site: {
             project: plan.project,
             dir,
             url: `https://${plan.domain}`,
             domain: plan.domain,
-            adminDomain: plan.adminDomain || null,
+            adminDomain: plan.adminDomain,
         },
-        ghost: {
-            image: plan.ghost.image,
-            tag: plan.ghost.tag,
-            version: plan.ghost.version,
-            digest: plan.ghost.digest,
-        },
+        ghost: plan.ghost,
         profiles: plan.profiles,
-        payload: checksums,
-    };
+        payload: written.checksums,
+    });
     writeMetadata(dir, metadata);
     ok(io, META_FILE, `installation metadata: migration ${MIGRATION} is done once this is written`);
     return metadata;
@@ -816,60 +790,48 @@ async function recover(
         afterStartup: 'restore',
     });
 
-    const kept =
-        backup === null
-            ? []
-            : [`The backup taken for the migration is kept in ${relative(dir, backup)}.`];
-    if (outcome.state === 'needs-operator') {
-        const { problems, running, filesBack } = outcome;
-        io.stderr(
-            [
-                '',
-                'The site needs you.',
-                ...problems.map((problem) => `  ${problem}`),
+    const wording = { from: FROM, operation: 'the migration' };
+    if (outcome.state === 'restored') {
+        reportRestored(io, dir, outcome, wording);
+    }
+    const { problems, running, filesBack } = outcome;
+    reportNeedsOperator(
+        io,
+        dir,
+        outcome,
+        {
+            facts: [
+                ...problems,
                 ...(servicesChanged
                     ? [
-                          'The new layout’s services started before the migration failed, and Ghost may have accepted',
-                          `writes since the backup. Nothing was loaded over them. Ghost ${plan.ghost.version} ran on the data`,
-                          'either way: the migration never changes Ghost’s version.',
+                          `The new layout’s services started before the migration failed, and Ghost may have accepted writes since the backup. Nothing was loaded over them. Ghost ${plan.ghost.version} ran on the data either way: the migration never changes Ghost’s version.`,
                       ]
                     : []),
                 describeServices(running),
                 ...(filesBack ? [`The files are ${FROM}'s again.`] : []),
-                '',
-                ...(filesBack
-                    ? [
-                          'Start the site as it was, on its data as it is: docker compose up -d',
-                          ...(backup === null
-                              ? []
-                              : [
-                                    `The databases and content as they were before the migration started anything are in`,
-                                    `${relative(dir, backup)} (checked). Once the cause is fixed and the migration has run,`,
-                                    `./ghost-docker restore --yes ${relative(dir, backup)} puts them back.`,
-                                ]),
-                      ]
-                    : kept),
-                '',
-                `The files as they were before the migration are in ${snapshot.root}/files.`,
-                `Once the site is as it should be, remove ${snapshot.root}.`,
-                '',
-            ].join('\n'),
-        );
-        throw new CliError('the migration failed, and the site needs the operator.');
-    }
-    const { resumed } = outcome;
-    io.stderr(
-        [
-            '',
-            `Restored: the site is on ${FROM} again, with its files as they were` +
-                (resumed.length > 0
-                    ? `. ${resumed.join(' and ')}, stopped for the migration, ${resumed.length > 1 ? 'are' : 'is'} running again.`
-                    : '.'),
-            ...kept,
-            '',
-        ].join('\n'),
+            ],
+            choices: filesBack
+                ? [
+                      {
+                          does: 'Start the site as it was, on its data as it is',
+                          commands: ['docker compose up -d'],
+                      },
+                      ...(backup === null
+                          ? []
+                          : [
+                                {
+                                    does: 'Once the cause is fixed and the migration has run, put the databases and content back as they were before the migration started anything (the backup is checked)',
+                                    commands: [
+                                        `./ghost-docker restore --yes ${relative(dir, backup)}`,
+                                    ],
+                                },
+                            ]),
+                  ]
+                : [],
+            snapshot: relative(dir, snapshot.root),
+        },
+        wording,
     );
-    throw new CliError(`the migration failed; ${FROM} was restored.`);
 }
 
 function summarize(plan: Plan, backup: string): void {

@@ -369,7 +369,7 @@ describe('migrating the released main layout', () => {
                 : scripted(spec);
         const result = await migrate();
         assert.equal(result.code, 1);
-        assert.match(result.stderr, /Restored: the site is on the released main layout again/);
+        assert.match(result.stderr, /Restored: the site is back on the released main layout/);
         assert.deepEqual(files(), before);
         assert.ok(site.running.has('ghost'));
         assert.equal(

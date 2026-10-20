@@ -257,8 +257,7 @@ order:
 ```
 
 `config set` never runs Compose, so it can fix a `COMPOSE_FILE` the manager
-refuses. The launcher refuses `GD_COMPOSE_OVERRIDES`, which earlier betas
-read: record the files in `COMPOSE_FILE` instead.
+refuses.
 
 Only the root `compose.override.yml` is implicit, and only without
 `COMPOSE_FILE`: `overrides/compose.override.yml` is an additional override
