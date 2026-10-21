@@ -11,7 +11,7 @@ Linear](https://linear.app/ghost/issue/PLA-412).
 
 | Outcome | Remaining work | Dependencies |
 | --- | --- | --- |
-| Tagged single-site production | S5e production import, S12 qualification | Existing image self-update, local import, backup and restore |
+| Tagged single-site production | S12 qualification | Existing image self-update, local and production import, backup and restore |
 | Several sites behind shared Caddy | S13 | Existing backup/restore and released-main migration |
 | Later extensions | S11 file secrets, S14 service references, S15 nightly transitions, S16 Redis | See each step |
 
@@ -21,24 +21,6 @@ supported qualification matrix. Daily start, stop and logs stay with Compose. St
 self-update remains image-only; checkout operators use Git and Compose and retain
 backup/restore. Automatic major Ghost/MySQL upgrades and arbitrary downgrades are
 outside the planned scope.
-
-### S5e — Production import and cutover
-
-Repo: ghost-docker. `install --import` takes production bundles and the cutover is
-documented in [install.md](install.md#moving-a-production-site). Remaining:
-
-Do not guess ownership as uid 1000 under rootless/user namespaces.
-
-Acceptance, on Linux with rootful Docker Engine and a real Ghost-CLI production
-install (MySQL, systemd, nginx): same-server and cross-host moves following the
-documented steps; a forced import failure leaving the directory as it was, with the
-documented recovery bringing back the source and nginx; a separate admin domain
-carried from the bundle; exact source version, staff sign-in, records, active theme,
-assets, redirects and configuration preserved.
-`tests/e2e/production-import.sh` covers the same-server move, the forced failure and
-its recovery, and the admin domain in CI; the cross-host move is run by hand. This replaces `main`'s
-`scripts/migrate.sh`; S12 must not merge `next-docker` into `main` before these
-scenarios pass.
 
 ### S11 — Optional file-based secrets
 
@@ -58,7 +40,7 @@ environment-based installs, older imports, restart, and restore still work.
 
 ### S12 — Single-site release qualification and documentation
 
-Repo: ghost-docker, with cross-repo fixtures. Deps: S5e, plus existing install,
+Repo: ghost-docker, with cross-repo fixtures. Deps: existing install, local and production import,
 backup/restore, self-update, released-main migration, and the upgrade supervisor with
 Ghost Admin's updates; qualify S13 and S11 when they have shipped.
 Gates the first stable tag and merging `next-docker` into `main`. Include the launcher
