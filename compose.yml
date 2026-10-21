@@ -13,6 +13,13 @@
 # Site modes are selected through COMPOSE_PROFILES and are additive:
 #   local       ghost + db, Ghost published on 127.0.0.1:${GHOST_PORT}
 #   production  ghost + db + caddy (HTTPS ingress)
+#   member      ghost + db, a production site behind the shared Caddy
+# and `infra` is the shared Caddy's own directory: caddy alone, for the
+# members' routes (docs/caddy.md#the-shared-caddy).
+#
+# Variables a site needs and the shared Caddy does not are not `:?`-guarded,
+# because Compose interpolates services its profiles leave out too:
+# `./ghost-docker config validate` requires them for a site.
 # Optional, per-site profiles: analytics, activitypub, and for local sites
 # mailpit, and `supervisor`, which runs Ghost updates asked for in Ghost Admin
 # (docs/upgrade-supervisor.md).
@@ -33,7 +40,7 @@ services:
     # Do not alter this without updating the Tinybird Sync container as well
     image: ${GHOST_IMAGE_REF:-${GHOST_IMAGE:-ghost}:${GHOST_VERSION:-6-next-alpine}}
     restart: ${RESTART_POLICY:-unless-stopped}
-    profiles: [local, production]
+    profiles: [local, production, member]
     labels:
       <<: *site-labels
       org.ghost.docker.lifecycle: long-running
@@ -49,7 +56,7 @@ services:
     # Container-owned keys. These override anything set in ghost.env.
     environment:
       NODE_ENV: ${NODE_ENV:-production}
-      url: ${URL:?URL is required (for example https://example.com or http://localhost:2368)}
+      url: ${URL:-}
       admin__url: ${ADMIN_URL:-}
       server__host: 0.0.0.0
       server__port: "2368"
@@ -58,9 +65,9 @@ services:
       database__connection__host: ${DATABASE_HOST:-db}
       database__connection__port: ${DATABASE_PORT:-3306}
       database__connection__user: ${DATABASE_USER:-ghost}
-      database__connection__password: ${DATABASE_PASSWORD:?DATABASE_PASSWORD is required}
+      database__connection__password: ${DATABASE_PASSWORD:-}
       database__connection__database: ${DATABASE_NAME:-ghost}
-      tinybird__tracker__endpoint: ${URL}/.ghost/analytics/api/v1/page_hit
+      tinybird__tracker__endpoint: ${URL:-}/.ghost/analytics/api/v1/page_hit
       tinybird__tracker__datasource: analytics_events
       tinybird__adminToken: ${TINYBIRD_ADMIN_TOKEN:-}
       tinybird__workspaceId: ${TINYBIRD_WORKSPACE_ID:-}
@@ -108,11 +115,14 @@ services:
           # Unique alias. Generated proxy routes and helper clients address Ghost
           # through this name, never through the bare `ghost` service name.
           - ghost-${COMPOSE_PROJECT_NAME:-ghost}
+      ingress:
+        aliases:
+          - ghost-${COMPOSE_PROJECT_NAME:-ghost}
 
   db:
     image: mysql:8.0.44@sha256:f37951fc3753a6a22d6c7bf6978c5e5fefcf6f31814d98c582524f98eae52b21
     restart: ${RESTART_POLICY:-unless-stopped}
-    profiles: [local, production]
+    profiles: [local, production, member]
     labels:
       <<: *site-labels
       org.ghost.docker.lifecycle: long-running
@@ -120,9 +130,9 @@ services:
     expose:
       - "3306"
     environment:
-      MYSQL_ROOT_PASSWORD: ${DATABASE_ROOT_PASSWORD:?DATABASE_ROOT_PASSWORD is required}
+      MYSQL_ROOT_PASSWORD: ${DATABASE_ROOT_PASSWORD:-}
       MYSQL_USER: ${DATABASE_USER:-ghost}
-      MYSQL_PASSWORD: ${DATABASE_PASSWORD:?DATABASE_PASSWORD is required}
+      MYSQL_PASSWORD: ${DATABASE_PASSWORD:-}
       MYSQL_DATABASE: ${DATABASE_NAME:-ghost}
       MYSQL_MULTIPLE_DATABASES: ${DATABASE_EXTRA_DATABASES:-activitypub}
     volumes:
@@ -184,10 +194,12 @@ services:
     networks:
       - ghost_network
 
+  # A production site's own Caddy, or with `infra`, the shared Caddy, which
+  # serves the members' routes from caddy/sites/.
   caddy:
     image: caddy:2.10.2-alpine@sha256:953131cfea8e12bfe1c631a36308e9660e4389f0c3dfb3be957044d3ac92d446
     restart: ${RESTART_POLICY:-unless-stopped}
-    profiles: [production]
+    profiles: [production, infra]
     labels:
       <<: *site-labels
       org.ghost.docker.lifecycle: long-running
@@ -212,8 +224,11 @@ services:
     depends_on:
       ghost:
         condition: service_started
+        # The shared Caddy has no Ghost of its own.
+        required: false
+    # Only what Caddy routes to is on this network: never MySQL.
     networks:
-      - ghost_network
+      - ingress
 
   traffic-analytics:
     image: ghost/traffic-analytics:1.0.450@sha256:33c0ff8a369040e1455b790cf1711c2ea7f3174bcd26230dc9f7fc77b401816c
@@ -239,6 +254,9 @@ services:
       ghost_network:
         aliases:
           - traffic-analytics-${COMPOSE_PROJECT_NAME:-ghost}
+      ingress:
+        aliases:
+          - traffic-analytics-${COMPOSE_PROJECT_NAME:-ghost}
 
   activitypub:
     image: ghcr.io/tryghost/activitypub:1.2.14@sha256:a607c8cd82d7d84eabec7abdb5c98e2788605572a0fa79ba75a872787e0084bc
@@ -258,10 +276,10 @@ services:
       MYSQL_HOST: ${DATABASE_HOST:-db}
       MYSQL_PORT: ${DATABASE_PORT:-3306}
       MYSQL_USER: ${DATABASE_USER:-ghost}
-      MYSQL_PASSWORD: ${DATABASE_PASSWORD:?DATABASE_PASSWORD is required}
+      MYSQL_PASSWORD: ${DATABASE_PASSWORD:-}
       MYSQL_DATABASE: ${ACTIVITYPUB_DATABASE_NAME:-activitypub}
       LOCAL_STORAGE_PATH: /opt/activitypub/content/images/activitypub
-      LOCAL_STORAGE_HOSTING_URL: ${URL}/content/images/activitypub
+      LOCAL_STORAGE_HOSTING_URL: ${URL:-}/content/images/activitypub
     depends_on:
       db:
         condition: service_healthy
@@ -269,6 +287,9 @@ services:
         condition: service_completed_successfully
     networks:
       ghost_network:
+        aliases:
+          - activitypub-${COMPOSE_PROJECT_NAME:-ghost}
+      ingress:
         aliases:
           - activitypub-${COMPOSE_PROJECT_NAME:-ghost}
 
@@ -322,7 +343,7 @@ services:
       org.ghost.docker.lifecycle: one-shot
     logging: *default-logging
     environment:
-      MYSQL_DB: mysql://${DATABASE_USER:-ghost}:${DATABASE_PASSWORD:?DATABASE_PASSWORD is required}@tcp(${DATABASE_HOST:-db}:${DATABASE_PORT:-3306})/${ACTIVITYPUB_DATABASE_NAME:-activitypub}
+      MYSQL_DB: mysql://${DATABASE_USER:-ghost}:${DATABASE_PASSWORD:-}@tcp(${DATABASE_HOST:-db}:${DATABASE_PORT:-3306})/${ACTIVITYPUB_DATABASE_NAME:-activitypub}
     depends_on:
       db:
         condition: service_healthy
@@ -411,3 +432,10 @@ volumes:
 
 networks:
   ghost_network:
+  # What Caddy reaches the site's services on. A site with its own Caddy gets
+  # one of its own. Behind the shared Caddy, and in its directory, it is the
+  # shared Caddy's network, which the manager creates and no project owns
+  # (`.env` names it).
+  ingress:
+    name: ${INGRESS_NETWORK:-${COMPOSE_PROJECT_NAME:-ghost}_ingress}
+    external: ${INGRESS_EXTERNAL:-false}

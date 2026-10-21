@@ -42,7 +42,14 @@ import { compareReleases, isRelease } from '../release.ts';
 import { resolveSite } from '../resolved.ts';
 import { heading, note, ok } from '../report.ts';
 import * as env from '../env.ts';
-import { COMPOSE_FILE, ENV_FILE, META_FILE, type SiteFacts, type SiteMode } from '../site.ts';
+import {
+    COMPOSE_FILE,
+    ENV_FILE,
+    layoutOf,
+    META_FILE,
+    type Layout,
+    type SiteFacts,
+} from '../site.ts';
 import {
     reportNeedsOperator,
     reportRestored,
@@ -125,18 +132,18 @@ const checksumOf = (path: string): string | null =>
     existsSync(path) ? sha256(readFileSync(path)) : null;
 
 /**
- * What the update does to each managed file of a site of this mode. A file is
+ * What the update does to each managed file of a site of this layout. A file is
  * untouched when its checksum is the one recorded when the manager wrote it.
  */
 function planPayload(
     dir: string,
     stack: string,
-    mode: SiteMode,
+    layout: Layout,
     recorded: Record<string, string>,
 ): Payload {
     const changes: FileChange[] = [];
     const checksums: Record<string, string> = {};
-    const files = payloadFiles(stack, mode);
+    const files = payloadFiles(stack, layout);
     for (const file of files) {
         const wanted = sha256(readFileSync(join(stack, file)));
         const present = checksumOf(join(dir, file));
@@ -339,7 +346,12 @@ export const selfUpdateCommand = defineCommand({
         }
 
         const stack = stackDir(io.env);
-        const payload = planPayload(dir, stack, metadata.mode, metadata.payload);
+        const payload = planPayload(
+            dir,
+            stack,
+            layoutOf(site.settings.get('COMPOSE_PROFILES') ?? metadata.mode),
+            metadata.payload,
+        );
         const update: Update = { io, site, metadata, from, to, release, stack, payload };
 
         if (flags.check) {

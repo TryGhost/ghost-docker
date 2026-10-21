@@ -51,6 +51,43 @@ export type ConfigFile = (typeof CONFIG_FILES)[number];
 export const SITE_MODES = ['local', 'production'] as const;
 export type SiteMode = (typeof SITE_MODES)[number];
 
+/**
+ * A production site behind the shared Caddy (shared.ts): Ghost and MySQL of
+ * its own, its routes in the shared Caddy's directory. Its mode is production.
+ */
+export const MEMBER_PROFILE = 'member';
+/** The shared Caddy's own directory: Caddy alone, and no site. */
+export const INFRA_PROFILE = 'infra';
+
+/** The profiles that select a site's mode, and the mode each selects. */
+const MODE_PROFILES: Readonly<Record<string, SiteMode>> = {
+    local: 'local',
+    production: 'production',
+    [MEMBER_PROFILE]: 'production',
+};
+
+/**
+ * What a directory's files are for: a site of either mode, a production site
+ * behind the shared Caddy, or the shared Caddy itself. The stack files each
+ * one needs differ (payload.ts).
+ */
+export type Layout = SiteMode | typeof MEMBER_PROFILE | typeof INFRA_PROFILE;
+
+/** The layout COMPOSE_PROFILES selects; a production one unless it says otherwise. */
+export function layoutOf(profiles: string): Layout {
+    const selected = splitProfiles(profiles);
+    for (const layout of [INFRA_PROFILE, MEMBER_PROFILE, 'local'] as const) {
+        if (selected.includes(layout)) {
+            return layout;
+        }
+    }
+    return 'production';
+}
+
+/** Does this `.env` belong to the shared Caddy's directory rather than a site? */
+export const isInfra = (settings: SiteSettings): boolean =>
+    hasProfile(settings.get('COMPOSE_PROFILES') ?? '', INFRA_PROFILE);
+
 /** Additive, per-site. `supervisor` runs the upgrade supervisor (docs/upgrade-supervisor.md). */
 export const OPTIONAL_PROFILES = ['analytics', 'activitypub', 'mailpit', 'supervisor'] as const;
 
@@ -89,17 +126,17 @@ export const splitProfiles = (profiles: string): string[] =>
  * none or more than one. Optional profiles never select a mode.
  */
 export function siteMode(profiles: string): SiteMode | null {
-    const modes = splitProfiles(profiles).filter((profile): profile is SiteMode =>
-        (SITE_MODES as readonly string[]).includes(profile),
+    const modes = splitProfiles(profiles).filter((profile) =>
+        Object.hasOwn(MODE_PROFILES, profile),
     );
-    return modes.length === 1 ? modes[0]! : null;
+    return modes.length === 1 ? MODE_PROFILES[modes[0]!]! : null;
 }
 
 /** Profiles that are neither a site mode nor a known optional profile. */
 export const unknownProfiles = (profiles: string): string[] =>
     splitProfiles(profiles).filter(
         (profile) =>
-            !(SITE_MODES as readonly string[]).includes(profile) &&
+            !Object.hasOwn(MODE_PROFILES, profile) &&
             !(OPTIONAL_PROFILES as readonly string[]).includes(profile),
     );
 
@@ -135,8 +172,10 @@ export function generatedSettings(input: {
     >;
     readonly port: number;
     readonly mailpitPort: number | null;
-    /** Caddy's, written for a production site. */
+    /** Caddy's, written for a production site with a Caddy of its own. */
     readonly ports: { readonly http: string; readonly https: string };
+    /** The shared Caddy's network, for a site behind it; null for one with its own. */
+    readonly ingress: string | null;
     readonly database: {
         readonly user: string;
         readonly password: string;
@@ -161,7 +200,10 @@ export function generatedSettings(input: {
         GHOST_PORT: String(input.port),
         ...(input.mailpitPort === null ? {} : { MAILPIT_PORT: String(input.mailpitPort) }),
         RESTART_POLICY: production ? 'unless-stopped' : 'no',
-        ...(production ? { HTTP_PORT: input.ports.http, HTTPS_PORT: input.ports.https } : {}),
+        ...(production && input.ingress === null
+            ? { HTTP_PORT: input.ports.http, HTTPS_PORT: input.ports.https }
+            : {}),
+        ...(input.ingress === null ? {} : ingressSettings(input.ingress)),
         DATABASE_HOST: 'db',
         DATABASE_PORT: '3306',
         DATABASE_NAME: 'ghost',
@@ -170,6 +212,12 @@ export function generatedSettings(input: {
         DATABASE_ROOT_PASSWORD: database.rootPassword,
     });
 }
+
+/** What puts a directory's services on the shared Caddy's network, which it does not create. */
+export const ingressSettings = (network: string): Record<string, string> => ({
+    INGRESS_NETWORK: network,
+    INGRESS_EXTERNAL: 'true',
+});
 
 /** The hostname a URL names, or '' when it is not a URL. */
 export const hostOf = (url: string): string => {
@@ -187,6 +235,8 @@ export interface SiteFacts {
     /** The hosts of URL and ADMIN_URL: what Caddy should serve, in production. */
     readonly domain: string;
     readonly adminDomain: string;
+    /** A production site behind the shared Caddy, rather than one with a Caddy of its own. */
+    readonly member: boolean;
     readonly settings: SiteSettings;
 }
 
@@ -198,5 +248,6 @@ export function siteFacts(dir: string, settings: SiteSettings): SiteFacts {
         mode: siteMode(value('COMPOSE_PROFILES')),
         domain: hostOf(value('URL')),
         adminDomain: hostOf(value('ADMIN_URL')),
+        member: hasProfile(value('COMPOSE_PROFILES'), MEMBER_PROFILE),
     };
 }

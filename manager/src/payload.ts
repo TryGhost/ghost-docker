@@ -2,7 +2,7 @@
 // manager image carries and `install` writes into an image-mode site, with a
 // checksum of each recorded in the metadata so `self-update` can tell an
 // untouched file from an edited one, and a launcher pinned to the image. A
-// local site gets only the files its mode uses. A checkout's files are used
+// directory gets only the files its layout uses. A checkout's files are used
 // in place (docs/architecture.md#installation-and-import).
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, statSync } from 'node:fs';
@@ -12,7 +12,7 @@ import { inspectImage, splitReference } from './docker/client.ts';
 import { CliError } from './errors.ts';
 import { atomicWrite, filesUnder } from './fs.ts';
 import type { Io } from './io.ts';
-import type { SiteMode } from './site.ts';
+import type { Layout } from './site.ts';
 
 export const stackDir = (env: NodeJS.ProcessEnv): string =>
     env.GD_STACK_DIR ?? '/opt/ghost-docker/stack';
@@ -29,18 +29,26 @@ export const sha256 = (content: string | Buffer): string =>
 export const isCheckout = (context: Context, dir: string): boolean =>
     context.source === 'checkout' && existsSync(join(dir, 'manager', 'Dockerfile'));
 
-/** Top-level payload directories only production sites use: Caddy, and analytics's Tinybird jobs. */
-const PRODUCTION_ONLY = ['caddy', 'tinybird'];
+/**
+ * The top-level payload entries a directory of each layout does without: a
+ * local site has no Caddy and cannot select analytics, whose Tinybird jobs
+ * are built from tinybird/; a site behind the shared Caddy has its routes in
+ * the shared Caddy's directory; and that directory runs Caddy alone.
+ */
+const UNUSED: Record<Layout, readonly string[]> = {
+    local: ['caddy', 'tinybird'],
+    production: [],
+    member: ['caddy'],
+    infra: ['mysql-init', 'tinybird', 'ghost.env.example'],
+};
 
 /**
  * Every file of the payload, relative to the stack directory, in a stable
- * order; with a mode, only those a site of that mode uses.
+ * order; with a layout, only those a directory of that layout uses.
  */
-export function payloadFiles(stack: string, mode?: SiteMode): string[] {
-    const files = filesUnder(stack);
-    return mode === 'local'
-        ? files.filter((file) => !PRODUCTION_ONLY.includes(file.split('/')[0]!))
-        : files;
+export function payloadFiles(stack: string, layout?: Layout): string[] {
+    const unused = layout === undefined ? [] : UNUSED[layout];
+    return filesUnder(stack).filter((file) => !unused.includes(file.split('/')[0]!));
 }
 
 /** Paths, files and directories, the payload and launcher would write over. */

@@ -15,8 +15,9 @@ happens underneath them.
    ownership, and that a sibling container sees the directory at the same
    path), and disk and memory, which warn rather than refuse.
 3. **Ports Docker knows about.** The default port skips any that a container
-   publishes. An explicit `--port`, or 80 and 443 for a production site, that
-   a container publishes is an error naming the container. Nothing is
+   publishes. An explicit `--port`, or 80 and 443 for a production site with
+   a Caddy of its own, that a container publishes is an error naming the
+   container. Nothing is
    stopped. Ports held by anything else are found when the services start;
    see [Ports](#ports).
 4. **The exact Ghost image.** The requested tag is pulled, and the pulled
@@ -38,7 +39,14 @@ happens underneath them.
    copy of the example, whose SMTP block is a placeholder.
 7. **Routing**, in production: `caddy/sites/site.caddy`, written once with
    the site's domains, its network aliases and every snippet argument. It is
-   yours from then on; see [caddy.md](caddy.md).
+   yours from then on; see [caddy.md](caddy.md). On a server with [the shared
+   Caddy](caddy.md#the-shared-caddy), the site selects the `member` profile
+   instead of `production` and has no Caddy of its own: the routes are written
+   to the shared Caddy's `caddy/sites/<project>.caddy`, through its running
+   container, as the owner of that directory, then Caddy validates its whole
+   configuration and reloads. Before anything is written, a shared Caddy that
+   is not running, a project that already has routes there, and a domain it
+   already serves are refused; routes Caddy does not accept are removed again.
 8. **Metadata**: `.ghost-docker.json`, described in
    [architecture.md](architecture.md#installation-metadata).
 9. **Start and verify**, unless `--no-start`: `docker compose up --wait`, so
@@ -47,11 +55,35 @@ happens underneath them.
    readiness.
 
 **A failed installation removes what it created** — containers, network,
-volumes, the data directories, `.env`, `ghost.env`, the metadata and the
-written stack files — so the same command can simply be run again in the same
+volumes, the data directories, `.env`, `ghost.env`, the metadata, the
+written stack files and a member's routes in the shared Caddy — so the same command can simply be run again in the same
 directory. That covers a port conflict, a failed pull, a service that never
 becomes healthy, and a site that starts but cannot be reached. Before removing
 anything it prints the services' last log lines.
+
+### install --infra
+
+Sets up [the shared Caddy](caddy.md#the-shared-caddy) in an empty directory:
+`compose.yml`, `caddy/` and the launcher, an `.env` selecting the `infra`
+profile, and the network `ghost-ingress`, labelled with the directory and
+project, which no Compose project owns. It takes no site options, and writes
+no `ghost.env`, data directories or metadata: there is no Ghost. It refuses a
+daemon that already has the network, and 80 and 443 held by a container.
+Caddy must start and pass its health check; a failure removes everything,
+the network included. Site commands (`check`, `backup`, `update`,
+`self-update`, `remove`, ...) refuse its directory; `config` works there.
+
+## remove
+
+`./ghost-docker remove [--yes]` takes the site in this directory down and
+leaves everything else on the server as it was. Behind the shared Caddy, it
+first removes the site's `caddy/sites/<project>.caddy` there and reloads the
+shared Caddy, which must be running. Then `docker compose down` removes the
+site's containers and networks; its volumes, directory, data and backups
+stay, and `docker compose up -d` starts it again (behind the shared Caddy,
+once its routes are back). It asks first, at a terminal; without one it needs
+`--yes`. It holds the site's lock, so it is refused while a backup, restore or
+update runs.
 
 ## How a site is verified
 
@@ -67,6 +99,7 @@ Each answer is reported for what it is:
 | caddy | Its health check: its admin API answers, with its configuration loaded. That says Caddy is up, not that it serves each name; **https** shows that once there is a certificate. | `ok` or `ERROR` |
 | https | An HTTPS request to Caddy's container for Ghost's `/ghost/api/admin/site/`, with the domain as its server name and Host, as a browser asks. **serving** means this site's Ghost answered through Caddy: Ghost reports its site's URL, and that must be the site's `URL` (by either name, the canonical one, not the admin domain). It names the certificate's issuer and expiry; a certificate from a CA browsers do not trust (staging, or Caddy's internal CA) is a `warning`. **pending** means Caddy has no certificate for the name yet, so Ghost could not be asked through it: Caddy obtains one once the domain's DNS reaches this host, `./ghost-docker check` reports the change, and `docker compose logs caddy` shows each attempt. Caddy answering with something other than Ghost (a broken route, a 502), another site's Ghost (a route to the wrong upstream), or an out-of-date certificate, is an `ERROR`. | `ok`, `warning`, `note` or `ERROR` |
 | admin https | With an admin domain of its own: the same, for that name. Ghost reached by the admin domain still reports the site's `URL`, which is what is checked. On the site's domain, Ghost answering the Admin API path with a redirect to the admin domain counts as Ghost answering; the admin domain's own answer then names the site. | `ok`, `warning`, `note` or `ERROR` |
+| shared caddy, routes | Behind [the shared Caddy](caddy.md#the-shared-caddy), in place of **caddy**: the shared Caddy's health check, from its container, and that its `caddy/sites/<project>.caddy` exists. A server without the shared Caddy's network is an `ERROR`. **https** then asks the shared Caddy, on its network. | `ok` or `ERROR` |
 | mailpit | With `--with mailpit`: its health check. The check names `mailpit-${COMPOSE_PROJECT_NAME}:1025`, where Ghost sends mail. | `ok` or `ERROR` |
 | published ports | The ports Docker says it published. A container cannot reach the host's own loopback interface, so they are not checked from there (the **https** request goes to Caddy's container, not to the host's ports): opening the URL is that check. | `note` |
 

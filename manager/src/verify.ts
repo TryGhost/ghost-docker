@@ -7,7 +7,15 @@ import type { Io } from './io.ts';
 import { NetworkUnavailable, type SiteNetwork } from './network.ts';
 import { CliError } from './errors.ts';
 import { failed, heading, printChecks, type Check } from './report.ts';
-import { hasProfile, readSettings, siteFacts, type SiteFacts } from './site.ts';
+import {
+    describeShared,
+    findSharedCaddy,
+    INGRESS_NETWORK,
+    routeFiles,
+    routesFile,
+    routesPath,
+} from './shared.ts';
+import { hasProfile, MEMBER_PROFILE, readSettings, siteFacts, type SiteFacts } from './site.ts';
 
 const describeState = (state: ServiceState | undefined): string =>
     state ? [state.State, state.Health].filter(Boolean).join(', ') : 'no container';
@@ -198,14 +206,20 @@ export async function verifyIngress(
     const checks: Check[] = [
         healthy('ghost', state('ghost'), 'its Admin API answers inside the container'),
     ];
+    // A member's Caddy is the shared one, in another project.
+    const shared = production && site.member ? await sharedCaddyOf(io, site, checks) : null;
+    const caddy = shared === null ? state('caddy') : shared.state;
     if (production) {
         checks.push(
             healthy(
-                'caddy',
-                state('caddy'),
+                shared === null ? 'caddy' : 'shared caddy',
+                caddy,
                 'its admin API answers, with its configuration loaded',
             ),
         );
+        if (shared?.routes) {
+            checks.push(shared.routes);
+        }
         // The domain, and the admin domain when it has one of its own.
         const adminElsewhere =
             site.adminDomain !== '' && site.adminDomain !== site.domain ? site.adminDomain : null;
@@ -228,15 +242,19 @@ export async function verifyIngress(
         } else {
             try {
                 checks.push(
-                    ...(await io.siteNetwork(services ?? [], ['caddy'], async (network) => {
-                        const answers: Check[] = [];
-                        for (const [label, name, elsewhere] of names) {
-                            answers.push(
-                                await https(io, network, label, name, expected, elsewhere),
-                            );
-                        }
-                        return answers;
-                    })),
+                    ...(await io.siteNetwork(
+                        caddy === undefined ? [] : [caddy],
+                        ['caddy'],
+                        async (network) => {
+                            const answers: Check[] = [];
+                            for (const [label, name, elsewhere] of names) {
+                                answers.push(
+                                    await https(io, network, label, name, expected, elsewhere),
+                                );
+                            }
+                            return answers;
+                        },
+                    )),
                 );
             } catch (failure) {
                 if (!(failure instanceof NetworkUnavailable)) {
@@ -259,11 +277,82 @@ export async function verifyIngress(
         label: 'published ports',
         detail:
             `Docker publishes Ghost on ${publishedPorts(services, 'ghost')}` +
-            (production ? ` and Caddy on ${publishedPorts(services, 'caddy')}` : '') +
+            (production
+                ? ` and ${shared === null ? 'Caddy' : 'the shared Caddy'} on ${publishedPorts(shared === null ? services : [shared.state].filter((each) => each !== undefined), 'caddy')}`
+                : '') +
             (withMailpit ? `, and Mailpit's inbox on ${publishedPorts(services, 'mailpit')}` : '') +
             '; a container cannot reach the host, so open the URL to see them from there',
     });
     return checks;
+}
+
+/** The health Docker reports in a container's status: `Up 2 minutes (healthy)`. */
+const healthOf = (status: string): string =>
+    /\(healthy\)/.test(status)
+        ? 'healthy'
+        : /\(unhealthy\)/.test(status)
+          ? 'unhealthy'
+          : /\(health: starting\)/.test(status)
+            ? 'starting'
+            : '';
+
+/**
+ * The shared Caddy a member is behind: its container as `ps` would report it,
+ * and whether this site's routes are in its directory. A server with no
+ * shared Caddy is reported in `checks`.
+ */
+async function sharedCaddyOf(
+    io: Io,
+    site: SiteFacts,
+    checks: Check[],
+): Promise<{ state: ServiceState | undefined; routes: Check | null } | null> {
+    const shared = await findSharedCaddy(io);
+    if (shared === null) {
+        checks.push(
+            error(
+                'shared caddy',
+                `this site is behind the shared Caddy (${MEMBER_PROFILE} in COMPOSE_PROFILES), and this server has none: its network ${INGRESS_NETWORK} does not exist`,
+            ),
+        );
+        return { state: undefined, routes: null };
+    }
+    const { container } = shared;
+    const state: ServiceState | undefined =
+        container === null
+            ? undefined
+            : {
+                  ID: container.id,
+                  Service: 'caddy',
+                  State: container.state,
+                  Health: healthOf(container.status),
+                  ExitCode: 0,
+                  Publishers: container.publishedPorts.map((port) => ({
+                      URL: '',
+                      TargetPort: 0,
+                      PublishedPort: port,
+                      Protocol: 'tcp',
+                  })),
+              };
+    if (container?.state !== 'running') {
+        return { state, routes: null };
+    }
+    const project = site.settings.get('COMPOSE_PROJECT_NAME') || '';
+    const path = routesPath(shared, project);
+    const present = (await routeFiles(io, container).catch(() => null))?.includes(
+        routesFile(project),
+    );
+    return {
+        state,
+        routes:
+            present === undefined
+                ? error('routes', `the shared Caddy's caddy/sites/ could not be listed`)
+                : present
+                  ? ok('routes', `${path}, in ${describeShared(shared)}`)
+                  : error(
+                        'routes',
+                        `${path} does not exist, so the shared Caddy has no routes of this site's`,
+                    ),
+    };
 }
 
 /** A site just started, verified and reported; a failure is a CliError. */

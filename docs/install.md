@@ -22,7 +22,8 @@ and curl for the install command above. Production is supported on Linux with ro
 see [Windows](#windows).
 
 **One directory is one site.** The site directory is the current directory, or
-`--dir PATH`.
+`--dir PATH`. Several production sites on one server share one Caddy; see
+[Several sites on one server](#several-sites-on-one-server).
 
 ## Releases
 
@@ -56,6 +57,7 @@ ghost-docker install [--local | --domain example.com [--admin-domain admin.examp
                      [--channel stable|beta | --release vX.Y.Z] [--no-prompt] [--no-start]
 ghost-docker install --import BUNDLE [--name NAME] [--port 2368] [--with mailpit] [--no-prompt] [--no-start]
 ghost-docker install --import BUNDLE [--domain DOMAIN] [--admin-domain DOMAIN] [--email EMAIL] [--no-start]
+ghost-docker install --infra [--name NAME] [--channel stable|beta | --release vX.Y.Z] [--no-start]
 ```
 
 | Option | Meaning |
@@ -74,6 +76,7 @@ ghost-docker install --import BUNDLE [--domain DOMAIN] [--admin-domain DOMAIN] [
 | `--no-prompt` | Never ask: every input must be an option. |
 | `--no-start` | Write the configuration and routes; start nothing. |
 | `--import BUNDLE` | Import a Ghost-CLI site; see [Importing a Ghost-CLI site](#importing-a-ghost-cli-site). |
+| `--infra` | Set up the shared Caddy in this directory, for several production sites; see [Several sites on one server](#several-sites-on-one-server). |
 
 `install` refuses a directory that already holds a site or data, checks the
 host first (as `./ghost-docker doctor` does), generates fresh database
@@ -274,6 +277,31 @@ docker compose up -d
 Remove the copy when you are done: `docker compose down`, then delete the
 directory, with `sudo` because MySQL owns `data/mysql`. For the real move, export again with the source stopped, to a new path.
 
+## Several sites on one server
+
+As Ghost-CLI ran several sites behind one nginx, several production sites run
+behind one shared Caddy: it alone holds 80 and 443. Each site keeps its own
+directory, Ghost, MySQL and optional services, and is backed up, updated and
+restored on its own. Set the shared Caddy up first, in a directory of its own:
+
+```bash
+mkdir ~/caddy && cd ~/caddy
+curl -fsSL https://docker.ghost.org/install.sh | bash -s -- install --infra
+
+mkdir ~/blog && cd ~/blog
+curl -fsSL https://docker.ghost.org/install.sh | bash -s -- install --domain blog.example.com
+mkdir ~/shop && cd ~/shop
+curl -fsSL https://docker.ghost.org/install.sh | bash -s -- install --domain shop.example.com
+```
+
+On a server with the shared Caddy, every production install joins it, and its
+routes are written to the shared Caddy's `caddy/sites/`. A domain it already
+serves is refused. `./ghost-docker remove`, in a site's directory, removes its
+routes and takes it down, leaving the other sites alone. A site installed with
+a Caddy of its own cannot be moved behind the shared Caddy yet. The trust
+model, restarts, updates and capacity are in
+[caddy.md](caddy.md#the-shared-caddy).
+
 ## Ports, and your existing proxy
 
 **Installation never stops or reconfigures anything already running.**
@@ -281,8 +309,9 @@ directory, with `sudo` because MySQL owns `data/mysql`. For the real move, expor
 - A port `install` chooses skips ports other containers publish, and on
   macOS ports other programs hold too. A busy port you ask for with `--port`
   is an error.
-- A production site needs 80 and 443. If anything holds them, installation
-  fails, names the port, and leaves the directory as it was.
+- A production site needs 80 and 443, unless the server has the shared
+  Caddy. If anything holds them, installation fails, names the port, and
+  leaves the directory as it was.
 
 **On Linux, use Docker Engine 28 or later.** Ghost (and Mailpit) are published
 on `127.0.0.1` only, but older engines let other machines on the local network
@@ -308,6 +337,7 @@ How ports are detected on each platform: [Ports](reference.md#ports).
 ./ghost-docker self-update  # ghost-docker itself; see below
 ./ghost-docker backup     # the databases, content and configuration, into backups/
 ./ghost-docker restore backups/<backup>
+./ghost-docker remove     # take the site down; its directory and data stay
 ```
 
 `check` exits non-zero when anything is wrong. A new production site whose DNS
@@ -317,7 +347,8 @@ is verified](reference.md#how-a-site-is-verified).
 
 The routes are a file you edit, `caddy/sites/site.caddy`, followed by
 `docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile`; see
-[caddy.md](caddy.md).
+[caddy.md](caddy.md). Behind the shared Caddy, they are in its directory
+instead, and it is reloaded there.
 
 ## update
 
