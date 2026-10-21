@@ -40,13 +40,16 @@ for tool in jq curl; do
     }
 done
 
+# shellcheck disable=SC2034 # read by site.sh
 OWNER_EMAIL=owner@example.com
+# shellcheck disable=SC2034 # read by site.sh
 OWNER_PASSWORD='Kept-through-an-update-2026!'
 SETTING_KEY=updateE2e__marker
 SETTING='kept through the update'
 
 work_dir update
 SITES=()
+SITE=""
 WRITER=""
 
 teardown() {
@@ -60,14 +63,6 @@ teardown() {
     docker rmi "$REGISTRY:$R1" "$REGISTRY:$R2" "$REGISTRY:$R3" "$REGISTRY:$R4" >/dev/null 2>&1
 }
 
-compose_in() {
-    local site=$1
-    shift
-    docker compose --project-directory "$site" -f "$site/compose.yml" "$@"
-}
-setting() { "$1/ghost-docker" --dir "$1" config get "$2" 2>/dev/null; }
-# Does the metadata hold this "key": "value"?
-records() { grep -q "\"$2\": \"$3\"" "$1/.ghost-docker.json"; }
 pinned() { sed -n 's/^readonly GD_PINNED_IMAGE="\(.*\)"$/\1/p' "$1/ghost-docker"; }
 # The pin the manager writes for a local image: its repository digest where
 # the image store gives local builds one (containerd's does), else its ID.
@@ -77,38 +72,6 @@ image_id() {
     printf '%s\n' "${digest:-$(docker image inspect --format '{{.Id}}' "$1")}"
 }
 ghost_container() { compose_in "$1" ps -q ghost; }
-# root_sql SITE SQL -- as MySQL's root, in the site's database container.
-root_sql() {
-    local database
-    database=$(setting "$1" DATABASE_NAME || true)
-    compose_in "$1" exec -T -e MYSQL_PWD="$(setting "$1" DATABASE_ROOT_PASSWORD)" db \
-        mysql -uroot -N -B "${database:-ghost}" -e "$2"
-}
-base_of() { printf 'http://localhost:%s' "$(setting "$1" GHOST_PORT)"; }
-# api SITE METHOD PATH [curl options] -- the Admin API, signed in.
-api() {
-    local site=$1 method=$2 path=$3 base
-    shift 3
-    base=$(base_of "$site")
-    curl --disable --silent --noproxy '*' --max-time 30 --cookie "$site.cookies" \
-        --header "Origin: $base" --request "$method" "$@" "$base/ghost/api/admin/$path"
-}
-# sign_in SITE -- with the owner's password; the session goes in SITE.cookies.
-sign_in() {
-    local base status
-    base=$(base_of "$1")
-    status=$(curl --disable --silent --noproxy '*' --max-time 30 --output "$1.session" --write-out '%{http_code}' \
-        --cookie-jar "$1.cookies" --request POST --header 'Content-Type: application/json' \
-        --header "Origin: $base" \
-        --data "$(jq -cn --arg u "$OWNER_EMAIL" --arg p "$OWNER_PASSWORD" '{username: $u, password: $p}')" \
-        "$base/ghost/api/admin/session/")
-    [[ $status == 201 ]] || fail "signing in at $base answered $status" "$(cat "$1.session")"
-}
-# post_titles SITE -- every post's title, one per line, sorted.
-post_titles() {
-    api "$1" GET 'posts/?limit=all&fields=title' |
-        jq -r '.posts[].title' | sort
-}
 # write_posts SITE FILE -- a client posting until killed: each title Ghost
 # accepted (201) is appended to FILE.
 write_posts() {
@@ -122,22 +85,6 @@ write_posts() {
         [[ $status != 201 ]] || printf '%s\n' "$title" >>"$accepted"
         sleep 0.5
     done
-}
-http_status() {
-    curl --silent --noproxy '*' --max-time 20 --output /dev/null --write-out '%{http_code}' \
-        "http://127.0.0.1:$1/ghost/api/admin/site/" || true
-}
-# Every file under a directory with its checksum, to compare before and after:
-# not the data, nor the backups each update takes.
-fingerprint() {
-    (cd "$1" && find . -type f -not -path './data/*' -not -path './backups/*' -not -path './.git/*' -print0 | sort -z |
-        xargs -0 shasum -a 256)
-}
-
-new_site() {
-    SITE=$WORK/sites/$1
-    mkdir -p "$SITE"
-    SITES+=("$SITE")
 }
 
 # A copy of this checkout's files, to build a release from or to make a clone of.
@@ -284,12 +231,7 @@ ok "the previous files are back, and the same Ghost container still answers"
 
 step "Give the site an owner, a post, an image and a setting"
 BASE=$(base_of "$S")
-body=$(curl --disable --silent --noproxy '*' --max-time 60 --request POST \
-    --header 'Content-Type: application/json' --header "Origin: $BASE" \
-    --data "$(jq -cn --arg e "$OWNER_EMAIL" --arg p "$OWNER_PASSWORD" \
-        '{setup: [{name: "Update Tester", email: $e, password: $p, blogTitle: "Update e2e"}]}')" \
-    "$BASE/ghost/api/admin/authentication/setup/")
-jq -e '.users[0].id' <<<"$body" >/dev/null 2>&1 || fail "setting up the owner failed" "$body"
+make_owner "$S" "Update Tester" "Update e2e"
 run "$S/ghost-docker" --dir "$S" config set ghost.env "$SETTING_KEY" "$SETTING"
 expect_status 0
 # Signing in from a new session would otherwise ask for a code by email.

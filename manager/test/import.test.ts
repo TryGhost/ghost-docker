@@ -898,22 +898,6 @@ describe('a failed import removes what it created', () => {
         const path = bundle(local('mysql-data'));
         assert.equal((await install('--import', path)).code, 1);
         load = () => ok('');
-        // Asked directly, as the site's user, over the site network.
-        h.daemon.sql = (sql) => {
-            if (sql.startsWith("SELECT '")) {
-                return Object.entries(database.rows).map(([table, count]) => [
-                    table,
-                    String(count),
-                ]);
-            }
-            if (sql.includes('information_schema')) {
-                return [[database.tables]];
-            }
-            if (sql.includes('`migrations`')) {
-                return [[database.migrations]];
-            }
-            return undefined;
-        };
         const result = await install('--import', path, '--no-start');
         assert.equal(result.code, 0, result.stderr);
     });
@@ -947,22 +931,6 @@ describe('an import that is kept, or killed, cannot be started and is cleared by
         );
 
         load = () => ok('');
-        // Asked directly, as the site's user, over the site network.
-        h.daemon.sql = (sql) => {
-            if (sql.startsWith("SELECT '")) {
-                return Object.entries(database.rows).map(([table, count]) => [
-                    table,
-                    String(count),
-                ]);
-            }
-            if (sql.includes('information_schema')) {
-                return [[database.tables]];
-            }
-            if (sql.includes('`migrations`')) {
-                return [[database.migrations]];
-            }
-            return undefined;
-        };
         calls = [];
         const again = await install('--import', bundle(local('mysql-data'), 'again'), '--no-start');
         assert.equal(again.code, 0, again.stderr);

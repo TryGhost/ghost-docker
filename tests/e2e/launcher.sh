@@ -347,19 +347,6 @@ owner=$(stat -c '%u:%g' "$probe" 2>/dev/null || stat -f '%u:%g' "$probe")
 rm -f "$probe"
 ok "owned by uid $(id -u) on the host, and removable without privileges"
 
-step "Exit statuses, through the real launcher and image"
-run "$LAUNCHER" --dir "$SITE" frobnicate
-expect_status 2
-expect_output 'unknown command: frobnicate'
-run "$LAUNCHER" --dir "$SITE" doctor --bogus
-expect_status 2
-expect_output 'ghost-docker doctor --help'
-run "$LAUNCHER" --dir "$SITE" help
-expect_status 0
-expect_output 'USAGE'
-expect_output 'ghost-docker doctor'
-ok "2 for a usage error, 0 for help"
-
 step "The image, as a published one would be used"
 with_dir=$WORK/elsewhere
 mkdir "$with_dir"

@@ -1,8 +1,8 @@
 # shellcheck shell=bash
 # Sourced by the e2e scripts: how a run reports, `run` and what to expect of
 # it, and a work directory removed on exit. skip.sh, what happens when this
-# host cannot run a scenario, comes with it. Written for bash 3.2, which
-# launcher.sh runs on.
+# host cannot run a scenario, and site.sh, what the scripts do to a site,
+# come with it. Written for bash 3.2, which launcher.sh runs on.
 #
 # A script calls `work_dir NAME` for WORK, a private temporary directory. On
 # exit, `cleanup` runs the script's own `teardown`, if it defines one, then
@@ -10,6 +10,8 @@
 
 # shellcheck source=/dev/null
 source "$(dirname -- "${BASH_SOURCE[0]}")/skip.sh"
+# shellcheck source=/dev/null
+source "$(dirname -- "${BASH_SOURCE[0]}")/site.sh"
 
 CURRENT=setup
 OUT=""

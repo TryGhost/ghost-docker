@@ -50,16 +50,6 @@ SOURCE_INSTALLED=0
 
 # --- Helpers -----------------------------------------------------------------
 
-# compose_in SITE ARGS... -- Compose as an operator runs it, from the host.
-compose_in() {
-    local site=$1
-    shift
-    docker compose --project-directory "$site" -f "$site/compose.yml" "$@"
-}
-
-# setting SITE KEY -- one decoded value of .env, through the manager.
-setting() { GD_IMAGE=$IMAGE "$ALONE/ghost-docker" --dir "$1" config get "$2" 2>/dev/null; }
-
 # ghost_cli ARGS... -- Ghost-CLI in the source's directory; output to $WORK/ghost.log.
 ghost_cli() {
     (cd "$SOURCE" && "${GHOST_CLI[@]}" "$@") >"$WORK/ghost.log" 2>&1 ||
@@ -70,15 +60,11 @@ ghost_cli() {
 run_import() {
     local site=$1
     shift
-    set +e
-    OUT=$(GD_IMAGE=$IMAGE "$ALONE/ghost-docker" --dir "$site" install --no-prompt "$@" 2>&1 </dev/null)
-    RC=$?
-    set -e
+    run env GD_IMAGE="$IMAGE" "$ALONE/ghost-docker" --dir "$site" install --no-prompt "$@"
 }
 
-# new_site NAME -> SITE, an empty directory that cleanup takes down, holding
-# the test CA: Caddy's own, for every name at once, standing in for the CA a
-# real domain gets.
+# new_site NAME -> SITE, as site.sh's, but holding the test CA: Caddy's own,
+# for every name at once, standing in for the CA a real domain gets.
 new_site() {
     SITE=$WORK/sites/$1
     mkdir -p "$SITE/caddy/global"
@@ -301,11 +287,8 @@ value=$(compose_in "$SITE" exec -T ghost printenv mail__from)
 [[ $value == "$MAIL_FROM" ]] || fail "mail__from reached Ghost as: $value"
 ok "the post and its image are served on the domain, and the configuration reached Ghost"
 
-set +e
-OUT=$("$SITE/ghost-docker" --dir "$SITE" check 2>&1 </dev/null)
-RC=$?
-set -e
-[[ $RC -eq 0 ]] || fail "./ghost-docker check exited $RC" "$OUT"
+run "$SITE/ghost-docker" --dir "$SITE" check
+expect_status 0
 ok "./ghost-docker check passes"
 
 source_active && fail "the source is running beside the Docker site"

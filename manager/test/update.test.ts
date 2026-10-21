@@ -8,9 +8,10 @@ import { afterEach, beforeEach, describe, test } from 'node:test';
 import { recoveryAdvice, type GhostUpdate, type NeedsOperator } from '../src/ghost-update.ts';
 import * as env from '../src/env.ts';
 import { acquireLock } from '../src/lock.ts';
-import { SCHEMA_VERSION, writeMetadata } from '../src/meta.ts';
+import { writeMetadata } from '../src/meta.ts';
 import { failed, harness, ok, type Harness, type ProgramResult } from './helpers.ts';
 import {
+    checkoutMetadata,
     imageApi,
     imageStack,
     INDEX,
@@ -18,6 +19,7 @@ import {
     makeSite,
     REFERENCE,
     scriptSite,
+    siteSnapshot,
     writeSiteData,
     type ScriptedSite,
 } from './site.ts';
@@ -41,21 +43,7 @@ const started = () =>
     compose.filter((args) => args[0] === 'up' && !args.includes('--no-recreate')).length;
 
 /** Every file in the site but its data and backups, with its content. */
-function snapshot(dir = h.dir, prefix = ''): Record<string, string> {
-    const files: Record<string, string> = {};
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-        if (prefix === '' && (entry.name === 'data' || entry.name === 'backups')) {
-            continue;
-        }
-        const path = join(dir, entry.name);
-        if (entry.isDirectory()) {
-            Object.assign(files, snapshot(path, `${prefix}${entry.name}/`));
-        } else {
-            files[`${prefix}${entry.name}`] = readFileSync(path, 'utf8');
-        }
-    }
-    return files;
-}
+const snapshot = () => siteSnapshot(h.dir);
 
 const backups = () =>
     existsSync(join(h.dir, 'backups')) ? readdirSync(join(h.dir, 'backups')) : [];
@@ -371,6 +359,9 @@ describe('a failed update', () => {
     });
 });
 
+// The advice after startup is what the failed updates above print, and the
+// supervisor's tests read the files-not-back case; these are the choices
+// nothing else reaches.
 describe('recovery advice, as the CLI and the supervisor both give it', () => {
     const update = {
         site: { dir: '/site' },
@@ -391,16 +382,6 @@ describe('recovery advice, as the CLI and the supervisor both give it', () => {
     const commands = (advice: ReturnType<typeof recoveryAdvice>) =>
         advice.choices.map((choice) => choice.commands);
 
-    test('after startup: restore the backup, or fix and start the new Ghost', () => {
-        const advice = recoveryAdvice(update, outcome({}));
-        assert.deepEqual(commands(advice), [
-            ['./ghost-docker restore --yes backups/20261019-100000'],
-            ['docker compose logs ghost', 'docker compose up -d', './ghost-docker check'],
-        ]);
-        assert.match(advice.facts.join('\n'), /may have migrated/);
-        assert.equal(advice.snapshot, '.ghost-docker-update');
-    });
-
     test('after startup, with recovery itself failed: only the backup is offered', () => {
         const advice = recoveryAdvice(
             update,
@@ -410,6 +391,7 @@ describe('recovery advice, as the CLI and the supervisor both give it', () => {
             ['./ghost-docker restore --yes backups/20261019-100000'],
         ]);
         assert.equal(advice.facts[0], 'the services could not be stopped: no');
+        assert.equal(advice.snapshot, '.ghost-docker-update');
     });
 
     test('before startup, with the files back: start the old Ghost again', () => {
@@ -418,25 +400,6 @@ describe('recovery advice, as the CLI and the supervisor both give it', () => {
             outcome({ servicesChanged: false, filesBack: true, problems: ['ghost did not start'] }),
         );
         assert.deepEqual(commands(advice), [['docker compose up -d', './ghost-docker check']]);
-    });
-
-    test('before startup, with the files not back: put them back before starting anything', () => {
-        const advice = recoveryAdvice(
-            update,
-            outcome({
-                servicesChanged: false,
-                filesBack: false,
-                problems: ['the files could not be put back: EACCES'],
-            }),
-        );
-        assert.deepEqual(commands(advice), [
-            [
-                'cp -a .ghost-docker-update/files/. .',
-                'docker compose up -d',
-                './ghost-docker check',
-            ],
-        ]);
-        assert.match(advice.facts.join('\n'), /starting the site now would start Ghost 6\.68\.0/);
     });
 });
 
@@ -454,25 +417,7 @@ describe('a checkout', () => {
         site.running.add('ghost').add('db');
         mkdirSync(join(h.dir, 'manager'));
         writeFileSync(join(h.dir, 'manager', 'Dockerfile'), 'FROM scratch\n');
-        writeMetadata(h.dir, {
-            schemaVersion: SCHEMA_VERSION,
-            installedAt: '2026-10-06T09:12:44Z',
-            updatedAt: null,
-            mode: 'local',
-            channel: null,
-            source: 'checkout',
-            stack: { version: null, ref: null, image: null, previous: null },
-            site: {
-                project: 'ghost-local-site',
-                dir: h.dir,
-                url: 'http://localhost:2368',
-                domain: null,
-                adminDomain: null,
-            },
-            ghost: { image: 'ghost', tag: '6-next-alpine', version: '6.67.0', digest: INDEX },
-            profiles: ['local'],
-            payload: {},
-        });
+        writeMetadata(h.dir, checkoutMetadata(h.dir));
         h.daemon.gitRun = () => ok(`${'b'.repeat(40)}\n`);
     });
 

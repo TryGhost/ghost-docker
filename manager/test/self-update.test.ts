@@ -15,10 +15,11 @@ import {
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, test } from 'node:test';
 import { acquireLock } from '../src/lock.ts';
-import { SCHEMA_VERSION, writeMetadata } from '../src/meta.ts';
+import { writeMetadata } from '../src/meta.ts';
 import { sha256 } from '../src/payload.ts';
 import { failed, harness, ok, type Harness, type ProgramResult } from './helpers.ts';
 import {
+    checkoutMetadata,
     imageApi,
     imageStack,
     INDEX,
@@ -26,6 +27,7 @@ import {
     makeSite,
     REFERENCE,
     scriptSite,
+    siteSnapshot,
     writeSiteData,
     type ScriptedSite,
 } from './site.ts';
@@ -58,25 +60,8 @@ const pulledWith = (n: number) => {
 const started = () =>
     compose.filter((args) => args[0] === 'up' && !args.includes('--no-recreate')).length;
 
-/**
- * Every file in the site, with its content, to compare before and after:
- * the data and the backups aside, which tests compare by what they hold.
- */
-function snapshot(dir = h.dir, prefix = ''): Record<string, string> {
-    const files: Record<string, string> = {};
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-        if (prefix === '' && (entry.name === 'data' || entry.name === 'backups')) {
-            continue;
-        }
-        const path = join(dir, entry.name);
-        if (entry.isDirectory()) {
-            Object.assign(files, snapshot(path, `${prefix}${entry.name}/`));
-        } else {
-            files[`${prefix}${entry.name}`] = readFileSync(path, 'utf8');
-        }
-    }
-    return files;
-}
+/** The site's files but its data and backups, which tests compare by what they hold. */
+const snapshot = () => siteSnapshot(h.dir);
 
 /** The site's files, without the update's own snapshot of them. */
 const siteOnly = (): Record<string, string> =>
@@ -696,25 +681,7 @@ describe('a checkout', () => {
         site.running.add('ghost').add('db');
         mkdirSync(join(h.dir, 'manager'));
         writeFileSync(join(h.dir, 'manager', 'Dockerfile'), 'FROM scratch\n');
-        writeMetadata(h.dir, {
-            schemaVersion: SCHEMA_VERSION,
-            installedAt: '2026-10-06T09:12:44Z',
-            updatedAt: null,
-            mode: 'local',
-            channel: null,
-            source: 'checkout',
-            stack: { version: null, ref: null, image: null, previous: null },
-            site: {
-                project: 'ghost-local-site',
-                dir: h.dir,
-                url: 'http://localhost:2368',
-                domain: null,
-                adminDomain: null,
-            },
-            ghost: { image: 'ghost', tag: '6-next-alpine', version: '6.67.0', digest: INDEX },
-            profiles: ['local'],
-            payload: {},
-        });
+        writeMetadata(h.dir, checkoutMetadata(h.dir));
         gitCalls = [];
         h.daemon.gitRun = (args) => {
             gitCalls.push(args.slice(4));

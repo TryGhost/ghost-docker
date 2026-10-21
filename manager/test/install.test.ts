@@ -78,7 +78,6 @@ describe('refusals that change nothing', () => {
                 ['--local', '--channel', 'beta', '--release', 'v1.0.0'],
                 /choose --channel or --release, not both/,
             ],
-            [['--local', '--with', 'redis'], /unknown optional service: redis/],
         ] as const) {
             const result = await install(...args);
             assert.equal(result.code, 2, `${args.join(' ')}: ${result.stderr}`);

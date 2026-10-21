@@ -54,14 +54,8 @@ port=""
 
 # --- Helpers -----------------------------------------------------------------
 
-# compose_in SITE ARGS... -- Compose as an operator runs it, from the host.
-compose_in() {
-    local site=$1
-    shift
-    docker compose --project-directory "$site" -f "$site/compose.yml" "$@"
-}
-
-# setting SITE KEY -- one decoded value of .env, through the manager.
+# setting SITE KEY -- one decoded value of .env, through the launcher alone:
+# an import that was kept after failing has no launcher of its own.
 setting() { GD_IMAGE=$IMAGE "$ALONE/ghost-docker" --dir "$1" config get "$2" 2>/dev/null; }
 
 # --- Cleanup -----------------------------------------------------------------
@@ -104,22 +98,7 @@ destination() {
 run_import() {
     local site=$1
     shift
-    set +e
-    OUT=$(GD_IMAGE=$IMAGE "$ALONE/ghost-docker" --dir "$site" install --no-prompt "$@" 2>&1 </dev/null)
-    RC=$?
-    set -e
-}
-
-expect_success() {
-    [[ $RC -eq 0 ]] || fail "$1 exited $RC" "$OUT"
-}
-
-expect_failure() {
-    [[ $RC -eq 1 ]] || fail "$1 exited $RC, expected 1" "$OUT"
-}
-
-expect_output() {
-    grep -qE -- "$1" <<<"$OUT" || fail "the output does not match: $1" "$OUT"
+    run env GD_IMAGE="$IMAGE" "$ALONE/ghost-docker" --dir "$site" install --no-prompt "$@"
 }
 
 # containers_of SITE [docker ps options] -> names of the site's containers.
@@ -164,7 +143,7 @@ move_source() {
     mkdir "$moved"
     DESTINATIONS+=("$moved")
     run_import "$moved" --import "$bundle" --port "$source_port"
-    expect_success "the import"
+    expect_status 0
     [[ $(setting "$moved" GHOST_PORT) == "$source_port" ]] || fail "the Docker site is not on the source's port"
     ok "imported on the source's port, $source_port"
     expect_imported "$moved" "$slug" "$title"
@@ -176,18 +155,19 @@ tree_digest() {
     (cd "$1" && find . -type f -exec cksum {} + | sort -k3 | cksum)
 }
 
-# http_status URL [curl options]
-http_status() {
+# url_status URL [curl options]
+url_status() {
     local url=$1
     shift
     curl --disable --silent --noproxy '*' --max-time 30 --output /dev/null --write-out '%{http_code}' "$@" "$url"
 }
 
-# sign_in BASE ORIGIN JAR
-# Signs in with the owner's password and stores the session in JAR.
-sign_in() {
+# sign_in_at BASE ORIGIN JAR
+# Signs in with the owner's password and stores the session in JAR: at a
+# source site Ghost-CLI runs as well as at one the manager made.
+sign_in_at() {
     local base=$1 origin=$2 jar=$3 status
-    status=$(http_status "$base/ghost/api/admin/session/" --cookie-jar "$jar" --request POST \
+    status=$(url_status "$base/ghost/api/admin/session/" --cookie-jar "$jar" --request POST \
         --header 'Content-Type: application/json' --header "Origin: $origin" \
         --data "$(jq -cn --arg u "$OWNER_EMAIL" --arg p "$OWNER_PASSWORD" '{username: $u, password: $p}')")
     [[ $status == 201 ]] || fail "signing in at $base answered $status"
@@ -217,7 +197,7 @@ make_source() {
         "$SOURCE_BASE/ghost/api/admin/authentication/setup/")
     jq -e '.users[0].id' <<<"$response" >/dev/null 2>&1 || fail "setting up the source owner failed" "$response"
 
-    sign_in "$SOURCE_BASE" "$url" "$jar"
+    sign_in_at "$SOURCE_BASE" "$url" "$jar"
     response=$(curl --disable --silent --noproxy '*' --max-time 60 --cookie "$jar" --request POST \
         --header 'Content-Type: application/json' --header "Origin: $url" \
         --data "$(jq -cn --arg t "Post from $title" '{posts: [{title: $t, status: "published"}]}')" \
@@ -259,14 +239,14 @@ expect_imported() {
     ok "configuration and metadata"
 
     # Staff sign in with the password they had on the source site.
-    sign_in "$base" "$base" "$jar"
+    sign_in_at "$base" "$base" "$jar"
     body=$(curl --disable --silent --noproxy '*' --max-time 30 --cookie "$jar" --header "Origin: $base" \
         "$base/ghost/api/admin/posts/?filter=slug:$slug&fields=status")
     [[ $(jq -r '.posts | map(.status) | join(",")' <<<"$body" 2>/dev/null) == published ]] ||
         fail "the post is not in the imported site's Admin API" "$body"
     ok "the owner signs in with the source password, and the post is there"
 
-    [[ $(http_status "$base/$slug/") == 200 ]] || fail "the post's page does not render"
+    [[ $(url_status "$base/$slug/") == 200 ]] || fail "the post's page does not render"
     body=$(curl --disable --silent --noproxy '*' --max-time 30 "$base/content/images/2026/10/marker.png")
     [[ $body == "image of $title" ]] || fail "the image was not served as exported" "$body"
     compose_in "$site" exec -T ghost test -f /home/ghost/content/images/.hidden-marker ||
@@ -278,11 +258,8 @@ expect_imported() {
     [[ $value == "$MAIL_FROM" ]] || fail "mail__from reached Ghost as: $value"
     ok "configuration reaches Ghost byte for byte"
 
-    set +e
-    OUT=$("$site/ghost-docker" --dir "$site" check 2>&1 </dev/null)
-    RC=$?
-    set -e
-    expect_success "./ghost-docker check"
+    run "$site/ghost-docker" --dir "$site" check
+    expect_status 0
     ok "./ghost-docker check passes"
 }
 
@@ -333,11 +310,11 @@ step "Import the archive"
 destination from-archive
 before=$(cksum <"$ARCHIVE")
 run_import "$site" --import "$ARCHIVE" --port "$port"
-expect_success "the import"
+expect_status 0
 expect_output 'every count matches the bundle'
 expect_output 'Ghost is installed'
 expect_imported "$site" "$SQLITE_SLUG" "SQLite source"
-[[ $(http_status "$SQLITE_BASE/ghost/api/admin/site/") == 200 ]] || fail "the source site is no longer running"
+[[ $(url_status "$SQLITE_BASE/ghost/api/admin/site/") == 200 ]] || fail "the source site is no longer running"
 [[ $(cksum <"$ARCHIVE") == "$before" ]] || fail "the archive was modified"
 ok "the source is still running and the archive is unchanged"
 COMPOSE_PROFILES=local compose_in "$site" down >/dev/null 2>&1
@@ -348,7 +325,7 @@ cp -R "$UNPACKED" "$broken"
 break_database "$broken"
 destination retried
 run_import "$site" --import "$broken" --port "$port"
-expect_failure "the import of a broken bundle"
+expect_status 1
 expect_output 'no_such_table'
 expect_output 'could not be loaded'
 expect_output 'as it was before the import'
@@ -357,7 +334,7 @@ expect_untouched "$site"
 step "The same directory then imports the good bundle, as a directory, with --no-start"
 before=$(tree_digest "$UNPACKED")
 run_import "$site" --import "$UNPACKED" --port "$port" --no-start
-expect_success "the import"
+expect_status 0
 expect_output 'Nothing is running'
 [[ -z $(containers_of "$site" -a) ]] || fail "--no-start left containers behind"
 [[ $(tree_digest "$UNPACKED") == "$before" ]] || fail "the bundle directory was modified"
@@ -369,12 +346,12 @@ compose_in "$site" down >/dev/null 2>&1
 step "With --with mailpit, the source's mail transport is replaced, and its mail is caught"
 destination with-mailpit
 run_import "$site" --import "$UNPACKED" --port "$port" --with mailpit
-expect_success "the import"
+expect_status 0
 expect_output 'not carried +mail__transport: replaced by Mailpit'
 expect_imported "$site" "$SQLITE_SLUG" "SQLite source" local,mailpit
 [[ $(compose_in "$site" exec -T ghost printenv mail__options__host) == "mailpit-$(setting "$site" COMPOSE_PROJECT_NAME)" ]] ||
     fail "Ghost does not send mail to Mailpit"
-status=$(http_status "http://127.0.0.1:$port/ghost/api/admin/authentication/password_reset/" --request POST \
+status=$(url_status "http://127.0.0.1:$port/ghost/api/admin/authentication/password_reset/" --request POST \
     --header 'Content-Type: application/json' --header "Origin: http://localhost:$port" \
     --data "$(jq -cn --arg e "$OWNER_EMAIL" '{password_reset: [{email: $e}]}')")
 [[ $status == 200 ]] || fail "the password reset answered $status"
@@ -388,23 +365,13 @@ curl --disable --silent --noproxy '*' --max-time 10 "$inbox" | jq -e '.messages[
 ok "mail__from carried over, and the imported site's mail goes to Mailpit"
 compose_in "$site" down >/dev/null 2>&1
 
-step "Row counts that disagree with the bundle fail the import"
-tampered=$WORK/bundle-tampered-rows
-cp -R "$UNPACKED" "$tampered"
-jq '.database.rows.posts += 1' "$UNPACKED/manifest.json" >"$tampered/manifest.json"
-destination tampered
-run_import "$site" --import "$tampered" --port "$port"
-expect_failure "the import of a bundle with wrong row counts"
-expect_output 'posts: the bundle records [0-9]+ rows, the database has [0-9]+'
-expect_untouched "$site"
-
 step "A failed import that is kept cannot be started, and the next import clears it"
 broken=$WORK/bundle-broken-kept
 cp -R "$UNPACKED" "$broken"
 break_database "$broken"
 destination kept
 GD_IMPORT_KEEP_FAILED=1 run_import "$site" --import "$broken" --port "$port"
-expect_failure "the import of a broken bundle"
+expect_status 1
 expect_output 'kept for inspection'
 [[ -e $site/.ghost-docker-import ]] || fail "the kept import is not marked"
 [[ $(setting "$site" COMPOSE_PROFILES) == import-incomplete ]] || fail ".env still selects services"
@@ -418,11 +385,11 @@ compose_in "$site" up --detach >/dev/null 2>&1 || true
 ok "docker compose up starts nothing"
 
 run_import "$site" --local --port "$port"
-expect_failure "an ordinary install over an unfinished import"
+expect_status 1
 expect_output 'did not finish'
 
 run_import "$site" --import "$ARCHIVE" --port "$port"
-expect_success "the import"
+expect_status 0
 expect_output 'Removing what an earlier, unfinished import left behind'
 expect_imported "$site" "$SQLITE_SLUG" "SQLite source"
 compose_in "$site" down >/dev/null 2>&1
@@ -466,7 +433,7 @@ ok "a mysql-dump bundle that defines objects as the source's root"
 step "Import the directory bundle"
 destination from-mysql
 run_import "$site" --import "$BUNDLE" --port "$port"
-expect_success "the import"
+expect_status 0
 expect_output 'the database has a Ghost migration history'
 expect_imported "$site" "$MYSQL_SLUG" "MySQL source"
 

@@ -57,29 +57,25 @@ teardown() {
     docker rmi "$IMAGE" >/dev/null 2>&1
 }
 
-compose_in() { docker compose --project-directory "$S" -f "$S/compose.yml" "$@"; }
 # served ARGS... -- the launcher as docker.ghost.org serves it, piped into bash
 # in the site directory: no file beside it, so no checkout and no pin.
 served() {
     run bash -c 'cd "$1" && GD_IMAGE="$2" bash -s -- "${@:4}" <"$3"' _ "$S" "$IMAGE" "$ROOT/ghost-docker" "$@"
 }
-# Every file but the data, backups and git's own, with its checksum.
-fingerprint() {
-    (cd "$S" && find . -type f -not -path './data/*' -not -path './backups/*' -not -path './.git/*' \
-        -not -path './.ghost-docker-update/*' -print0 | sort -z | xargs -0 shasum -a 256)
-}
-ghost_id() { compose_in ps -q ghost; }
+ghost_id() { compose_in "$S" ps -q ghost; }
 # Ghost has booted: main's compose.yml gives it no health check to wait for.
 wait_for_ghost() {
     local waited=0
-    until compose_in logs ghost 2>/dev/null | grep -q 'Ghost booted'; do
-        ((waited < 300)) || fail "Ghost did not boot" "$(compose_in logs --tail 40 ghost 2>&1)"
+    until compose_in "$S" logs ghost 2>/dev/null | grep -q 'Ghost booted'; do
+        ((waited < 300)) || fail "Ghost did not boot" "$(compose_in "$S" logs --tail 40 ghost 2>&1)"
         sleep 5
         waited=$((waited + 5))
     done
 }
+# Main's layout has no launcher to read the password through, so this is the
+# site's own root_sql, with the password its .env was given.
 root_sql() {
-    compose_in exec -T -e MYSQL_PWD=e2e-root-password db mysql -uroot -N -B ghost -e "$1"
+    compose_in "$S" exec -T -e MYSQL_PWD=e2e-root-password db mysql -uroot -N -B ghost -e "$1"
 }
 # https PATH -- through Caddy on the host's port, as a browser would ask.
 https() {
@@ -126,13 +122,13 @@ services:
     environment:
       e2e__override: kept
 EOF
-run compose_in up -d
+run compose_in "$S" up -d
 expect_status 0
 wait_for_ghost
 project=$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$(ghost_id)")
 version=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$(ghost_id)" | sed -n 's/^GHOST_VERSION=//p')
 root_sql 'CREATE TABLE e2e_marker (note varchar(64)); INSERT INTO e2e_marker VALUES ("kept")'
-compose_in exec -T ghost sh -c 'printf kept >/var/lib/ghost/content/images/e2e-marker.txt'
+compose_in "$S" exec -T ghost sh -c 'printf kept >/var/lib/ghost/content/images/e2e-marker.txt'
 [[ $(https /e2e-custom) == 'custom route kept' ]] || fail "main's custom route does not answer" "$(https /e2e-custom)"
 docker volume inspect "${project}_caddy_data" >/dev/null || fail "no ${project}_caddy_data volume"
 ok "$(git -C "$S" rev-parse --short HEAD) of main: project $project, Ghost $version on ghost:6-alpine, with ActivityPub, a custom route and an override"
@@ -141,14 +137,14 @@ ok "$(git -C "$S" rev-parse --short HEAD) of main: project $project, Ghost $vers
 
 step "An edited stack file stops it before anything changes"
 printf '# mine\n' >>"$S/compose.yml"
-before=$(fingerprint)
+before=$(fingerprint "$S")
 ghost_before=$(ghost_id)
 served self-update
 expect_status 1
 expect_output 'these files of the stack were changed here'
 expect_output 'compose\.yml'
 expect_output 'Nothing has been changed'
-[[ $(fingerprint) == "$before" && $(ghost_id) == "$ghost_before" ]] || fail "a refused migration changed the site"
+[[ $(fingerprint "$S") == "$before" && $(ghost_id) == "$ghost_before" ]] || fail "a refused migration changed the site"
 git -C "$S" checkout --quiet -- compose.yml
 ok "refused, naming compose.yml"
 
@@ -159,22 +155,22 @@ cat >>"$S/compose.override.yml" <<'EOF'
     image: ghcr.io/tryghost/ghost-docker-e2e-does-not-exist:1
     profiles: [production]
 EOF
-before=$(fingerprint)
+before=$(fingerprint "$S")
 served self-update
 expect_status 1
 expect_output "images could not be pulled"
 expect_output 'Nothing has been changed'
-[[ $(fingerprint) == "$before" && $(ghost_id) == "$ghost_before" ]] || fail "a refused migration changed the site"
+[[ $(fingerprint "$S") == "$before" && $(ghost_id) == "$ghost_before" ]] || fail "a refused migration changed the site"
 cp "$WORK/override.yml" "$S/compose.override.yml"
 ok "refused while the site kept running"
 
 step "--check says what it would do and changes nothing"
-before=$(fingerprint)
+before=$(fingerprint "$S")
 served self-update --check
 expect_status 0
 expect_output "would move this site onto $RELEASE"
 expect_output "Ghost +$version"
-[[ $(fingerprint) == "$before" && $(ghost_id) == "$ghost_before" ]] || fail "--check changed the site"
+[[ $(fingerprint "$S") == "$before" && $(ghost_id) == "$ghost_before" ]] || fail "--check changed the site"
 ok "nothing changed"
 
 # --- Failing after startup ---------------------------------------------------------
@@ -188,20 +184,20 @@ cat >>"$S/compose.override.yml" <<'EOF'
       start_interval: 2s
       retries: 1
 EOF
-before=$(fingerprint)
+before=$(fingerprint "$S")
 served self-update
 expect_status 1
 expect_output 'The site needs you'
 expect_output 'Nothing was loaded over them'
 expect_output 'docker compose up -d'
-[[ $(fingerprint) == "$before" ]] || fail "main's files were not put back" "$(diff <(printf '%s\n' "$before") <(fingerprint) || true)"
-[[ -z $(compose_in ps -q) ]] || fail "the migrated site was left running" "$(compose_in ps)"
+[[ $(fingerprint "$S") == "$before" ]] || fail "main's files were not put back" "$(diff <(printf '%s\n' "$before") <(fingerprint "$S") || true)"
+[[ -z $(compose_in "$S" ps -q) ]] || fail "the migrated site was left running" "$(compose_in "$S" ps)"
 ok "stopped, with main's files back"
 
 # The operator's part: the snapshot and the backup are no longer needed.
 rm -rf "$S/.ghost-docker-update" "$S/backups"
 cp "$WORK/override.yml" "$S/compose.override.yml"
-run compose_in up -d
+run compose_in "$S" up -d
 expect_status 0
 wait_for_ghost
 [[ $(root_sql 'SELECT note FROM e2e_marker') == kept ]] || fail "the marker row is gone"
@@ -215,13 +211,12 @@ served self-update
 expect_status 0
 expect_output "Moved from the released main layout to $RELEASE"
 expect_output 'with a certificate from Caddy Local Authority'
-setting() { "$S/ghost-docker" --dir "$S" config get "$1" 2>/dev/null; }
-[[ $(setting COMPOSE_PROFILES) == production,activitypub ]] || fail "COMPOSE_PROFILES is $(setting COMPOSE_PROFILES)"
-[[ $(setting COMPOSE_PROJECT_NAME) == "$project" ]] || fail "the project is $(setting COMPOSE_PROJECT_NAME)"
+[[ $(setting "$S" COMPOSE_PROFILES) == production,activitypub ]] || fail "COMPOSE_PROFILES is $(setting "$S" COMPOSE_PROFILES)"
+[[ $(setting "$S" COMPOSE_PROJECT_NAME) == "$project" ]] || fail "the project is $(setting "$S" COMPOSE_PROJECT_NAME)"
 # shellcheck disable=SC2016 # a literal $, as Compose read it from main's .env
-[[ $(setting DATABASE_PASSWORD) == 'e2e-app-pa$word' ]] || fail "the database password changed"
-[[ $(setting URL) == "https://$DOMAIN" ]] || fail "URL is $(setting URL)"
-[[ $("$S/ghost-docker" --dir "$S" config get ghost.env mail__options__auth__pass 2>/dev/null) == e2e-smtp-secret ]] ||
+[[ $(setting "$S" DATABASE_PASSWORD) == 'e2e-app-pa$word' ]] || fail "the database password changed"
+[[ $(setting "$S" URL) == "https://$DOMAIN" ]] || fail "URL is $(setting "$S" URL)"
+[[ $(setting "$S" ghost.env mail__options__auth__pass) == e2e-smtp-secret ]] ||
     fail "the SMTP password did not move to ghost.env"
 grep -q '^DOMAIN=' "$S/.env" && fail ".env still has DOMAIN"
 grep -q 'local_certs' "$S/caddy/global/legacy.caddy" || fail "the global options were not carried"
@@ -232,13 +227,13 @@ grep -q 'reverse_proxy activitypub:8080' "$S/caddy/sites/legacy-snippets/Activit
 cmp -s "$S/caddy/Caddyfile" "$ROOT/caddy/Caddyfile" || fail "caddy/Caddyfile is not the release's"
 [[ -f $S/caddy/Caddyfile.local ]] || fail "the old Caddyfile was not kept"
 running=$(docker inspect -f '{{.Config.Image}}' "$(ghost_id)")
-[[ $running == "$(setting GHOST_IMAGE_REF)" && $running == ghost@sha256:* ]] || fail "Ghost runs $running"
+[[ $running == "$(setting "$S" GHOST_IMAGE_REF)" && $running == ghost@sha256:* ]] || fail "Ghost runs $running"
 now=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$(ghost_id)")
 grep -qx "GHOST_VERSION=$version" <<<"$now" || fail "Ghost's version changed" "$now"
 grep -qx 'e2e__override=kept' <<<"$now" || fail "the override does not reach Ghost" "$now"
 grep -q 'DATABASE_ROOT_PASSWORD' <<<"$now" && fail "Ghost receives .env's root password"
 [[ $(root_sql 'SELECT note FROM e2e_marker') == kept ]] || fail "the marker row is gone"
-[[ $(compose_in exec -T ghost cat /home/ghost/content/images/e2e-marker.txt) == kept ]] || fail "the content is gone"
+[[ $(compose_in "$S" exec -T ghost cat /home/ghost/content/images/e2e-marker.txt) == kept ]] || fail "the content is gone"
 [[ $(https /e2e-custom) == 'custom route kept' ]] || fail "the custom route does not answer" "$(https /e2e-custom)"
 [[ $(https /ghost/api/admin/site/) == *"\"url\":\"https://$DOMAIN/\""* ]] || fail "Ghost does not answer through Caddy"
 docker volume inspect "${project}_caddy_data" >/dev/null || fail "Caddy's volume is not the site's"
@@ -251,11 +246,11 @@ expect_status 0
 ok "check passes"
 
 step "Running it again is an ordinary self-update, with nothing to do"
-before=$(fingerprint)
+before=$(fingerprint "$S")
 served self-update
 expect_status 0
 expect_output "already runs $RELEASE"
-[[ $(fingerprint) == "$before" ]] || fail "a second run changed files"
+[[ $(fingerprint "$S") == "$before" ]] || fail "a second run changed files"
 ok "nothing to do"
 
 passed "migrate-main.sh: all checks passed."
