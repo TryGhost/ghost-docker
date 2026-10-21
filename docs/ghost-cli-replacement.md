@@ -13,7 +13,6 @@ Linear](https://linear.app/ghost/issue/PLA-412).
 | --- | --- | --- |
 | Tagged single-site production | S5e production import, S12 qualification | Existing image self-update, local import, backup and restore |
 | Several sites behind shared Caddy | S13 | Existing backup/restore and released-main migration |
-| Admin-driven Ghost upgrades | S9 core adapter/API, S10 Admin | Existing `update` and upgrade supervisor; S9 before S10; S13 integration if shipped |
 | Later extensions | S11 file secrets, S14 service references, S15 nightly transitions, S16 Redis | See each step |
 
 Qualify production on Linux with rootful Docker Engine. Local qualification also covers
@@ -41,40 +40,6 @@ its recovery, and the admin domain in CI; the cross-host move is run by hand. Th
 `scripts/migrate.sh`; S12 must not merge `next-docker` into `main` before these
 scenarios pass.
 
-### S9 — Ghost upgrade adapter and Admin API
-
-Repo: Ghost core. Deps: the supervisor's protocol ([upgrade-supervisor.md](upgrade-supervisor.md)).
-Follow repository adapter/API guidance. Implement `NoopUpgradeAdapter` and, against the
-protocol, `HttpUpgradeAdapter`, permission-checked status/
-request/job APIs, rate limiting, capability reporting, and update-notification metadata.
-Noop is default; missing/stale supervisor and malformed protocol data produce useful
-status without making unrelated Ghost startup depend on supervisor availability.
-
-Acceptance: adapter/controller tests, API permission tests, protocol tests against a test socket,
-version compatibility, and initialization ordering. Keep Admin UI separate.
-
-Use adapter type `upgrade`; a Ghost without it ignores the HTTP adapter's settings. API endpoints are status, create request and fetch job;
-owner/admin only, with a rate-limited POST and normal Admin auth.
-
-### S10 — Admin update experience
-
-Repo: Ghost Admin. Deps: S9. Add the current-version/available-update panel using the
-repository's current React/Shade and API conventions. Feature-detect older backends,
-show host capabilities, confirm downtime/backup behavior, and display durable job
-progress with bounded reconnection and recovery guidance. Wire notification links. Show
-the status's two update lists ([protocol
-requirements](#supervisor-protocol-requirements)): one-click updates with an action, and
-manual ones as a notice with their reason and host steps, such as a stack update to run
-with `./ghost-docker self-update`.
-
-Acceptance: older backend, unsupported adapter, owner/admin permissions, successful
-restart/reconnect, a refused request while another job runs, stale supervisor, recovery
-requiring the operator (`needs-operator`), and `interrupted` states. Include an
-integration test with the real supervisor after mocked UI tests.
-
-Feature-detect both absent endpoints on older cores and `supported: false`. UI backup
-promises must match the actual enforced policy.
-
 ### S11 — Optional file-based secrets
 
 Repo: ghost-docker. Deps: the credential consumers in backup, import, restore, `update` and the upgrade supervisor.
@@ -94,8 +59,8 @@ environment-based installs, older imports, restart, and restore still work.
 ### S12 — Single-site release qualification and documentation
 
 Repo: ghost-docker, with cross-repo fixtures. Deps: S5e, plus existing install,
-backup/restore, self-update, released-main migration and the upgrade supervisor; qualify S13,
-S9-S10 and S11 when they have shipped.
+backup/restore, self-update, released-main migration, and the upgrade supervisor with
+Ghost Admin's updates; qualify S13 and S11 when they have shipped.
 Gates the first stable tag and merging `next-docker` into `main`. Include the launcher
 on Linux, macOS and WSL2. Consolidate CI and qualify the actual minimum supported tools
 and image versions. Run fresh local/production install, optional-service variants, CLI
