@@ -15,7 +15,11 @@ import {
     ENV_EXAMPLE_FILE,
     ENV_FILE,
     GHOST_ENV_FILE,
+    hasProfile,
     hostOf,
+    INFRA_PROFILE,
+    layoutOf,
+    MEMBER_PROFILE,
     OPTIONAL_PROFILES,
     profileConflict,
     SITE_MODES,
@@ -32,14 +36,12 @@ export interface Finding {
 
 /** Keys required in `.env` that nothing else would catch, by mode. */
 export const REQUIRED_KEYS = {
-    common: [
-        'COMPOSE_PROFILES',
-        'COMPOSE_PROJECT_NAME',
-        'SITE_MODE',
-        'PROJECT_DIR',
-        'GHOST_VERSION',
-    ],
+    common: ['COMPOSE_PROFILES', 'COMPOSE_PROJECT_NAME', 'SITE_MODE', 'PROJECT_DIR'],
+    /** compose.yml does not `:?`-guard these: the shared Caddy's directory has none. */
+    site: ['GHOST_VERSION', 'DATABASE_PASSWORD', 'DATABASE_ROOT_PASSWORD'],
     production: ['URL'],
+    /** Behind the shared Caddy, and in its own directory. */
+    shared: ['INGRESS_NETWORK'],
 } as const;
 
 /** Modes that hold credentials and are still private. */
@@ -96,6 +98,13 @@ export async function validateEnv(io: Io, dir: string): Promise<Finding[]> {
             ),
         ];
     }
+    if (layoutOf(profiles) === INFRA_PROFILE) {
+        return [
+            ...validateInfra(file, values),
+            ...interpolated(file, text),
+            ...privacy(file, path),
+        ];
+    }
     const mode = siteMode(profiles);
     if (mode === null) {
         findings.push(
@@ -130,9 +139,12 @@ export async function validateEnv(io: Io, dir: string): Promise<Finding[]> {
         );
     }
 
+    const member = hasProfile(profiles, MEMBER_PROFILE);
     const required = [
         ...REQUIRED_KEYS.common,
+        ...REQUIRED_KEYS.site,
         ...(mode === 'production' ? REQUIRED_KEYS.production : []),
+        ...(member ? REQUIRED_KEYS.shared : []),
     ];
     for (const key of required) {
         if (values[key] === undefined) {
@@ -156,6 +168,10 @@ export async function validateEnv(io: Io, dir: string): Promise<Finding[]> {
                 );
             }
         }
+    }
+
+    if (member) {
+        findings.push(...externalIngress(file, values));
     }
 
     // The extra databases are created once, on first initialisation. A custom
@@ -215,6 +231,50 @@ export async function validateEnv(io: Io, dir: string): Promise<Finding[]> {
     findings.push(...interpolated(file, text), ...privacy(file, path));
     return findings;
 }
+
+/**
+ * The shared Caddy's directory: Caddy alone, so `infra` and nothing else,
+ * on the network the manager created for it.
+ */
+function validateInfra(file: string, values: Record<string, string>): Finding[] {
+    const findings: Finding[] = [];
+    const profiles = splitProfiles(values.COMPOSE_PROFILES ?? '');
+    if (profiles.length !== 1) {
+        findings.push(
+            error(
+                file,
+                `COMPOSE_PROFILES=${values.COMPOSE_PROFILES} selects the shared Caddy (${INFRA_PROFILE}), which runs Caddy alone: remove ${profiles.filter((profile) => profile !== INFRA_PROFILE).join(', ')}`,
+            ),
+        );
+    }
+    if (values.SITE_MODE && values.SITE_MODE !== INFRA_PROFILE) {
+        findings.push(
+            error(
+                file,
+                `SITE_MODE=${values.SITE_MODE} does not match COMPOSE_PROFILES (${INFRA_PROFILE})`,
+            ),
+        );
+    }
+    for (const key of [...REQUIRED_KEYS.common, ...REQUIRED_KEYS.shared]) {
+        if (values[key] === undefined) {
+            findings.push(error(file, `${key} is required for the shared Caddy`));
+        } else if (values[key] === '') {
+            findings.push(error(file, `${key} is empty`));
+        }
+    }
+    return [...findings, ...externalIngress(file, values)];
+}
+
+/** The shared Caddy's network is the manager's, so Compose must not create or remove it. */
+const externalIngress = (file: string, values: Record<string, string>): Finding[] =>
+    values.INGRESS_EXTERNAL === 'true'
+        ? []
+        : [
+              error(
+                  file,
+                  `INGRESS_EXTERNAL must be true: ${values.INGRESS_NETWORK || 'the network'} is the shared Caddy's, which no Compose project creates or removes`,
+              ),
+          ];
 
 /**
  * `ghost.env` holds Ghost application settings only. Two mistakes matter, and

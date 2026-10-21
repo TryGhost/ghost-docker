@@ -61,7 +61,8 @@ Linux. There is no native Windows launcher.
 ## Site modes
 
 `install --local` selects Ghost and MySQL on loopback. A production install
-adds Caddy with automatic HTTPS. [Configuration](docs/configuration.md#site-modes-and-profiles)
+adds Caddy with automatic HTTPS; several production sites on one server share
+one Caddy, set up with `install --infra` ([caddy.md](docs/caddy.md#the-shared-caddy)). [Configuration](docs/configuration.md#site-modes-and-profiles)
 defines the modes and optional profiles; [installation](docs/install.md#optional-services)
 explains how to enable them.
 

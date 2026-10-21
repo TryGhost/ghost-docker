@@ -1,4 +1,6 @@
-// `install`: a local or production site, configured, started and verified.
+// `install`: a local or production site, configured, started and verified;
+// with --infra, the shared Caddy (shared.ts), and on a server that has one, a
+// production site behind it.
 // `run` takes the parts in order, each a function of its own: refusals that
 // need nothing; with --import, the bundle (import.ts); preflight, ports, the
 // exact Ghost image and a free project name, still changing nothing; then
@@ -8,8 +10,9 @@
 import { randomBytes } from 'node:crypto';
 import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { ACME_EMAIL, isHostname, SITE_FILE, writeRoutes } from '../caddy.ts';
-import { ALL_PROFILES, compose, upAndWait } from '../compose.ts';
+import { ACME_EMAIL, isHostname, renderRoutes, SITE_FILE, writeRoutes } from '../caddy.ts';
+import { ALL_PROFILES, compose, composePs, upAndWait } from '../compose.ts';
+import { createNetwork, MANAGED_LABEL } from '../docker/client.ts';
 import { z } from 'zod';
 import { defineCommand, flag, refused } from '../command.ts';
 import { findingErrors, validate } from '../config.ts';
@@ -44,11 +47,28 @@ import {
     ENV_FILE,
     generatedSettings,
     GHOST_ENV_FILE,
+    ingressSettings,
+    INFRA_PROFILE,
     MAILPIT_DATA_DIR,
+    MEMBER_PROFILE,
     META_FILE,
     profileConflict,
+    type Layout,
     type SiteMode,
 } from '../site.ts';
+import {
+    addRoutes,
+    describeShared,
+    findSharedCaddy,
+    INFRA_DIR_LABEL,
+    INFRA_PROJECT,
+    INFRA_PROJECT_LABEL,
+    INGRESS_NETWORK,
+    refuseTaken,
+    routesPath,
+    runningCaddy,
+    type SharedCaddy,
+} from '../shared.ts';
 import { takenPorts } from '../ports.ts';
 import { knownProjects, PROJECT_NAME, projectName, refuseForeignProject } from '../project.ts';
 import { Created } from '../undo.ts';
@@ -200,6 +220,9 @@ const options = z
         release: releaseOption(
             'Install this release, vX.Y.Z or vX.Y.Z-beta.N. The launcher resolves it.',
         ),
+        infra: flag(
+            'Set up the shared Caddy in this directory, for several production sites on this server; each later production install joins it. See docs/caddy.md.',
+        ),
         noPrompt: flag('Never ask: every input must be an option.'),
         noStart: flag('Write the configuration and routes; start nothing.'),
     })
@@ -220,13 +243,37 @@ const options = z
             (flags.ghostImage !== undefined && flags.import !== undefined
                 ? '--ghost-image cannot be combined with --import: an import runs on the published Ghost release'
                 : null) ??
-            (flags.import === undefined ? null : importConflict(flags));
+            (flags.import === undefined ? null : importConflict(flags)) ??
+            (flags.infra ? infraConflict(flags) : null);
         if (conflict !== null) {
             ctx.addIssue({ code: 'custom', message: conflict });
         }
     });
 
 type Flags = z.output<typeof options>;
+
+/** The options --infra cannot take: it sets up Caddy alone, for sites installed after it. */
+function infraConflict(flags: Flags): string | null {
+    const given = (
+        [
+            ['--local', flags.local],
+            ['--domain', flags.domain !== undefined],
+            ['--admin-domain', flags.adminDomain !== undefined],
+            ['--email', flags.email !== undefined],
+            ['--port', flags.port !== undefined],
+            ['--version', flags.version !== undefined],
+            ['--ghost-image', flags.ghostImage !== undefined],
+            ['--ghost-channel', flags.ghostChannel !== 'stable'],
+            ['--with', flags.with.length > 0],
+            ['--import', flags.import !== undefined],
+        ] as const
+    )
+        .filter(([, set]) => set)
+        .map(([option]) => option);
+    return given.length === 0
+        ? null
+        : `--infra sets up the shared Caddy alone, so it takes no ${given.join(', ')}; install each site afterwards, in its own directory`;
+}
 
 // --- What to install ---------------------------------------------------------
 
@@ -342,6 +389,8 @@ interface Site extends Target {
     readonly project: string;
     readonly profiles: string;
     readonly production: boolean;
+    /** The shared Caddy this production site is installed behind, if the server has one. */
+    readonly shared: SharedCaddy | null;
     readonly url: string;
     /** This manager's release, and the channel the site follows. */
     readonly release: ManagerRelease;
@@ -355,6 +404,9 @@ export const installCommand = defineCommand({
         const release = requestedRelease(flags.channel, flags.release, '--release');
         const context = siteContext(io);
         const dir = context.siteDir;
+        if (flags.infra) {
+            return installInfra(refuseOccupied(io, context, dir), flags, release);
+        }
         await clearUnfinishedImport(io, context, dir, flags.import !== undefined);
         const target = refuseOccupied(io, context, dir);
 
@@ -432,9 +484,15 @@ async function prepare(
     if (intent.services.includes('supervisor')) {
         await refuseUnsupportedDaemon(io, context);
     }
+    // A production site on a server with the shared Caddy is installed behind it.
+    const shared = intent.mode === 'production' ? await findSharedCaddy(io) : null;
+    if (shared !== null) {
+        runningCaddy(shared);
+        ok(io, 'shared caddy', `${describeShared(shared)} will serve this site`);
+    }
     const { port, mailpitPort } = await sitePorts(
         io,
-        intent.mode,
+        intent.mode === 'production' && shared === null,
         flags.port,
         intent.services.includes('mailpit'),
     );
@@ -456,11 +514,15 @@ async function prepare(
     // A production name is the domain's, and --name is the operator's: another
     // directory may already have either.
     await refuseForeignProject(io, project, dir);
+    if (shared !== null) {
+        await refuseTaken(io, shared, project, [intent.domain, intent.adminDomain].filter(Boolean));
+    }
 
     const production = intent.mode === 'production';
+    const layout: Layout = shared === null ? intent.mode : MEMBER_PROFILE;
     return {
         ...target,
-        files: clone ? [] : payloadFiles(target.stack, intent.mode),
+        files: clone ? [] : payloadFiles(target.stack, layout),
         flags,
         intent,
         port,
@@ -468,8 +530,9 @@ async function prepare(
         ghost,
         pin,
         project,
-        profiles: [intent.mode, ...intent.services].join(','),
+        profiles: [shared === null ? intent.mode : MEMBER_PROFILE, ...intent.services].join(','),
         production,
+        shared,
         url: production ? `https://${intent.domain}` : `http://localhost:${port}`,
         release,
     };
@@ -497,7 +560,7 @@ async function preflight(io: Io, context: Context): Promise<void> {
  */
 async function sitePorts(
     io: Io,
-    mode: SiteMode,
+    ownCaddy: boolean,
     requested: number | undefined,
     mailpit: boolean,
 ): Promise<{ port: number; mailpitPort: number | null }> {
@@ -507,10 +570,7 @@ async function sitePorts(
     const mailpitPort = mailpit
         ? await freeOnHost(io, new Set([...published, port]), DEFAULT_MAILPIT_PORT)
         : null;
-    const wanted = [
-        port,
-        ...(mode === 'production' ? [PRODUCTION_PORTS.http, PRODUCTION_PORTS.https] : []),
-    ];
+    const wanted = [port, ...(ownCaddy ? [PRODUCTION_PORTS.http, PRODUCTION_PORTS.https] : [])];
     const holders = taken.holders(wanted);
     if (holders.size > 0) {
         throw new CliError(
@@ -573,7 +633,7 @@ async function createSite(site: Site, created: Created, importing: Importing | n
     makeDataDirectories(site, created, importing !== null);
     await validateConfiguration(site);
     await importing?.load(created, site.profiles, site.ghost.version);
-    writeSiteRoutes(site, created);
+    await writeSiteRoutes(site, created);
     writeSiteMetadata(site, created);
     if (site.flags.noStart) {
         site.io.stdout('\nNot starting: --no-start was given.\n');
@@ -595,7 +655,7 @@ function writeStack(site: Site, created: Created) {
     ok(
         io,
         'stack files',
-        `compose.yml, ${site.production ? 'caddy/, mysql-init/, tinybird/' : 'mysql-init/'} from the manager image`,
+        `compose.yml, ${site.shared !== null ? 'mysql-init/, tinybird/' : site.production ? 'caddy/, mysql-init/, tinybird/' : 'mysql-init/'} from the manager image`,
     );
     writeLauncher(dir, io.env, { image: pin!, channel: site.release.channel }, created);
     created.save();
@@ -615,6 +675,7 @@ function writeEnv(site: Site, created: Created) {
         port: site.port,
         mailpitPort: site.mailpitPort,
         ports: { http: String(PRODUCTION_PORTS.http), https: String(PRODUCTION_PORTS.https) },
+        ingress: site.shared?.network ?? null,
         database: { user: 'ghost', password: secret(), rootPassword: secret() },
     });
     if (intent.services.includes('supervisor')) {
@@ -688,25 +749,43 @@ async function validateConfiguration({ io, dir, intent }: Site) {
     ok(io, 'configuration', `.env and ghost.env are valid for a ${intent.mode} site`);
 }
 
-/** A production site's Caddy routes. Written once; from here on the file is the operator's. */
-function writeSiteRoutes({ io, dir, production, project, intent }: Site, created: Created) {
+/**
+ * A production site's Caddy routes, in its own caddy/sites/, or behind the
+ * shared Caddy in the shared Caddy's, which then validates and reloads them.
+ * Written once; from here on the file is the operator's.
+ */
+async function writeSiteRoutes(
+    { io, dir, production, project, intent, shared }: Site,
+    created: Created,
+) {
     if (!production) {
         return;
     }
     const { domain, adminDomain, email, services } = intent;
-    created.file(join(dir, SITE_FILE));
-    writeRoutes(dir, {
+    const routes = {
         project,
         domain,
         adminDomain,
         email,
         activitypub: services.includes('activitypub'),
-    });
-    ok(
-        io,
-        SITE_FILE,
-        `routes for ${[domain, adminDomain].filter(Boolean).join(' and ')}; yours to edit`,
-    );
+    };
+    const names = [domain, adminDomain].filter(Boolean).join(' and ');
+    if (shared !== null) {
+        created.routes = true;
+        created.save();
+        await io.busy('Adding the routes to the shared Caddy', () =>
+            addRoutes(io, shared, project, renderRoutes(routes)),
+        );
+        ok(
+            io,
+            'routes',
+            `${routesPath(shared, project)}: routes for ${names}, loaded by the shared Caddy; yours to edit`,
+        );
+        return;
+    }
+    created.file(join(dir, SITE_FILE));
+    writeRoutes(dir, routes);
+    ok(io, SITE_FILE, `routes for ${names}; yours to edit`);
 }
 
 function writeSiteMetadata(site: Site, created: Created) {
@@ -747,6 +826,137 @@ async function startAndVerify({ io, dir }: Site, created: Created) {
     ok(io, 'services', 'healthy, by their own health checks');
 
     await verifySite(io, dir);
+}
+
+// --- The shared Caddy ------------------------------------------------------------
+
+/**
+ * `install --infra`: the shared Caddy, alone, in its own directory and
+ * project, on a network of its own that each production site installed after
+ * it joins. Nothing about a site is written; there is no Ghost to resolve and
+ * no metadata, which describes a site's Ghost.
+ */
+async function installInfra(target: Target, flags: Flags, requested: Requested): Promise<number> {
+    const { io, context, dir, clone } = target;
+    const release = releaseOf(requested, io.env);
+    const existing = await findSharedCaddy(io);
+    if (existing !== null) {
+        throw new CliError(
+            `this server already has ${describeShared(existing)}, on the network ${existing.network}.\n` +
+                '  Install each production site in its own directory; it joins that Caddy. If that directory no\n' +
+                `  longer holds it, remove the network first: docker network rm ${existing.network}. Nothing has been changed.`,
+        );
+    }
+    await preflight(io, context);
+    await sitePorts(io, true, undefined, false);
+    const pin = clone
+        ? null
+        : await io.busy('Resolving the manager image', () => managerPin(io, context));
+    const project = flags.name ?? INFRA_PROJECT;
+    await refuseForeignProject(io, project, dir);
+
+    const created = new Created(io, context, dir);
+    try {
+        heading(io, 'Writing the shared Caddy');
+        if (!clone) {
+            const files = payloadFiles(target.stack, INFRA_PROFILE);
+            writePayload(dir, target.stack, files, created);
+            ok(io, 'stack files', 'compose.yml and caddy/ from the manager image');
+            writeLauncher(dir, io.env, { image: pin!, channel: release.channel }, created);
+            ok(io, 'ghost-docker', `the launcher, pinned to ${pin!}`);
+        }
+        // Where the members' routes go; Caddy mounts caddy/ whole.
+        makeDirectories(join(dir, 'caddy', 'sites'), created.directories);
+        const path = join(dir, ENV_FILE);
+        created.file(path);
+        atomicWrite(
+            path,
+            env.serializeAll(
+                Object.entries({
+                    COMPOSE_PROFILES: INFRA_PROFILE,
+                    SITE_MODE: INFRA_PROFILE,
+                    COMPOSE_PROJECT_NAME: project,
+                    PROJECT_DIR: dir,
+                    RESTART_POLICY: 'unless-stopped',
+                    HTTP_PORT: String(PRODUCTION_PORTS.http),
+                    HTTPS_PORT: String(PRODUCTION_PORTS.https),
+                    ...ingressSettings(INGRESS_NETWORK),
+                }),
+                '# The shared Caddy: Caddy alone, serving the production sites on this server.\n' +
+                    '# Their routes are in caddy/sites/, one file each; see docs/caddy.md.\n',
+            ),
+            PRIVATE,
+        );
+        ok(io, ENV_FILE, 'the shared Caddy\u2019s settings');
+        // No project owns it, so taking the shared Caddy down leaves its members attached.
+        created.network = INGRESS_NETWORK;
+        await createNetwork(io.docker, INGRESS_NETWORK, {
+            [MANAGED_LABEL.split('=')[0]!]: 'true',
+            [INFRA_DIR_LABEL]: dir,
+            [INFRA_PROJECT_LABEL]: project,
+        });
+        ok(io, 'network', `${INGRESS_NETWORK}, which each member's services join`);
+        const findings = await io.busy('Validating the configuration', () => validate(io, dir));
+        const errors = findingErrors(findings);
+        if (errors) {
+            throw new CliError(
+                `the generated configuration did not validate; please report this:\n${errors}`,
+            );
+        }
+        if (flags.noStart) {
+            io.stdout('\nNot starting: --no-start was given.\n');
+        } else {
+            heading(io, 'Starting the shared Caddy');
+            created.project = true;
+            await upAndWait(
+                io,
+                dir,
+                'Pulling Caddy, starting it and waiting for it to be healthy',
+                '  The shared Caddy needs ports 80 and 443 free. Nothing that was already running was stopped.',
+            );
+            const caddy = (await composePs(io, dir))?.find((state) => state.Service === 'caddy');
+            if (caddy?.Health !== 'healthy') {
+                throw new CliError('Caddy started, but it is not healthy');
+            }
+            ok(io, 'caddy', 'healthy: its admin API answers, with its configuration loaded');
+        }
+    } catch (error) {
+        io.stderr(
+            `\n${describeError(error)}\n\nThe installation did not complete. Removing what it created\n`,
+        );
+        const leftovers = await io.busy('Removing what the installation created', () =>
+            created.remove(),
+        );
+        io.stderr(
+            leftovers.length > 0
+                ? `Some of it could not be removed:\n${leftovers.map((item) => `  ${item}\n`).join('')}`
+                : `${dir} is as it was before. Nothing that was already running was stopped.\n`,
+        );
+        throw new CliError(
+            'installation failed; fix the error above and run the same command again.',
+        );
+    }
+    io.stdout(
+        [
+            '',
+            'The shared Caddy is installed.',
+            '',
+            `  Project      ${project} (${INFRA_PROFILE}), in ${dir}`,
+            `  Network      ${INGRESS_NETWORK}`,
+            '',
+            flags.noStart
+                ? 'Nothing is running. Start it with: docker compose up -d'
+                : 'It serves no site yet. Install each production site in a directory of its own with',
+            ...(flags.noStart
+                ? []
+                : [
+                      './ghost-docker install --domain example.com: it joins this Caddy, and its routes',
+                      'are written to caddy/sites/ here.',
+                  ]),
+            '',
+        ].join('\n'),
+    );
+    return EXIT.ok;
 }
 
 // --- The outcome ----------------------------------------------------------------
@@ -827,6 +1037,11 @@ function printSummary(site: Site, importing: Importing | null) {
             `  Ghost Admin  ${admin}/ghost/`,
             `  Project      ${site.project} (${site.profiles}), in ${site.dir}`,
             `  Ghost        ${ghost.version}, ${ghost.reference}`,
+            ...(site.shared === null
+                ? []
+                : [
+                      `  Routes       ${routesPath(site.shared, site.project)}, served by the shared Caddy`,
+                  ]),
             ...(ghostChannelOf(ghost.image) === 'nightly'
                 ? [
                       `  Channel      nightly: a build of Ghost's main branch, for testing, ${production ? 'which this production site should not run' : 'never for production'}`,

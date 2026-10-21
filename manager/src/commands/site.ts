@@ -14,7 +14,8 @@ import { describeMetadata, readMetadata } from '../meta.ts';
 import { foreignProject, PROJECT_LABEL } from '../project.ts';
 import { failed, printChecks, type Check } from '../report.ts';
 import { imageDrift, observeSite, resolveSite, type ResolvedSite } from '../resolved.ts';
-import { hasProfile, readSettings, RESTORE_DIR } from '../site.ts';
+import { INGRESS_NETWORK } from '../shared.ts';
+import { hasProfile, INFRA_PROFILE, MEMBER_PROFILE, readSettings, RESTORE_DIR } from '../site.ts';
 import { verifyIngress } from '../verify.ts';
 import { installedSite } from './common.ts';
 import { collect } from './doctor.ts';
@@ -310,12 +311,22 @@ export const listCommand = defineCommand({
             io.stderr('error: docker compose ls failed\n');
             return EXIT.failure;
         }
-        const modes = new Map(
-            containers.map((container) => [
-                container.labels[PROJECT_LABEL] ?? '',
-                container.labels['org.ghost.docker.mode'] ?? '',
-            ]),
-        );
+        // The shared Caddy's mode is infra; a site any of whose containers
+        // is on its network is behind it.
+        const modes = new Map<string, string>();
+        for (const container of containers) {
+            const project = container.labels[PROJECT_LABEL] ?? '';
+            const mode = container.labels['org.ghost.docker.mode'] ?? '';
+            modes.set(
+                project,
+                mode === INFRA_PROFILE
+                    ? 'shared caddy'
+                    : modes.get(project) === MEMBER_PROFILE ||
+                        (mode === 'production' && container.networks.includes(INGRESS_NETWORK))
+                      ? MEMBER_PROFILE
+                      : mode,
+            );
+        }
         const sites = projects
             .filter((project) => modes.has(project.name))
             .sort((a, b) => a.name.localeCompare(b.name));
@@ -323,10 +334,16 @@ export const listCommand = defineCommand({
             io.stdout('No ghost-docker site has containers on this host.\n');
         } else {
             const row = (...cells: string[]) =>
-                `${cells[0]!.padEnd(28)} ${cells[1]!.padEnd(11)} ${cells[2]!.padEnd(20)} ${cells[3]}\n`;
+                `${cells[0]!.padEnd(28)} ${cells[1]!.padEnd(12)} ${cells[2]!.padEnd(20)} ${cells[3]}\n`;
             io.stdout(row('SITE', 'MODE', 'STATUS', 'DIRECTORY'));
             for (const site of sites) {
                 io.stdout(row(site.name, modes.get(site.name)!, site.status, site.dir));
+            }
+            if ([...modes.values()].includes(MEMBER_PROFILE)) {
+                io.stdout(
+                    `\nA ${MEMBER_PROFILE} is a production site behind the shared Caddy, which serves its routes\n` +
+                        "from a file named for it in the shared Caddy's caddy/sites/.\n",
+                );
             }
         }
         io.stdout(

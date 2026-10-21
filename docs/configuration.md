@@ -106,13 +106,21 @@ value in either file may be a credential.
 
 ## Site modes and profiles
 
-Site mode is selected through `COMPOSE_PROFILES`, and exactly one of `local`
-or `production` must be present:
+Site mode is selected through `COMPOSE_PROFILES`, and exactly one of `local`,
+`production` or `member` must be present:
 
 | Profile | Services | Ingress |
 | --- | --- | --- |
 | `local` | `ghost`, `db` | Ghost on `127.0.0.1:${GHOST_PORT}` |
 | `production` | `ghost`, `db`, `caddy` | Caddy on `${HTTP_PORT}` / `${HTTPS_PORT}` |
+| `member` | `ghost`, `db` | [the shared Caddy](caddy.md#the-shared-caddy), on its network `${INGRESS_NETWORK}` |
+
+A `member` is a production site in every other respect: its `SITE_MODE` is
+`production`, and production's rules below apply to it. The shared Caddy's
+own directory selects `infra`, and nothing else: Caddy alone, with no site.
+Its `.env` needs no Ghost or database settings, so compose.yml guards none of
+them with `:?` (Compose interpolates the services a profile leaves out too);
+`config validate` requires them for a site instead.
 
 Optional per-site profiles are added to the same list and are purely additive.
 Adding one never changes the site mode:
@@ -190,7 +198,13 @@ Each service has a unique alias suffixed with the project name:
 - `mailpit-${COMPOSE_PROJECT_NAME}:1025` (SMTP)
 
 Generated proxy routes and helper clients use these, never the bare service
-name. `COMPOSE_PROJECT_NAME` is the site's stable identity and is kept
+name. Ghost, ActivityPub and analytics are also on the `ingress` network, under
+the same aliases, which is all Caddy reaches: never MySQL. A site with its own
+Caddy has an `ingress` network of its own. Behind the shared Caddy it is the
+shared Caddy's, `ghost-ingress`, which `.env` names (`INGRESS_NETWORK`, with
+`INGRESS_EXTERNAL=true`, since the manager created it and no Compose project
+owns it); there every site's bare service names answer for every site, so
+only the unique aliases identify one. `COMPOSE_PROJECT_NAME` is the site's stable identity and is kept
 independent of the directory name. `install` chooses it once: the domain's in
 production, and locally the directory's name and a random pair
 (`ghost-local-blog-secondary-roadrunner`) that no project on the daemon has,

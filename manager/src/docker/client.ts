@@ -8,6 +8,7 @@ import {
     DaemonTimeout,
     DaemonUnreachable,
     type DockerRequest,
+    type DockerResponse,
     type DockerTransport,
 } from './transport.ts';
 
@@ -217,6 +218,12 @@ const containerSummary = z.object({
     Image: z.string().default(''),
     ImageID: z.string().default(''),
     Labels: z.record(z.string(), z.string()).nullable().default({}),
+    NetworkSettings: z
+        .looseObject({
+            Networks: z.record(z.string(), z.unknown()).nullable().default({}),
+        })
+        .nullable()
+        .default({ Networks: {} }),
     Ports: z
         .array(
             z.object({
@@ -244,6 +251,8 @@ export interface ContainerFacts {
     readonly labels: Readonly<Record<string, string>>;
     /** Host ports the container publishes. */
     readonly publishedPorts: readonly number[];
+    /** The names of the networks it is attached to. */
+    readonly networks: readonly string[];
 }
 
 /** `docker ps`, or with `all` `docker ps -a`, optionally filtered by label. */
@@ -275,6 +284,7 @@ export async function listContainers(
                 ),
             ),
         ],
+        networks: Object.keys(container.NetworkSettings?.Networks ?? {}),
     }));
 }
 
@@ -446,6 +456,74 @@ export async function disconnectNetwork(
     }
 }
 
+const networkInspect = z.object({
+    Id: z.string(),
+    Name: z.string(),
+    Labels: z.record(z.string(), z.string()).nullable().default({}),
+});
+
+export interface NetworkFacts {
+    readonly id: string;
+    readonly name: string;
+    readonly labels: Readonly<Record<string, string>>;
+}
+
+/** `docker network inspect`, or null when the daemon has no network by that name. */
+export async function inspectNetwork(
+    docker: DockerTransport,
+    name: string,
+): Promise<NetworkFacts | null> {
+    try {
+        const network = await call(
+            docker,
+            { method: 'GET', path: `/networks/${encodeURIComponent(name)}` },
+            networkInspect,
+        );
+        // The daemon also matches an ID or its prefix; only the name counts.
+        return network.Name === name
+            ? { id: network.Id, name: network.Name, labels: network.Labels ?? {} }
+            : null;
+    } catch (error) {
+        if (error instanceof DaemonError && error.status === 404) {
+            return null;
+        }
+        throw error;
+    }
+}
+
+/** `docker network create --label ...`: a bridge network. Returns its ID. */
+export async function createNetwork(
+    docker: DockerTransport,
+    name: string,
+    labels: Readonly<Record<string, string>>,
+): Promise<string> {
+    const network = await call(
+        docker,
+        {
+            method: 'POST',
+            path: '/networks/create',
+            body: { Name: name, Driver: 'bridge', Labels: labels, CheckDuplicate: true },
+        },
+        created,
+    );
+    return network.Id;
+}
+
+/** `docker network rm`. A network that is already gone is not an error. */
+export async function removeNetwork(docker: DockerTransport, name: string): Promise<void> {
+    try {
+        await call(
+            docker,
+            { method: 'DELETE', path: `/networks/${encodeURIComponent(name)}` },
+            z.unknown(),
+        );
+    } catch (error) {
+        if (!(error instanceof DaemonError && error.status === 404)) {
+            throw error;
+        }
+    }
+}
+
 // --- One-shot containers ----------------------------------------------------
 
 export interface Bind {
@@ -562,6 +640,73 @@ export async function runOnce(docker: DockerTransport, spec: RunSpec): Promise<R
             query: { force: '1', v: '1' },
         }).catch(() => undefined);
     }
+}
+
+const execInspect = z.object({
+    Running: z.boolean().default(false),
+    ExitCode: z.number().nullable().default(null),
+});
+
+/**
+ * `docker exec`, without a TTY or standard input: run `cmd` in a running
+ * container, as `user` when given, and wait for it. The start request's
+ * answer is the output stream, which ends when the command does. A container
+ * that is not running is a result with the daemon's message, as for runOnce.
+ */
+export async function execInContainer(
+    docker: DockerTransport,
+    container: string,
+    {
+        cmd,
+        user,
+        timeoutMs = 60_000,
+    }: { cmd: readonly string[]; user?: string; timeoutMs?: number },
+): Promise<RunResult> {
+    let id: string;
+    try {
+        id = (
+            await call(
+                docker,
+                {
+                    method: 'POST',
+                    path: `/containers/${encodeURIComponent(container)}/exec`,
+                    body: {
+                        Cmd: [...cmd],
+                        AttachStdout: true,
+                        AttachStderr: true,
+                        Tty: false,
+                        ...(user ? { User: user } : {}),
+                    },
+                },
+                created,
+            )
+        ).Id;
+    } catch (error) {
+        if (error instanceof DaemonError) {
+            return { status: null, stdout: '', stderr: error.message, timedOut: false };
+        }
+        throw error;
+    }
+    let output: DockerResponse;
+    try {
+        output = await docker({
+            method: 'POST',
+            path: `/exec/${id}/start`,
+            body: { Detach: false, Tty: false },
+            timeoutMs,
+        });
+    } catch (error) {
+        if (error instanceof DaemonTimeout) {
+            return { status: null, stdout: '', stderr: '', timedOut: true };
+        }
+        throw error;
+    }
+    if (output.status >= 400) {
+        return { status: null, stdout: '', stderr: output.body.toString('utf8'), timedOut: false };
+    }
+    const { stdout, stderr } = demultiplex(output.body);
+    const state = await call(docker, { method: 'GET', path: `/exec/${id}/json` }, execInspect);
+    return { status: state.Running ? null : state.ExitCode, stdout, stderr, timedOut: false };
 }
 
 /**

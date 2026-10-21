@@ -174,7 +174,11 @@ export function siteOverrides(resolved: ResolvedSite): string[] {
 function notIncluded(site: SiteFacts): string[] {
     const profiles = site.settings.get('COMPOSE_PROFILES') ?? '';
     const lines: string[] = [];
-    if (site.mode === 'production') {
+    if (site.member) {
+        lines.push(
+            "its routes, in the shared Caddy's caddy/sites/, which are the shared Caddy's files, with its certificates",
+        );
+    } else if (site.mode === 'production') {
         lines.push(
             "Caddy's certificates and state, which Caddy obtains again when the site starts",
         );

@@ -9,6 +9,7 @@ import { backupCommand, restoreCommand } from './commands/backup.ts';
 import { getCommand, setCommand, validateCommand } from './commands/config.ts';
 import { doctorCommand } from './commands/doctor.ts';
 import { installCommand } from './commands/install.ts';
+import { removeCommand } from './commands/remove.ts';
 import { checkCommand, infoCommand, listCommand } from './commands/site.ts';
 import { selfUpdateCommand } from './commands/self-update.ts';
 import { supervisorRunCommand } from './commands/supervisor.ts';
@@ -31,6 +32,7 @@ const COMMANDS: Record<string, Command> = {
     'supervisor run': supervisorRunCommand,
     backup: backupCommand,
     restore: restoreCommand,
+    remove: removeCommand,
     version: versionCommand,
     doctor: doctorCommand,
     help: defineCommand({

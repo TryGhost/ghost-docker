@@ -13,13 +13,16 @@ import { removeAsRoot } from './asroot.ts';
 import { atomicWrite, PRIVATE, readIfExists } from './fs.ts';
 import type { Io } from './io.ts';
 import type { Written } from './payload.ts';
-import { DATA_DIRS, ENV_FILE, GHOST_ENV_FILE, META_FILE } from './site.ts';
+import { removeNetwork } from './docker/client.ts';
+import { findSharedCaddy, removeRoutes, routesFile, routesPath } from './shared.ts';
+import { DATA_DIRS, ENV_FILE, GHOST_ENV_FILE, META_FILE, readSettings } from './site.ts';
 
 const journalSchema = z.object({
     files: z.array(z.string().startsWith('/')),
     directories: z.array(z.string().startsWith('/')),
     data: z.array(z.string().startsWith('/')),
     project: z.boolean(),
+    routes: z.boolean().default(false),
 });
 
 export class Created implements Written {
@@ -30,6 +33,10 @@ export class Created implements Written {
     readonly data: string[] = [];
     /** Compose has created something for this project: a network, containers, volumes. */
     project = false;
+    /** The site's routes are in the shared Caddy, named for its project (shared.ts). */
+    routes = false;
+    /** The shared Caddy's network, created by `install --infra`. */
+    network: string | null = null;
     /** The import marker, when this is an import. */
     journal: string | null = null;
 
@@ -59,6 +66,8 @@ export class Created implements Written {
                 directories: [],
                 data: DATA_DIRS.map((data) => join(dir, data)),
                 project: true,
+                // Named for this site's project, which no other site's can have.
+                routes: true,
             };
         }
         // Only ever inside this site directory, whatever the file says.
@@ -67,6 +76,7 @@ export class Created implements Written {
         created.directories.push(...recorded.directories.filter(inside));
         created.data.push(...recorded.data.filter(inside));
         created.project = recorded.project && existsSync(join(dir, ENV_FILE));
+        created.routes = recorded.routes;
         return created;
     }
 
@@ -80,16 +90,19 @@ export class Created implements Written {
         if (this.journal === null) {
             return;
         }
-        const { files, directories, data, project } = this;
+        const { files, directories, data, project, routes } = this;
         atomicWrite(
             this.journal,
-            `${JSON.stringify({ files, directories, data, project }, null, 2)}\n`,
+            `${JSON.stringify({ files, directories, data, project, routes }, null, 2)}\n`,
             PRIVATE,
         );
     }
 
     async remove(): Promise<string[]> {
         const leftovers: string[] = [];
+        if (this.routes) {
+            leftovers.push(...(await this.removeRoutes()));
+        }
         if (this.project) {
             // Every profile, so whatever was started is found; the .env it
             // interpolates is still in place.
@@ -102,6 +115,11 @@ export class Created implements Written {
                     `the project's containers (docker compose down failed: ${composeError(down, 2)})`,
                 );
             }
+        }
+        if (this.network !== null) {
+            await removeNetwork(this.io.docker, this.network).catch((error: unknown) =>
+                leftovers.push(`the network ${this.network} (${(error as Error).message})`),
+            );
         }
         if (this.data.length > 0) {
             leftovers.push(...(await this.removeData()));
@@ -126,6 +144,29 @@ export class Created implements Written {
             }
         }
         return leftovers;
+    }
+
+    /** The site's routes in the shared Caddy, which is reloaded without them. */
+    private async removeRoutes(): Promise<string[]> {
+        const project = readSettings(this.dir)?.get('COMPOSE_PROJECT_NAME') ?? '';
+        if (project === '') {
+            return [];
+        }
+        let shared = null;
+        try {
+            shared = await findSharedCaddy(this.io);
+            if (shared === null) {
+                return [];
+            }
+            await removeRoutes(this.io, shared, project);
+            return [];
+        } catch (error) {
+            const path =
+                shared === null
+                    ? `${routesFile(project)} in the shared Caddy`
+                    : routesPath(shared, project);
+            return [`${path} (${(error as Error).message.split('\n')[0]})`];
+        }
     }
 
     /** MySQL's data directory belongs to MySQL's user once it has run (asroot.ts). */
