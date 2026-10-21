@@ -27,9 +27,9 @@ import type { Exec } from '../src/process.ts';
 import { readSettings } from '../src/site.ts';
 
 /** How the daemon treats a sibling container asked to read the probe file. */
-export type Sibling = 'sees' | 'other-directory' | 'cannot-run' | 'hangs';
+type Sibling = 'sees' | 'other-directory' | 'cannot-run' | 'hangs';
 
-export interface Daemon {
+interface Daemon {
     sibling?: Sibling;
     /** `docker info` as the daemon would answer, or a failure. */
     info?: Record<string, unknown> | { fail: string } | { hang: true };
@@ -83,7 +83,7 @@ export interface Daemon {
 }
 
 /** What the manager did on the site network, so tests can see nothing leaks. */
-export interface NetworkLog {
+interface NetworkLog {
     /** Phases on the site network now. */
     held: number;
     /** Database connections opened, and closed. */

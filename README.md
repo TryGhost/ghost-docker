@@ -94,7 +94,7 @@ From `scripts/`, run `pnpm install --frozen-lockfile`, `pnpm run typecheck` and
 tests/e2e/launcher.sh        # stand-in Docker, then the real image
 tests/e2e/install.sh         # real installations: pulls images, binds 80 and 443
 tests/e2e/self-update.sh     # release updates, failed-update write retention and recovery
-tests/e2e/upgrade-supervisor.sh  # the upgrade supervisor: socket access, refusals, a killed job, an update
+tests/e2e/upgrade-supervisor.sh  # the upgrade supervisor: socket access, a killed job, an update
 tests/e2e/ghost-nightly.sh   # Ghost's nightly channel: an older build moved to latest by the supervisor
 tests/e2e/admin-update-local.sh --ghost PATH  # by hand, not in CI: Ghost Admin asking the supervisor for an update
 tests/e2e/migrate-main.sh    # an installation of the released main layout, migrated

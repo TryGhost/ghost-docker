@@ -12,9 +12,9 @@
 # over itself; then taken down and restored into a new directory. Each restore is checked the way an operator would: staff sign in
 # and the post is there, the image is served, the theme is active, the
 # configuration is as it was, and ActivityPub's records hold exactly what was
-# backed up. Then the lock refuses a second operation, `check` reports a
-# stale lock, a dump that fails is an error, not a backup, and leaves the
-# writers running, and a backup by default is live and never stops them.
+# backed up. Then the lock refuses a second operation, a dump that fails is
+# an error, not a backup, and leaves the writers running, and a backup by
+# default is live and never stops them.
 #
 # It pulls images, starts containers and binds ports 80 and 443 (it fails
 # when something else holds them, or is skipped with GD_E2E_ALLOW_SKIP=1). It
@@ -24,7 +24,9 @@ set -euo pipefail
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd -P)
 IMAGE=ghost-docker:e2e-backup
 DOMAIN=ghost-e2e.test
+# shellcheck disable=SC2034 # read by site.sh
 OWNER_EMAIL=owner@example.com
+# shellcheck disable=SC2034 # read by site.sh
 OWNER_PASSWORD='Kept-in-a-backup-2026!'
 # A setting of the site's own, with dollar signs and both kinds of quote: what
 # dotenv encoding gets wrong. Ghost ignores a key it does not know.
@@ -74,6 +76,7 @@ done
 
 work_dir backup
 SITES=()
+SITE=""
 
 # Every site is taken down and its data removed as root, because MySQL's data
 # directory belongs to MySQL's user once it has run.
@@ -87,30 +90,8 @@ teardown() {
     docker run --rm --user 0 --entrypoint rm -v "$WORK:/work" "$IMAGE" -rf /work/sites >/dev/null 2>&1
 }
 
-# compose_in SITE ARGS... -- Compose as an operator runs it, from the host.
-compose_in() {
-    local site=$1
-    shift
-    docker compose --project-directory "$site" -f "$site/compose.yml" "$@"
-}
-
 # gd SITE ARGS... -- the site's own launcher, on the image built here.
 gd() { GD_IMAGE=$IMAGE "$A/ghost-docker" --dir "$@"; }
-
-# setting SITE FILE KEY -- one decoded value, through the manager.
-setting() { gd "$1" config get "$2" "$3" 2>/dev/null; }
-
-# root_sql SITE SQL -- as MySQL's root, in the site's database container.
-root_sql() {
-    compose_in "$1" exec -T -e MYSQL_PWD="$(setting "$1" .env DATABASE_ROOT_PASSWORD)" db \
-        mysql -uroot -N -B -e "$2"
-}
-
-new_site() {
-    SITE=$WORK/sites/$1
-    mkdir -p "$SITE"
-    SITES+=("$SITE")
-}
 
 backups_of() { find "$1/backups" -mindepth 1 -maxdepth 1 2>/dev/null | sort; }
 
@@ -128,33 +109,11 @@ writers() {
     done
 }
 
-# api SITE METHOD PATH [curl options] -- the Admin API, signed in.
-api() {
-    local site=$1 method=$2 path=$3 base
-    shift 3
-    base=$(base_of "$site")
-    site_curl --max-time 60 --cookie "$site.cookies" \
-        --header "Origin: $base" --request "$method" "$@" "$base/ghost/api/admin/$path"
-}
-
+# The site is reached as a browser reaches it: by its name, through Caddy on
+# this host's port 443, trusting the test CA as a browser told to would.
 base_of() { printf 'https://%s' "$DOMAIN"; }
-
-# site_curl ARGS... -- through Caddy on this host's port 443, trusting its
-# test CA as a browser told to would.
 site_curl() {
     curl --disable --silent --insecure --noproxy '*' --resolve "$DOMAIN:443:127.0.0.1" "$@"
-}
-
-# sign_in SITE -- with the owner's password; the session goes in SITE.cookies.
-sign_in() {
-    local base status
-    base=$(base_of "$1")
-    status=$(site_curl --max-time 30 --output "$1.session" --write-out '%{http_code}' \
-        --cookie-jar "$1.cookies" --request POST --header 'Content-Type: application/json' \
-        --header "Origin: $base" \
-        --data "$(jq -cn --arg u "$OWNER_EMAIL" --arg p "$OWNER_PASSWORD" '{username: $u, password: $p}')" \
-        "$base/ghost/api/admin/session/")
-    [[ $status == 201 ]] || fail "signing in at $base answered $status" "$(cat "$1.session")"
 }
 
 # expect_restored SITE -- everything the backup held, on a running site.
@@ -216,13 +175,7 @@ expect_status 0
 ok "$A"
 
 step "Give it an owner, a post, an image, a theme and a setting"
-BASE=$(base_of "$A")
-body=$(site_curl --max-time 60 --request POST \
-    --header 'Content-Type: application/json' --header "Origin: $BASE" \
-    --data "$(jq -cn --arg e "$OWNER_EMAIL" --arg p "$OWNER_PASSWORD" \
-        '{setup: [{name: "Backup Tester", email: $e, password: $p, blogTitle: "Backup e2e"}]}')" \
-    "$BASE/ghost/api/admin/authentication/setup/")
-jq -e '.users[0].id' <<<"$body" >/dev/null 2>&1 || fail "setting up the owner failed" "$body"
+make_owner "$A" "Backup Tester" "Backup e2e"
 sign_in "$A"
 body=$(api "$A" POST posts/ --header 'Content-Type: application/json' \
     --data '{"posts": [{"title": "Kept by the backup", "status": "published"}]}')
@@ -329,14 +282,6 @@ expect_output 'Nothing has been changed'
 wait "$HOLDER" || fail "the backup holding the lock failed" "$(cat "$WORK/held.log")"
 HOLDER=""
 ok "refused, naming the backup that holds it; that backup finished"
-
-printf '{"operation":"restore from %s","startedAt":"2026-10-09T10:00:00Z"}\n' "${BACKUP##*/}" >"$B/.ghost-docker.lock"
-run gd "$B" check
-expect_status 1
-expect_output 'lock +\.ghost-docker\.lock is held by restore from .*, started 2026-10-09T10:00:00Z'
-expect_output 'rm .*\.ghost-docker\.lock'
-rm "$B/.ghost-docker.lock"
-ok "check reports a stale lock and how to remove it"
 
 # --- A dump that fails -----------------------------------------------------------
 

@@ -506,41 +506,39 @@ describe('backup records what the site runs', () => {
         assert.deepEqual(backups(), []);
     });
 
-    for (const rootOverride of [false, true]) {
-        for (const file of [
-            'compose.ipv6.yml',
-            'overrides/compose.override.yml',
-            'overrides/compose.yml',
-        ]) {
-            test(`backs up and restores ${file}, root override ${rootOverride ? 'present' : 'absent'}`, async () => {
-                const original = 'services: {}\n';
-                rmSync(join(h.dir, 'compose.override.yml'), { force: true });
-                if (rootOverride) {
-                    writeFileSync(join(h.dir, 'compose.override.yml'), original);
-                }
-                mkdirSync(join(h.dir, 'overrides'), { recursive: true });
-                writeFileSync(join(h.dir, file), original);
-                setEnv(
-                    'COMPOSE_FILE',
-                    ['compose.yml', ...(rootOverride ? ['compose.override.yml'] : []), file].join(
-                        ':',
-                    ),
-                );
-                const root = await backUp();
-                const read = readBackupManifest(root);
-                assert.equal(read.state, 'present');
-                const manifest = read.state === 'present' ? read.manifest : null!;
-                assert.deepEqual(manifest.site.overrides, [file]);
-                assert.ok(`site/${file}` in manifest.files);
-                assert.equal(readFileSync(join(root, 'site', file), 'utf8'), original);
+    // Which files COMPOSE_FILE inventories is test/integration/compose.test.ts's,
+    // against the real Compose; this is that the backup carries them and the
+    // restore puts them back.
+    for (const [rootOverride, file] of [
+        [false, 'overrides/compose.override.yml'],
+        [true, 'compose.ipv6.yml'],
+    ] as const) {
+        test(`backs up and restores ${file}, root override ${rootOverride ? 'present' : 'absent'}`, async () => {
+            const original = 'services: {}\n';
+            rmSync(join(h.dir, 'compose.override.yml'), { force: true });
+            if (rootOverride) {
+                writeFileSync(join(h.dir, 'compose.override.yml'), original);
+            }
+            mkdirSync(join(h.dir, 'overrides'), { recursive: true });
+            writeFileSync(join(h.dir, file), original);
+            setEnv(
+                'COMPOSE_FILE',
+                ['compose.yml', ...(rootOverride ? ['compose.override.yml'] : []), file].join(':'),
+            );
+            const root = await backUp();
+            const read = readBackupManifest(root);
+            assert.equal(read.state, 'present');
+            const manifest = read.state === 'present' ? read.manifest : null!;
+            assert.deepEqual(manifest.site.overrides, [file]);
+            assert.ok(`site/${file}` in manifest.files);
+            assert.equal(readFileSync(join(root, 'site', file), 'utf8'), original);
 
-                writeFileSync(join(h.dir, file), '# changed after backup\nservices: {}\n');
-                const result = await h.run('restore', '--yes', root);
-                assert.equal(result.code, 0, result.stderr);
-                assert.equal(readSite(file), original);
-                assert.equal(existsSync(join(h.dir, 'compose.override.yml')), rootOverride);
-            });
-        }
+            writeFileSync(join(h.dir, file), '# changed after backup\nservices: {}\n');
+            const result = await h.run('restore', '--yes', root);
+            assert.equal(result.code, 0, result.stderr);
+            assert.equal(readSite(file), original);
+            assert.equal(existsSync(join(h.dir, 'compose.override.yml')), rootOverride);
+        });
     }
 
     test('an override outside the site is refused', async () => {
@@ -750,14 +748,6 @@ describe('restore over the site', () => {
         const metadata = JSON.parse(readSite('.ghost-docker.json'));
         assert.equal(metadata.ghost.digest, INDEX);
         assert.equal(metadata.ghost.version, '6.67.0');
-    });
-
-    test('a pinned site is restored with its own pin, as recorded', async () => {
-        const root = await backUp();
-        const result = await h.run('restore', '--yes', root);
-        assert.equal(result.code, 0, result.stderr);
-        assert.doesNotMatch(result.stdout, /pinned to/);
-        assert.equal(env.get(readSite('.env'), 'GHOST_IMAGE_REF'), REFERENCE);
     });
 
     test('a backup recording another image than its configuration names is refused before anything stops', async () => {

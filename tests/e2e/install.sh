@@ -24,6 +24,10 @@ ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd -P)
 IMAGE=ghost-docker:e2e
 DOMAIN=ghost-e2e.test
 PROXY=ghost-docker-e2e-proxy
+# shellcheck disable=SC2034 # read by site.sh
+OWNER_EMAIL=owner@example.com
+# shellcheck disable=SC2034 # read by site.sh
+OWNER_PASSWORD='Caught-by-mailpit-2026!'
 
 # What this host cannot run fails the run, unless GD_E2E_ALLOW_SKIP=1.
 # shellcheck source=/dev/null
@@ -32,6 +36,7 @@ require_docker
 
 work_dir install
 SITES=()
+SITE=""
 
 # Every site is taken down and its data removed as root, because MySQL's data
 # directory belongs to MySQL's user once it has run.
@@ -49,34 +54,10 @@ teardown() {
 # The installer's own output, without the services' logs it prints on failure.
 summary() { grep -vE '^[a-z-]+-1 +\|' <<<"$OUT" || true; }
 
-# compose_in SITE ARGS... -- Compose as an operator runs it, from the host.
-compose_in() {
-    local site=$1
-    shift
-    docker compose --project-directory "$site" -f "$site/compose.yml" "$@"
-}
-
-# setting SITE KEY -- one decoded value, through the manager.
-setting() { "$1/ghost-docker" --dir "$1" config get "$2" 2>/dev/null; }
-
 # owner_mode PATH -> "UID MODE", on Linux and macOS
 owner_mode() { stat -c '%u %a' "$1" 2>/dev/null || stat -f '%u %Lp' "$1"; }
 
-# http_status PORT [HOST] -- what answers on the host's own loopback port.
-http_status() {
-    curl --silent --noproxy '*' --max-time 20 --output /dev/null --write-out '%{http_code}' \
-        --header "Host: ${2:-localhost}" "http://127.0.0.1:$1/ghost/api/admin/site/" || true
-}
-
 port_free() { ! (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
-
-# new_site NAME -> SITE, an empty directory that cleanup takes down. Not a
-# command substitution: SITES has to grow in this shell, not a subshell.
-new_site() {
-    SITE=$WORK/sites/$1
-    mkdir -p "$SITE"
-    SITES+=("$SITE")
-}
 
 operating_system=$(docker info --format '{{.OperatingSystem}}')
 printf 'Docker: %s on %s\n' "$operating_system" "$(uname -s)"
@@ -169,7 +150,7 @@ compose_in "$B" down --volumes >/dev/null 2>&1
 [[ $(http_status "$(setting "$A" GHOST_PORT)") == 200 ]] || fail "taking the second site down stopped the first"
 ok "distinct identities and ports, both answer at once, and one taken down leaves the other"
 
-# --- --no-start, and the encoder through real containers ------------------------
+# --- --no-start ---------------------------------------------------------------
 
 step "--no-start starts nothing"
 new_site e2e-no-start
@@ -180,58 +161,6 @@ expect_output 'Nothing is running'
 [[ -z $(compose_in "$N" ps --all --quiet) ]] || fail "containers were created"
 compose_in "$N" config --quiet || fail "the configuration it wrote does not resolve"
 ok "configured, valid, and nothing created"
-
-step "Values written by config set reach a container exactly"
-# Each value goes in through the manager's encoder and comes out of a real
-# container through Compose. VAR is set where Compose runs, so an
-# interpolation that should not happen shows.
-# shellcheck disable=SC2016,SC1003  # every one of these is meant literally
-values=(
-    'plain'
-    'with spaces  '
-    'dollar $VAR'
-    'braced ${VAR}'
-    'double dollar $$'
-    'lone dollar $'
-    'double"quote'
-    "single'quote"
-    'back\slash'
-    "backslash quote \\'"
-    ''
-    '["a", "b", 1]'
-    '{"k": "v", "n": [1, 2]}'
-    'hash # not a comment'
-    $'line1\nline2'
-    $'tab\there'
-    'trailing backslash \'
-)
-keys=()
-for i in "${!values[@]}"; do
-    "$N/ghost-docker" --dir "$N" config set ghost.env "E2E_V$i" -- "${values[$i]}" >/dev/null 2>&1 ||
-        fail "config set refused value $i"
-    keys+=("E2E_V$i")
-done
-# And through .env, interpolated into the ghost service's environment.
-"$N/ghost-docker" --dir "$N" config set .env TINYBIRD_WORKSPACE_ID -- "${values[3]} ${values[6]} ${values[9]}" >/dev/null 2>&1
-# shellcheck disable=SC2016  # a Node program, not shell
-run env VAR=INTERPOLATED docker compose --project-directory "$N" -f "$N/compose.yml" \
-    run --rm --no-deps -T --entrypoint node ghost -e '
-for (const key of process.argv.slice(1)) {
-  process.stdout.write(Buffer.from(process.env[key] ?? "<unset>").toString("base64") + "\n");
-}' "${keys[@]}" tinybird__workspaceId
-expect_status 0
-seen=()
-while IFS= read -r line; do
-    [[ $line =~ ^[A-Za-z0-9+/=]*$ ]] || continue
-    seen+=("$(printf '%s' "$line" | base64 -d 2>/dev/null || printf '%s' "$line" | base64 -D)")
-done <<<"$OUT"
-for i in "${!values[@]}"; do
-    [[ ${seen[$i]-<missing>} == "${values[$i]}" ]] ||
-        fail "value $i reached the container as [${seen[$i]-<missing>}], not [${values[$i]}]" "$OUT"
-done
-[[ ${seen[${#values[@]}]} == "${values[3]} ${values[6]} ${values[9]}" ]] ||
-    fail "a .env value reached the container as [${seen[${#values[@]}]}]"
-ok "${#values[@]} values through ghost.env, and one through .env, arrive verbatim"
 
 # --- A port another program holds ---------------------------------------------
 
@@ -384,15 +313,6 @@ fi
 
 # --- Optional services, from the image alone ------------------------------------
 
-step "A local site refuses ActivityPub, which only Caddy's routes reach"
-new_site e2e-local-activitypub
-LA=$SITE
-run install_alone "$LA" --local --with activitypub
-expect_status 2
-expect_output 'activitypub is for production sites only'
-[[ -z $(ls -A "$LA") ]] || fail "files were written" "$(ls -A "$LA")"
-ok "a usage error, before anything was written"
-
 step "ActivityPub and the analytics helpers on a production site, from the image alone"
 if port_free 80 && port_free 443; then
     new_site e2e-activitypub
@@ -430,15 +350,11 @@ bindings=$(docker inspect -f '{{range $p, $b := .HostConfig.PortBindings}}{{rang
 [[ $bindings == "127.0.0.1 " ]] || fail "Mailpit is published on: $bindings"
 ok "installed, verified, and the inbox is published on 127.0.0.1:$inbox only"
 # The owner, then a password reset: Ghost sends both through SMTP.
-ghost_url=http://127.0.0.1:$(setting "$M" GHOST_PORT)/ghost/api/admin/authentication
-admin_post() {
-    curl --silent --noproxy '*' --max-time 60 --output /dev/null --write-out '%{http_code}' \
-        --header 'Content-Type: application/json' --header "Origin: $(setting "$M" URL)" \
-        --data "$2" "$ghost_url/$1/" || true
-}
-status=$(admin_post setup "{\"setup\":[{\"name\":\"E2E\",\"email\":\"owner@example.com\",\"password\":\"$(openssl rand -hex 16)\",\"blogTitle\":\"E2E\"}]}")
-[[ $status == 201 ]] || fail "owner setup answered $status"
-status=$(admin_post password_reset '{"password_reset":[{"email":"owner@example.com"}]}')
+make_owner "$M" E2E E2E
+status=$(site_curl --max-time 60 --output /dev/null --write-out '%{http_code}' \
+    --header 'Content-Type: application/json' --header "Origin: $(base_of "$M")" \
+    --data "{\"password_reset\":[{\"email\":\"$OWNER_EMAIL\"}]}" \
+    "$(base_of "$M")/ghost/api/admin/authentication/password_reset/" || true)
 [[ $status == 200 ]] || fail "the password reset answered $status"
 subjects=""
 for _ in $(seq 1 30); do

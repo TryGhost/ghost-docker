@@ -6,10 +6,11 @@
 # A local site on Ghost 6.61.0 is installed with the supervisor. Inside the
 # Ghost container, as Ghost's own uid, Ghost reaches the supervisor's socket
 # through its read-only mount and cannot replace it; another uid cannot reach
-# it. A malformed request and one made while the CLI holds the lock are refused.
-# A supervisor killed mid-job reports the job interrupted when it comes back,
-# leaving the lock for the operator, who follows its steps. Then a request
-# made by hand runs to done: Ghost is on the newest 6.x, backed up first.
+# it. A supervisor killed mid-job reports the job interrupted when it comes
+# back, leaving the lock for the operator, who follows its steps. Then a
+# request made by hand runs to done: Ghost is on the newest 6.x, backed up
+# first. What the API refuses is manager/test/supervisor.test.ts's, over a
+# real socket.
 #
 # It pulls images, starts containers and binds a loopback port. Exits non-zero
 # at the first check that fails, naming it.
@@ -43,10 +44,8 @@ on_fail() {
 }
 
 gd() { "$S/ghost-docker" --dir "$S" "$@"; }
-compose_in() { docker compose --project-directory "$S" -f "$S/compose.yml" "$@"; }
-setting() { gd config get "$1" 2>/dev/null; }
 # As Ghost runs: its own user, in its own container.
-as_ghost() { compose_in exec -T --user ghost ghost sh -c "$1"; }
+as_ghost() { compose_in "$S" exec -T --user ghost ghost sh -c "$1"; }
 # shellcheck source=supervisor-api.sh
 source "$ROOT/tests/e2e/supervisor-api.sh"
 # POST /v1/requests for Ghost `$1` with key `$2`; OUT is the status and body.
@@ -77,15 +76,14 @@ wait_for_any() {
     done
     fail "waited ${seconds}s for $* to match $pattern; it is ${got:-nothing}"
 }
-# A call to the API from inside Ghost's container, as Ghost's own user.
+# A GET of the API from inside Ghost's container, as Ghost's own user.
 as_ghost_http() {
-    local method=$1 path=$2 body=${3:-}
     as_ghost "node -e '
-const r = require(\"http\").request({socketPath: \"/run/ghost-upgrade/supervisor.sock\", method: \"$method\", path: \"$path\", agent: false},
+const r = require(\"http\").request({socketPath: \"/run/ghost-upgrade/supervisor.sock\", path: \"$1\", agent: false},
   res => { let b = \"\"; res.on(\"data\", d => b += d); res.on(\"end\", () => console.log(res.statusCode + \" \" + b)); });
 r.on(\"error\", e => { console.log(\"error \" + e.code); });
-r.end(process.argv[1] || undefined);
-' '$body'"
+r.end();
+'"
 }
 
 step "Build the manager image from this checkout"
@@ -100,8 +98,8 @@ mkdir -p "$S"
 run env GD_IMAGE="$MANAGER" "$ROOT/ghost-docker" --dir "$S" install --local --version "$FROM" \
     --with supervisor --no-prompt
 expect_status 0
-PROJECT=$(setting COMPOSE_PROJECT_NAME)
-[[ $(setting COMPOSE_PROFILES) == local,supervisor ]] || fail "the supervisor profile is not selected"
+PROJECT=$(setting "$S" COMPOSE_PROJECT_NAME)
+[[ $(setting "$S" COMPOSE_PROFILES) == local,supervisor ]] || fail "the supervisor profile is not selected"
 # On, whatever the Ghost: one without the upgrade adapter type ignores it.
 grep -q '^adapters__upgrade__active=' "$S/ghost.env" || fail "install did not turn on HttpUpgradeAdapter"
 wait_for ready 300 availability
@@ -112,41 +110,24 @@ ok "ready, offering Ghost $to one-click"
 
 step "As Ghost's uid, the socket: reached through a read-only mount, never replaced"
 [[ $(as_ghost 'id -u') == 1000 ]] || fail "Ghost does not run as uid 1000"
-run as_ghost_http GET /v1
+run as_ghost_http /v1
 [[ $OUT == '200 {"protocol":1}' ]] || fail "Ghost cannot reach the supervisor" "$OUT"
 as_ghost 'rm -f /run/ghost-upgrade/supervisor.sock' 2>/dev/null && fail "Ghost removed the socket"
 as_ghost 'touch /run/ghost-upgrade/forged' 2>/dev/null && fail "Ghost wrote into the socket's volume"
 run docker run --rm --user 2000:2000 --network none \
-    -v "$(setting COMPOSE_PROJECT_NAME)_upgrade:/run/ghost-upgrade:ro" --entrypoint node "$MANAGER" -e \
+    -v "$(setting "$S" COMPOSE_PROJECT_NAME)_upgrade:/run/ghost-upgrade:ro" --entrypoint node "$MANAGER" -e \
     "require('http').get({socketPath: '/run/ghost-upgrade/supervisor.sock', path: '/v1'}, () => console.log('reached')).on('error', e => console.log(e.code))"
 [[ $OUT == EACCES ]] || fail "a uid other than Ghost's reached the socket" "$OUT"
 [[ -z $(find "$S/.ghost-docker-supervisor" -perm -o=r -type f 2>/dev/null) ]] || fail "the private records are readable by others"
 ok "Ghost reaches it and cannot replace it; uid 2000 is refused; the records are private"
-
-step "A malformed request is refused"
-run as_ghost_http POST /v1/requests 'not json'
-[[ $OUT == 400\ * ]] || fail "a malformed request was not refused with 400" "$OUT"
-jq -e '.error.code == "malformed"' <<<"${OUT#400 }" >/dev/null || fail "not refused as malformed" "$OUT"
-[[ ! -e $S/.ghost-docker.lock ]] || fail "a malformed request took the lock"
-ok "400 malformed, and nothing taken"
-
-step "A request while the CLI holds the lock is refused"
-printf '{"operation":"backup","startedAt":"2026-10-14T00:00:00Z"}\n' >"$S/.ghost-docker.lock"
-wait_for busy 30 availability
-request "$to" "$(new_key)"
-answered 409
-body | jq -e '.error.code == "busy"' >/dev/null || fail "not refused as busy" "$OUT"
-rm "$S/.ghost-docker.lock"
-wait_for ready 30 availability
-ok "busy while locked; ready again once the lock is gone"
 
 step "A supervisor killed mid-job reports it interrupted, with the lock left for the operator"
 request "$to" "$(new_key)"
 answered 202
 id=$(body | jq -r '.id')
 wait_for_any '^(backing-up|restarting|verifying)$' 300 job_state "$id" >/dev/null
-docker kill "$(compose_in ps -q supervisor)" >/dev/null
-compose_in --profile supervisor up --detach --wait supervisor >/dev/null 2>&1 || fail "the supervisor did not start again"
+docker kill "$(compose_in "$S" ps -q supervisor)" >/dev/null
+compose_in "$S" --profile supervisor up --detach --wait supervisor >/dev/null 2>&1 || fail "the supervisor did not start again"
 wait_for interrupted 60 job_state "$id"
 [[ -e $S/.ghost-docker.lock ]] || fail "the interrupted job's lock was removed"
 [[ $(availability) == unavailable ]] || fail "the supervisor is not unavailable over an interrupted job"
@@ -163,7 +144,7 @@ if grep -q 'restore --yes' <<<"$state"; then
     run gd restore --yes "$backup"
     expect_status 0
 else
-    compose_in up --detach --wait >/dev/null 2>&1 || fail "the site did not start again"
+    compose_in "$S" up --detach --wait >/dev/null 2>&1 || fail "the site did not start again"
 fi
 run gd check
 expect_status 0
@@ -184,11 +165,11 @@ request "$to" "$key"
 answered 200
 [[ $(body | jq -r '.id') == "$id" ]] || fail "a replay named another job" "$OUT"
 wait_for "done" 900 job_state "$id"
-[[ $(compose_in exec -T ghost printenv GHOST_VERSION) == "$to" ]] || fail "Ghost is not $to"
+[[ $(compose_in "$S" exec -T ghost printenv GHOST_VERSION) == "$to" ]] || fail "Ghost is not $to"
 [[ ! -e $S/.ghost-docker.lock && ! -e $S/.ghost-docker-update ]] || fail "the job left its lock or snapshot"
 job_json "$id" | jq -e '.diagnostics[0].message | test("backed up to `?backups/")' >/dev/null ||
     fail "the job does not name its backup" "$(job_json "$id")"
-[[ $(compose_in ps --format '{{.State}}' supervisor) == running ]] || fail "the job stopped the supervisor"
+[[ $(compose_in "$S" ps --format '{{.State}}' supervisor) == running ]] || fail "the job stopped the supervisor"
 run gd check
 expect_status 0
 wait_for ready 60 availability

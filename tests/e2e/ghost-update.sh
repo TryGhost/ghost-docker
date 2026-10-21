@@ -30,7 +30,9 @@ for tool in jq curl; do
     }
 done
 
+# shellcheck disable=SC2034 # read by site.sh
 OWNER_EMAIL=owner@example.com
+# shellcheck disable=SC2034 # read by site.sh
 OWNER_PASSWORD='Kept-through-an-upgrade-2026!'
 
 work_dir ghost-update
@@ -42,48 +44,18 @@ teardown() {
     docker run --rm --user 0 --entrypoint rm -v "$WORK:/work" "$MANAGER" -rf /work/site >/dev/null 2>&1
     docker rmi "$MANAGER" >/dev/null 2>&1
 }
-expect_output() { grep -qE -- "$1" <<<"$OUT" || fail "the output does not match: $1" "$OUT"; }
 
-compose_in() { docker compose --project-directory "$S" -f "$S/compose.yml" "$@"; }
-setting() { "$S/ghost-docker" --dir "$S" config get "$1" 2>/dev/null; }
-records() { grep -q "\"$1\": \"$2\"" "$S/.ghost-docker.json"; }
-ghost_version() { compose_in exec -T ghost printenv GHOST_VERSION; }
-root_sql() {
-    compose_in exec -T -e MYSQL_PWD="$(setting DATABASE_ROOT_PASSWORD)" db \
-        mysql -uroot -N -B "$(setting DATABASE_NAME || printf ghost)" -e "$1"
-}
-migrations() { root_sql 'SELECT COUNT(*) FROM migrations'; }
-base() { printf 'http://localhost:%s' "$(setting GHOST_PORT)"; }
-api() {
-    local method=$1 path=$2
-    shift 2
-    curl --disable --silent --noproxy '*' --max-time 30 --cookie "$WORK/cookies" \
-        --header "Origin: $(base)" --request "$method" "$@" "$(base)/ghost/api/admin/$path"
-}
-sign_in() {
-    local status
-    status=$(curl --disable --silent --noproxy '*' --max-time 30 --output "$WORK/session" --write-out '%{http_code}' \
-        --cookie-jar "$WORK/cookies" --request POST --header 'Content-Type: application/json' \
-        --header "Origin: $(base)" \
-        --data "$(jq -cn --arg u "$OWNER_EMAIL" --arg p "$OWNER_PASSWORD" '{username: $u, password: $p}')" \
-        "$(base)/ghost/api/admin/session/")
-    [[ $status == 201 ]] || fail "signing in answered $status" "$(cat "$WORK/session")"
-}
-post_titles() { api GET 'posts/?limit=all&fields=title' | jq -r '.posts[].title' | sort; }
-image() { curl --disable --silent --noproxy '*' --max-time 30 "$(base)/content/images/2026/10/marker.png"; }
+ghost_version() { compose_in "$S" exec -T ghost printenv GHOST_VERSION; }
+migrations() { root_sql "$S" 'SELECT COUNT(*) FROM migrations'; }
+image() { site_curl --max-time 30 "$(base_of "$S")/content/images/2026/10/marker.png"; }
 # Ghost answers on its port, waiting for it to boot.
 answers() {
     local tries=0
-    until [[ $(curl --silent --noproxy '*' --max-time 10 --output /dev/null --write-out '%{http_code}' \
-        "$(base)/ghost/api/admin/site/" || true) == 200 ]]; do
+    until [[ $(http_status "$(setting "$S" GHOST_PORT)") == 200 ]]; do
         tries=$((tries + 1))
         ((tries < 60)) || return 1
         sleep 2
     done
-}
-fingerprint() {
-    (cd "$S" && find . -type f -not -path './data/*' -not -path './backups/*' -print0 | sort -z |
-        xargs -0 shasum -a 256)
 }
 
 step "Build the manager image from this checkout"
@@ -97,32 +69,27 @@ step "A local site on Ghost $FROM, with an owner, a post and an image"
 mkdir -p "$S"
 run env GD_IMAGE="$MANAGER" "$ROOT/ghost-docker" --dir "$S" install --local --version "$FROM" --no-prompt
 expect_status 0
-records version "$FROM" || fail "the metadata does not record Ghost $FROM" "$(cat "$S/.ghost-docker.json")"
-from_pin=$(setting GHOST_IMAGE_REF)
+records "$S" version "$FROM" || fail "the metadata does not record Ghost $FROM" "$(cat "$S/.ghost-docker.json")"
+from_pin=$(setting "$S" GHOST_IMAGE_REF)
 answers || fail "Ghost $FROM does not answer"
-body=$(curl --disable --silent --noproxy '*' --max-time 60 --request POST \
-    --header 'Content-Type: application/json' --header "Origin: $(base)" \
-    --data "$(jq -cn --arg e "$OWNER_EMAIL" --arg p "$OWNER_PASSWORD" \
-        '{setup: [{name: "Update Tester", email: $e, password: $p, blogTitle: "Ghost update e2e"}]}')" \
-    "$(base)/ghost/api/admin/authentication/setup/")
-jq -e '.users[0].id' <<<"$body" >/dev/null 2>&1 || fail "setting up the owner failed" "$body"
+make_owner "$S" "Update Tester" "Ghost update e2e"
 # Signing in from a new session would otherwise ask for a code by email.
 run "$S/ghost-docker" --dir "$S" config set ghost.env security__staffDeviceVerification false
 expect_status 0
-compose_in up --detach --wait ghost >/dev/null 2>&1 || fail "Ghost did not start again"
-sign_in
-body=$(api POST posts/ --header 'Content-Type: application/json' \
+compose_in "$S" up --detach --wait ghost >/dev/null 2>&1 || fail "Ghost did not start again"
+sign_in "$S"
+body=$(api "$S" POST posts/ --header 'Content-Type: application/json' \
     --data '{"posts": [{"title": "Kept through the Ghost update", "status": "published"}]}')
 jq -e '.posts[0].id' <<<"$body" >/dev/null 2>&1 || fail "creating a post failed" "$body"
 # shellcheck disable=SC2016 # expanded by the container's shell
-compose_in exec -T --user ghost ghost sh -c \
+compose_in "$S" exec -T --user ghost ghost sh -c \
     'mkdir -p "$GHOST_CONTENT/images/2026/10" && printf "kept image" >"$GHOST_CONTENT/images/2026/10/marker.png"' ||
     fail "writing the image failed"
 from_migrations=$(migrations)
 ok "Ghost $(ghost_version), $from_pin, $from_migrations migrations"
 
 step "--check names the newest Ghost $FROM's major has, and changes nothing"
-before=$(fingerprint)
+before=$(fingerprint "$S")
 run "$S/ghost-docker" --dir "$S" update --check
 expect_status 0
 expect_output "This site runs Ghost $FROM\\."
@@ -130,7 +97,7 @@ expect_output 'An update is available: Ghost 6\.'
 to=$(sed -n 's/^An update is available: Ghost \([^,]*\),.*/\1/p' <<<"$OUT")
 # Named from here on: a Ghost released mid-run would otherwise become the target.
 [[ -n $to && $to != "$FROM" ]] || fail "no newer Ghost was named" "$OUT"
-[[ $(fingerprint) == "$before" ]] || fail "--check changed files"
+[[ $(fingerprint "$S") == "$before" ]] || fail "--check changed files"
 ok "Ghost $to"
 
 step "Ghost $to migrates and never becomes healthy: the operator is left the data, and restores"
@@ -146,7 +113,7 @@ services:
       start_interval: 5s
       retries: 1
 EOF
-compose_in up --detach --wait ghost >/dev/null 2>&1 || fail "Ghost $FROM is not healthy with the override"
+compose_in "$S" up --detach --wait ghost >/dev/null 2>&1 || fail "Ghost $FROM is not healthy with the override"
 run "$S/ghost-docker" --dir "$S" update "$to"
 expect_status 1
 expect_output 'did not start and become healthy'
@@ -154,11 +121,11 @@ expect_output 'The site needs you\.'
 expect_output "Ghost $to started before the update failed, so it may have migrated"
 expect_output "switching back to $FROM would not undo"
 expect_output 'restore --yes backups/'
-[[ $(setting GHOST_IMAGE_REF) != "$from_pin" ]] || fail "the pin was put back to Ghost $FROM over its migrations"
-records version "$to" || fail "the metadata does not record Ghost $to" "$(cat "$S/.ghost-docker.json")"
-[[ -z $(compose_in ps -q ghost) ]] || fail "Ghost $to is still running"
+[[ $(setting "$S" GHOST_IMAGE_REF) != "$from_pin" ]] || fail "the pin was put back to Ghost $FROM over its migrations"
+records "$S" version "$to" || fail "the metadata does not record Ghost $to" "$(cat "$S/.ghost-docker.json")"
+[[ -z $(compose_in "$S" ps -q ghost) ]] || fail "Ghost $to is still running"
 [[ -e $S/.ghost-docker-update/files/.env && ! -e $S/.ghost-docker.lock ]] || fail "the update did not keep its snapshot, or left its lock"
-compose_in up --detach --wait db >/dev/null 2>&1 || fail "the database did not start for a look"
+compose_in "$S" up --detach --wait db >/dev/null 2>&1 || fail "the database did not start for a look"
 failed_migrations=$(migrations)
 ((failed_migrations > from_migrations)) ||
     fail "Ghost $to's migrations were undone without the operator ($failed_migrations, was $from_migrations)"
@@ -169,46 +136,46 @@ backup=$(sed -n 's/^ *\.\/ghost-docker restore --yes \(backups\/[^ ]*\)$/\1/p' <
 run "$S/ghost-docker" --dir "$S" restore --yes "$backup"
 expect_status 0
 rm -rf "$S/.ghost-docker-update"
-[[ $(setting GHOST_IMAGE_REF) == "$from_pin" ]] || fail "the restore did not pin Ghost $FROM"
-records version "$FROM" || fail "the metadata does not record Ghost $FROM" "$(cat "$S/.ghost-docker.json")"
+[[ $(setting "$S" GHOST_IMAGE_REF) == "$from_pin" ]] || fail "the restore did not pin Ghost $FROM"
+records "$S" version "$FROM" || fail "the metadata does not record Ghost $FROM" "$(cat "$S/.ghost-docker.json")"
 [[ $(ghost_version) == "$FROM" ]] || fail "Ghost $(ghost_version) runs, not $FROM"
 [[ $(migrations) == "$from_migrations" ]] || fail "the database is not Ghost $FROM's"
 answers || fail "Ghost $FROM does not answer after the restore"
-sign_in
-grep -qx 'Kept through the Ghost update' <<<"$(post_titles)" || fail "the post was not restored"
+sign_in "$S"
+grep -qx 'Kept through the Ghost update' <<<"$(post_titles "$S")" || fail "the post was not restored"
 ok "restored from $backup: Ghost $FROM, its database and the post"
 
 step "Updated to Ghost $to across its migrations"
 rm "$S/compose.override.yml"
-compose_in up --detach --wait ghost >/dev/null 2>&1 || fail "Ghost $FROM did not start without the override"
+compose_in "$S" up --detach --wait ghost >/dev/null 2>&1 || fail "Ghost $FROM did not start without the override"
 run "$S/ghost-docker" --dir "$S" update "$to"
 expect_status 0
 expect_output "Updated Ghost from $FROM to $to\\."
-to_pin=$(setting GHOST_IMAGE_REF)
+to_pin=$(setting "$S" GHOST_IMAGE_REF)
 [[ $to_pin != "$from_pin" ]] || fail "the pin did not change"
-records version "$to" || fail "the metadata does not record Ghost $to" "$(cat "$S/.ghost-docker.json")"
-running=$(docker inspect -f '{{.Config.Image}}' "$(compose_in ps -q ghost)")
+records "$S" version "$to" || fail "the metadata does not record Ghost $to" "$(cat "$S/.ghost-docker.json")"
+running=$(docker inspect -f '{{.Config.Image}}' "$(compose_in "$S" ps -q ghost)")
 [[ $running == "$to_pin" ]] || fail "Ghost runs $running, not $to_pin"
 [[ $(ghost_version) == "$to" ]] || fail "Ghost $(ghost_version) runs, not $to"
 ((($(migrations)) > from_migrations)) || fail "Ghost $to ran no migrations"
 [[ ! -e $S/.ghost-docker-update && ! -e $S/.ghost-docker.lock ]] || fail "the update left its snapshot or lock"
 answers || fail "Ghost $to does not answer"
-sign_in
-grep -qx 'Kept through the Ghost update' <<<"$(post_titles)" || fail "the post was lost"
+sign_in "$S"
+grep -qx 'Kept through the Ghost update' <<<"$(post_titles "$S")" || fail "the post was lost"
 [[ $(image) == 'kept image' ]] || fail "the image is not served"
 run "$S/ghost-docker" --dir "$S" check
 expect_status 0
 ok "Ghost $to, $to_pin, $(migrations) migrations; the owner signs in, the post and image are kept, check passes"
 
 step "Nothing more to do, and back down is refused"
-before=$(fingerprint)
+before=$(fingerprint "$S")
 run "$S/ghost-docker" --dir "$S" update "$to"
 expect_status 0
 expect_output "already runs Ghost $to"
 run "$S/ghost-docker" --dir "$S" update "$FROM"
 expect_status 1
 expect_output "newer than $FROM\\. update never moves a site to an"
-[[ $(fingerprint) == "$before" ]] || fail "a refused update changed files"
+[[ $(fingerprint "$S") == "$before" ]] || fail "a refused update changed files"
 ok "and nothing changed"
 
 passed 'All checks passed.'

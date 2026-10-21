@@ -16,6 +16,7 @@ import {
     REPO,
     resolvedProject,
     scriptSite,
+    siteSnapshot,
     writeSiteData,
     type ScriptedSite,
 } from './site.ts';
@@ -62,21 +63,7 @@ const envOf = (file: string) => env.toRecord(readSite(file));
 const migrate = (...args: string[]) => h.run('self-update', ...args);
 
 /** Every file outside the data, to compare before and after. */
-function files(dir = h.dir, prefix = ''): Record<string, string> {
-    const found: Record<string, string> = {};
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-        if (prefix === '' && ['data', 'backups'].includes(entry.name)) {
-            continue;
-        }
-        const path = join(dir, entry.name);
-        if (entry.isDirectory()) {
-            Object.assign(found, files(path, `${prefix}${entry.name}/`));
-        } else {
-            found[`${prefix}${entry.name}`] = readFileSync(path, 'utf8');
-        }
-    }
-    return found;
-}
+const files = () => siteSnapshot(h.dir);
 
 /** `docker compose config`: main's layout with the site's `.env`, or this one's with a staged one. */
 function config(_args: string[], envFile?: string): ProgramResult {

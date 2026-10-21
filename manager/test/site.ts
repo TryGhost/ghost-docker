@@ -7,6 +7,7 @@ import {
     cpSync,
     mkdirSync,
     mkdtempSync,
+    readdirSync,
     readFileSync,
     realpathSync,
     renameSync,
@@ -18,6 +19,7 @@ import { basename, dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { DockerRequest, DockerResponse } from '../src/docker/transport.ts';
 import * as env from '../src/env.ts';
+import { SCHEMA_VERSION, type Metadata } from '../src/meta.ts';
 import { readSettings } from '../src/site.ts';
 import {
     failed,
@@ -35,7 +37,7 @@ export const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
  * merged into it, then pinned to main's last commit before that merge (S12 in
  * docs/ghost-cli-replacement.md). Read from git, so it never drifts from main.
  */
-export const RELEASED_MAIN = process.env.GD_RELEASED_MAIN ?? 'origin/main';
+const RELEASED_MAIN = process.env.GD_RELEASED_MAIN ?? 'origin/main';
 
 let releasedMainDir: string | undefined;
 
@@ -120,6 +122,47 @@ export function writeEnvFile(path: string, values: Record<string, string | undef
 }
 
 /**
+ * Every file in a site but its data and backups, by path, with its content:
+ * what to compare before and after an operation that must change nothing.
+ */
+export function siteSnapshot(dir: string, prefix = ''): Record<string, string> {
+    const files: Record<string, string> = {};
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        if (prefix === '' && (entry.name === 'data' || entry.name === 'backups')) {
+            continue;
+        }
+        const path = join(dir, entry.name);
+        if (entry.isDirectory()) {
+            Object.assign(files, siteSnapshot(path, `${prefix}${entry.name}/`));
+        } else {
+            files[`${prefix}${entry.name}`] = readFileSync(path, 'utf8');
+        }
+    }
+    return files;
+}
+
+/** The metadata of a local site that is a checkout of the repository, on the harness's Ghost. */
+export const checkoutMetadata = (dir: string): Metadata => ({
+    schemaVersion: SCHEMA_VERSION,
+    installedAt: '2026-10-06T09:12:44Z',
+    updatedAt: null,
+    mode: 'local',
+    channel: null,
+    source: 'checkout',
+    stack: { version: null, ref: null, image: null, previous: null },
+    site: {
+        project: 'ghost-local-site',
+        dir,
+        url: 'http://localhost:2368',
+        domain: null,
+        adminDomain: null,
+    },
+    ghost: { image: 'ghost', tag: '6-next-alpine', version: '6.67.0', digest: INDEX },
+    profiles: ['local'],
+    payload: {},
+});
+
+/**
  * Make `h.dir` a site: the stack's files, `.env` from `values`, an optional
  * `ghost.env`, and Compose answering `config` from them.
  */
@@ -198,7 +241,7 @@ export function imageStack(h: Harness): string {
     return stack;
 }
 
-export interface ImageApi {
+interface ImageApi {
     /** Ghost's tags the registry has, and the version each is; `6-next-alpine` is 6.67.0. */
     readonly ghost?: Readonly<Record<string, string>>;
     /** Those of Ghost's tags installed by Ghost-CLI, as the older `-alpine` variants are. */

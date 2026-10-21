@@ -51,6 +51,61 @@ test("hand-written .env values read as Compose's own parser reads them", async (
     }
 });
 
+test('values the encoder writes reach a service as written, from ghost.env and interpolated from .env', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gd-encoded-'));
+    try {
+        // Each value dotenv encoding gets wrong when it is naive.
+        const values = [
+            'plain',
+            'with spaces  ',
+            'dollar $VAR',
+            'braced ${VAR}',
+            'double dollar $$',
+            'lone dollar $',
+            'double"quote',
+            "single'quote",
+            'back\\slash',
+            "backslash quote \\'",
+            '',
+            '["a", "b", 1]',
+            '{"k": "v", "n": [1, 2]}',
+            'hash # not a comment',
+            'line1\nline2',
+            'tab\there',
+            'trailing backslash \\',
+        ];
+        // ghost.env is the service's env_file; .env is interpolated into its environment.
+        const ghostEnv = values.map((value, i): [string, string] => [`G_${i}`, value]);
+        const dotEnv = values.map((value, i): [string, string] => [`E_${i}`, value]);
+        writeFileSync(join(dir, 'ghost.env'), env.serializeAll(ghostEnv));
+        writeFileSync(join(dir, '.env'), env.serializeAll(dotEnv));
+        writeFileSync(
+            join(dir, 'compose.yml'),
+            JSON.stringify({
+                services: {
+                    reader: {
+                        image: 'alpine',
+                        env_file: ['ghost.env'],
+                        environment: Object.fromEntries(dotEnv.map(([key]) => [key, `\${${key}}`])),
+                    },
+                },
+            }),
+        );
+        const resolved = await composeConfig(io, dir);
+        assert.ok(resolved.ok, resolved.ok ? '' : resolved.reason);
+        const read = resolved.project.services.reader!.environment!;
+        for (const [key, value] of [...ghostEnv, ...dotEnv]) {
+            assert.equal(
+                read[key],
+                value,
+                `${key} reached the service as ${JSON.stringify(read[key])}`,
+            );
+        }
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
+    }
+});
+
 test('the keys that belong in .env are what Compose interpolates, overrides included', async () => {
     const site = makeSite(io, 'variables', {
         profiles: 'local',
