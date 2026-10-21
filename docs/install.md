@@ -38,7 +38,7 @@ this layout, every release is a beta.
 | The development image | `GD_CHANNEL=edge` | `edge`, built from every push to `next-docker`. Not a release. |
 
 Pass these to the launcher with the command, for example
-`bash -s -- install --local --release v0.1.0-beta.1`. `install` pins the site's
+`bash -s -- install --local --release v0.1.0-beta.5`. `install` pins the site's
 launcher to the exact image digest it ran, and records the channel, which
 `self-update` follows.
 
@@ -392,7 +392,7 @@ A clone of this repository is updated with git and Compose instead:
 ```bash
 ./ghost-docker backup
 git fetch --tags
-git checkout v0.1.0-beta.2
+git checkout v0.1.0-beta.5
 ./ghost-docker config validate
 docker compose pull --ignore-buildable
 docker compose up -d --wait
