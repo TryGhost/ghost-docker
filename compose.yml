@@ -83,7 +83,7 @@ services:
       - ghost_network
 
   traffic-analytics:
-    image: ghost/traffic-analytics:1.0.507@sha256:5b0867db487d59231aa2e63d31dbe8c9603f44bd49fba6e04bf434eb7114173f
+    image: ghost/traffic-analytics:1.0.508@sha256:4bbf976c722aff71cd80b7d2ef4808a6dcc40ce0d652d66dbac895e43b39538b
     restart: always
     expose:
       - "3000"
