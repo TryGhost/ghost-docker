@@ -7,6 +7,9 @@ on:
       - main
       - renovate/*
 
+permissions:
+  contents: read
+
 jobs:
   shellcheck:
     name: ShellCheck
