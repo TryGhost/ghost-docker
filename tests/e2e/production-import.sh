@@ -51,9 +51,16 @@ SOURCE_INSTALLED=0
 # --- Helpers -----------------------------------------------------------------
 
 # ghost_cli ARGS... -- Ghost-CLI in the source's directory; output to $WORK/ghost.log.
+# On failure, its debug log too: a failed subprocess's stderr is only there.
 ghost_cli() {
-    (cd "$SOURCE" && "${GHOST_CLI[@]}" "$@") >"$WORK/ghost.log" 2>&1 ||
-        fail "ghost $* failed" "$(tail -40 "$WORK/ghost.log")"
+    local debug
+    (cd "$SOURCE" && "${GHOST_CLI[@]}" "$@") >"$WORK/ghost.log" 2>&1 && return
+    debug=$(grep -o '/[^ ]*ghost-cli-debug-[^ ]*\.log' "$WORK/ghost.log" | tail -1 || true)
+    [[ -z $debug || ! -f $debug ]] || {
+        printf '\n--- %s ---\n' "$debug"
+        tail -60 "$debug"
+    } >>"$WORK/ghost.log"
+    fail "ghost $* failed" "$(tail -100 "$WORK/ghost.log")"
 }
 
 # run_import SITE ARGS... -> sets OUT and RC, never exits
