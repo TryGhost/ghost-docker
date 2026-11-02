@@ -48,7 +48,7 @@ import {
     MAILPIT_DATA_DIR,
     META_FILE,
     profileConflict,
-    PROXY_PROFILE,
+    NO_CADDY_PROFILE,
     type Layout,
     type SiteMode,
 } from '../site.ts';
@@ -244,7 +244,7 @@ type Flags = z.output<typeof options>;
 
 interface Plan {
     readonly mode: SiteMode;
-    /** Its mode, or for a production site behind the operator's proxy, `proxy`. */
+    /** Its mode, or for a production site behind the operator's proxy, `no-caddy`. */
     readonly layout: Layout;
     readonly domain: string;
     readonly adminDomain: string;
@@ -310,7 +310,7 @@ function imported(importing: Importing, flags: Flags): Plan {
 
 /** A production site's ingress is Caddy unless --no-caddy says it is the operator's proxy. */
 const layoutFor = (mode: SiteMode, flags: Flags): Layout =>
-    mode === 'production' && flags.noCaddy ? PROXY_PROFILE : mode;
+    mode === 'production' && flags.noCaddy ? NO_CADDY_PROFILE : mode;
 
 /** What a site of its mode cannot be, however its domains were given. */
 function checked(intent: Plan): Plan {
@@ -841,7 +841,7 @@ function printSummary(site: Site, importing: Importing | null) {
               'Nothing is running. Start the site with: docker compose up -d',
               ...(importing?.manifest.kind === 'portable' ? importing.nextSteps : []),
           ]
-        : intent.layout === PROXY_PROFILE
+        : intent.layout === NO_CADDY_PROFILE
           ? [
                 `Point your proxy at 127.0.0.1:${site.port} for ${[intent.domain, intent.adminDomain].filter(Boolean).join(' and ')},`,
                 'over HTTPS, with X-Forwarded-Proto: https (docs/install.md#your-own-proxy).',
@@ -878,7 +878,7 @@ function printSummary(site: Site, importing: Importing | null) {
                       `  Channel      nightly: a build of Ghost's main branch, for testing, ${production ? 'which this production site should not run' : 'never for production'}`,
                   ]
                 : []),
-            `  Loopback     127.0.0.1:${site.port}${intent.layout === PROXY_PROFILE ? ', for your proxy' : ''}`,
+            `  Loopback     127.0.0.1:${site.port}${intent.layout === NO_CADDY_PROFILE ? ', for your proxy' : ''}`,
             ...(site.mailpitPort === null
                 ? []
                 : [`  Mailpit      http://127.0.0.1:${site.mailpitPort}, the mail Ghost sends`]),

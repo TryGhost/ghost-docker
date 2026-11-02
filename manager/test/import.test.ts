@@ -627,7 +627,7 @@ describe('importing a production site', () => {
             '--no-start',
         );
         assert.equal(result.code, 0, result.stderr);
-        assert.equal(setting('COMPOSE_PROFILES'), 'proxy');
+        assert.equal(setting('COMPOSE_PROFILES'), 'no-caddy');
         assert.equal(setting('SITE_MODE'), 'production');
         assert.equal(setting('URL'), 'https://example.com');
         assert.equal(setting('ADMIN_URL'), 'https://admin.example.com');

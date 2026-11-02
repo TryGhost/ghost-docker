@@ -236,7 +236,7 @@ if port_free 80 && port_free 443; then
     expect_output 'note +ingress +your own proxy, which the manager does not configure or check'
     [[ $(docker inspect -f '{{.State.Running}}' "$PROXY") == true ]] || fail "the proxy was stopped"
     [[ ! -e $X/caddy && -z $(compose_in "$X" ps --quiet caddy 2>/dev/null || true) ]] || fail "Caddy was installed"
-    [[ $(setting "$X" COMPOSE_PROFILES) == proxy && $(setting "$X" SITE_MODE) == production ]] ||
+    [[ $(setting "$X" COMPOSE_PROFILES) == no-caddy && $(setting "$X" SITE_MODE) == production ]] ||
         fail "not configured as a production site behind a proxy" "$(cat "$X/.env")"
     ok "installed beside the proxy, with no Caddy"
 

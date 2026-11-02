@@ -9,7 +9,7 @@ import type { Io } from './io.ts';
 import { NetworkUnavailable, type SiteNetwork } from './network.ts';
 import { CliError } from './errors.ts';
 import { failed, heading, printChecks, type Check } from './report.ts';
-import { hasProfile, readSettings, siteFacts, type SiteFacts } from './site.ts';
+import { hasProfile, NO_CADDY_PROFILE, readSettings, siteFacts, type SiteFacts } from './site.ts';
 
 const describeState = (state: ServiceState | undefined): string =>
     state ? [state.State, state.Health].filter(Boolean).join(', ') : 'no container';
@@ -252,7 +252,7 @@ export async function verifyIngress(
             }
         }
     }
-    if (site.layout === 'proxy') {
+    if (site.layout === NO_CADDY_PROFILE) {
         checks.push({
             status: 'note',
             label: 'ingress',

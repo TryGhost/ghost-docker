@@ -135,8 +135,8 @@ test('every profile is `*` to Compose, so undo finds whatever a failed install s
 });
 
 test("a site behind the operator's own proxy is Ghost and MySQL, Ghost on loopback, and no Caddy", async () => {
-    const site = makeSite(io, 'proxy', {
-        profiles: 'proxy,supervisor',
+    const site = makeSite(io, 'no-caddy', {
+        profiles: 'no-caddy,supervisor',
         url: 'https://example.com',
         override: '',
     });

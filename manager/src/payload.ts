@@ -37,7 +37,7 @@ export const isCheckout = (context: Context, dir: string): boolean =>
 const UNUSED: Record<Layout, readonly string[]> = {
     local: ['caddy', 'tinybird'],
     production: [],
-    proxy: ['caddy', 'tinybird'],
+    'no-caddy': ['caddy', 'tinybird'],
 };
 
 /**

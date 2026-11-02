@@ -294,7 +294,7 @@ test('a local site has no Caddy, and nothing to ask on its network', async () =>
 describe('a production site behind your own proxy', () => {
     test("Ghost's health is all that is verified: the proxy is the operator's, and nothing is asked through it", async () => {
         site.caddy = 'unhealthy';
-        const checks = await verify({ ...PRODUCTION, COMPOSE_PROFILES: 'proxy' });
+        const checks = await verify({ ...PRODUCTION, COMPOSE_PROFILES: 'no-caddy' });
         assert.deepEqual(Object.keys(checks), ['ghost', 'ingress', 'published ports']);
         assert.equal(checks.ghost!.status, 'ok');
         assert.equal(checks.ingress!.status, 'note');

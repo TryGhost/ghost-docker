@@ -55,13 +55,13 @@ export type SiteMode = (typeof SITE_MODES)[number];
  * A production site behind the operator's own proxy (nginx, Apache) on the
  * host: Ghost and MySQL, no Caddy. Its mode is production.
  */
-export const PROXY_PROFILE = 'proxy';
+export const NO_CADDY_PROFILE = 'no-caddy';
 
 /** The profiles that select a site's mode, and the mode each selects. */
 const MODE_PROFILES: Readonly<Record<string, SiteMode>> = {
     local: 'local',
     production: 'production',
-    [PROXY_PROFILE]: 'production',
+    [NO_CADDY_PROFILE]: 'production',
 };
 export const MODE_PROFILE_NAMES = Object.keys(MODE_PROFILES);
 
@@ -70,12 +70,12 @@ export const MODE_PROFILE_NAMES = Object.keys(MODE_PROFILES);
  * site behind the operator's own proxy. The stack files each one needs differ
  * (payload.ts), and only a production layout has Caddy.
  */
-export type Layout = SiteMode | typeof PROXY_PROFILE;
+export type Layout = SiteMode | typeof NO_CADDY_PROFILE;
 
 /** The layout COMPOSE_PROFILES selects; a production one unless it says otherwise. */
 export function layoutOf(profiles: string): Layout {
     const selected = splitProfiles(profiles);
-    for (const layout of [PROXY_PROFILE, 'local'] as const) {
+    for (const layout of [NO_CADDY_PROFILE, 'local'] as const) {
         if (selected.includes(layout)) {
             return layout;
         }
@@ -107,7 +107,7 @@ export function profileConflict(layout: Layout, profile: string): string | null 
         return 'is for production sites only: a local site has no Caddy to route to it';
     }
     if (
-        layout === PROXY_PROFILE &&
+        layout === NO_CADDY_PROFILE &&
         (PRODUCTION_ONLY_PROFILES as readonly string[]).includes(profile)
     ) {
         return (
@@ -226,7 +226,7 @@ export const hostOf = (url: string): string => {
 export interface SiteFacts {
     readonly dir: string;
     readonly mode: SiteMode | null;
-    /** Whether Caddy serves it ('production'), or the operator's own proxy ('proxy'). */
+    /** Whether Caddy serves it ('production'), or the operator's own proxy ('no-caddy'). */
     readonly layout: Layout;
     /** The hosts of URL and ADMIN_URL: what Caddy should serve, in production. */
     readonly domain: string;

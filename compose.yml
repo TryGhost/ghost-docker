@@ -13,7 +13,7 @@
 # Site modes are selected through COMPOSE_PROFILES and are additive:
 #   local       ghost + db, Ghost published on 127.0.0.1:${GHOST_PORT}
 #   production  ghost + db + caddy (HTTPS ingress)
-#   proxy       ghost + db, a production site behind the operator's own proxy
+#   no-caddy    ghost + db, a production site behind the operator's own proxy
 #               (nginx, Apache) on 127.0.0.1:${GHOST_PORT}
 # Optional, per-site profiles: analytics, activitypub, and for local sites
 # mailpit, and `supervisor`, which runs Ghost updates asked for in Ghost Admin
@@ -35,13 +35,13 @@ services:
     # Do not alter this without updating the Tinybird Sync container as well
     image: ${GHOST_IMAGE_REF:-${GHOST_IMAGE:-ghost}:${GHOST_VERSION:-6-next-alpine}}
     restart: ${RESTART_POLICY:-unless-stopped}
-    profiles: [local, production, proxy]
+    profiles: [local, production, no-caddy]
     labels:
       <<: *site-labels
       org.ghost.docker.lifecycle: long-running
     logging: *default-logging
-    # Loopback only: production ingress is Caddy, or with the `proxy` profile,
-    # the operator's own proxy, over the host loopback interface.
+    # Loopback only: production ingress is Caddy, or with the `no-caddy`
+    # profile, the operator's own proxy, over the host loopback interface.
     ports:
       - "127.0.0.1:${GHOST_PORT:-2368}:2368"
     # Application configuration only. Never `.env`.
@@ -114,7 +114,7 @@ services:
   db:
     image: mysql:8.0.44@sha256:f37951fc3753a6a22d6c7bf6978c5e5fefcf6f31814d98c582524f98eae52b21
     restart: ${RESTART_POLICY:-unless-stopped}
-    profiles: [local, production, proxy]
+    profiles: [local, production, no-caddy]
     labels:
       <<: *site-labels
       org.ghost.docker.lifecycle: long-running

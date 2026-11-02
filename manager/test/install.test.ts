@@ -625,7 +625,7 @@ describe('a production site behind your own proxy', () => {
         );
         assert.equal(result.code, 0, result.stderr);
         const values = env.toRecord(readFileSync(join(h.dir, '.env'), 'utf8'));
-        assert.equal(values.COMPOSE_PROFILES, 'proxy,supervisor');
+        assert.equal(values.COMPOSE_PROFILES, 'no-caddy,supervisor');
         assert.equal(values.SITE_MODE, 'production');
         assert.equal(values.NODE_ENV, 'production');
         assert.equal(values.RESTART_POLICY, 'unless-stopped');
@@ -638,7 +638,7 @@ describe('a production site behind your own proxy', () => {
         assert.ok(!existsSync(join(h.dir, 'tinybird')));
         const metadata = JSON.parse(readFileSync(join(h.dir, '.ghost-docker.json'), 'utf8'));
         assert.equal(metadata.mode, 'production');
-        assert.deepEqual(metadata.profiles, ['proxy', 'supervisor']);
+        assert.deepEqual(metadata.profiles, ['no-caddy', 'supervisor']);
         assert.deepEqual(
             Object.keys(metadata.payload).filter((file) => /^(caddy|tinybird)\//.test(file)),
             [],
@@ -674,7 +674,7 @@ describe('a production site behind your own proxy', () => {
             /ingress {12}your own proxy, which the manager does not configure/,
         );
         assert.match(result.stdout, /Point your proxy at 127\.0\.0\.1:2368 for example\.com/);
-        assert.doesNotMatch(result.stdout, /caddy|Caddy obtains/);
+        assert.doesNotMatch(result.stdout, /caddy\/|ok +caddy|Caddy obtains/);
         assert.deepEqual(h.network.probes, []);
     });
 });

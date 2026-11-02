@@ -107,15 +107,15 @@ value in either file may be a credential.
 ## Site modes and profiles
 
 Site mode is selected through `COMPOSE_PROFILES`, and exactly one of `local`,
-`production` or `proxy` must be present:
+`production` or `no-caddy` must be present:
 
 | Profile | Services | Ingress | `SITE_MODE` |
 | --- | --- | --- | --- |
 | `local` | `ghost`, `db` | Ghost on `127.0.0.1:${GHOST_PORT}` | `local` |
 | `production` | `ghost`, `db`, `caddy` | Caddy on `${HTTP_PORT}` / `${HTTPS_PORT}` | `production` |
-| `proxy` | `ghost`, `db` | [Your own proxy](#your-own-proxy), to Ghost on `127.0.0.1:${GHOST_PORT}` | `production` |
+| `no-caddy` | `ghost`, `db` | [Your own proxy](#your-own-proxy), to Ghost on `127.0.0.1:${GHOST_PORT}` | `production` |
 
-A `proxy` site is a production site in every other way: backup, restore,
+A `no-caddy` site is a production site in every other way: backup, restore,
 update, `self-update` and the upgrade supervisor treat it as one.
 
 Optional per-site profiles are added to the same list and are purely additive.
@@ -135,9 +135,9 @@ site's Ghost mounts the `upgrade` volume read-only, where the supervisor's
 socket is; it stays empty without the supervisor.
 
 `mailpit` is for local sites only: validation rejects it beside `production`
-or `proxy`, where it would catch the site's real mail. `analytics` and
+or `no-caddy`, where it would catch the site's real mail. `analytics` and
 `activitypub` need Caddy's routes: validation rejects them beside `local`,
-which has no Caddy, and beside `proxy`, whose proxy the manager does not
+which has no Caddy, and beside `no-caddy`, whose proxy the manager does not
 configure. Selecting the profile only runs
 Mailpit; Ghost sends to it because `ghost.env` says so (`install --with
 mailpit` writes those settings; see [install.md](install.md#optional-services)).
@@ -158,7 +158,7 @@ it is never exposed publicly except through Caddy or your own proxy.
 If the host already runs nginx or Apache, `install --domain example.com
 --no-caddy` installs a production site without Caddy, as Ghost-CLI's
 `ghost install --no-setup-nginx --no-setup-ssl` did. `COMPOSE_PROFILES` is
-`proxy`; no `caddy/` is written, and ports 80 and 443 stay your proxy's.
+`no-caddy`; no `caddy/` is written, and ports 80 and 443 stay your proxy's.
 Your proxy terminates HTTPS, with a certificate it obtains, and passes
 requests to Ghost on `127.0.0.1:${GHOST_PORT}` (`./ghost-docker info` shows
 the port).
@@ -228,7 +228,7 @@ ProxyPassReverse / http://127.0.0.1:2368/
 
 `mod_proxy` adds `X-Forwarded-For` itself.
 
-ActivityPub and analytics are refused on a `proxy` site: they are served by
+ActivityPub and analytics are refused on a `no-caddy` site: they are served by
 routes Caddy writes (`/.ghost/activitypub/`, `/.well-known/`,
 `/.ghost/analytics/`), which your proxy would have to reproduce. To use them,
 install with Caddy instead.

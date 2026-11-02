@@ -68,18 +68,18 @@ describe('.env', () => {
     });
 
     test('a site behind your own proxy is a production one, without what needs Caddy', async () => {
-        makeSite(h, { ...PRODUCTION, COMPOSE_PROFILES: 'proxy,supervisor' });
+        makeSite(h, { ...PRODUCTION, COMPOSE_PROFILES: 'no-caddy,supervisor' });
         const result = await validate();
         assert.equal(result.code, 0, result.stderr);
         assert.match(result.stdout, /valid for a production site/);
-        makeSite(h, { ...PRODUCTION, COMPOSE_PROFILES: 'proxy,production' });
+        makeSite(h, { ...PRODUCTION, COMPOSE_PROFILES: 'no-caddy,production' });
         assert.match(
             (await validate()).errors,
-            /exactly one site mode \(local, production, proxy\)/,
+            /exactly one site mode \(local, production, no-caddy\)/,
         );
-        makeSite(h, { ...PRODUCTION, URL: 'http://example.com', COMPOSE_PROFILES: 'proxy' });
+        makeSite(h, { ...PRODUCTION, URL: 'http://example.com', COMPOSE_PROFILES: 'no-caddy' });
         assert.match((await validate()).errors, /URL must be https:\/\//);
-        makeSite(h, { ...PRODUCTION, COMPOSE_PROFILES: 'proxy,analytics,activitypub,mailpit' });
+        makeSite(h, { ...PRODUCTION, COMPOSE_PROFILES: 'no-caddy,analytics,activitypub,mailpit' });
         const refused = await validate();
         assert.equal(refused.code, 1);
         assert.match(refused.errors, /selects analytics, which needs Caddy's routes/);
