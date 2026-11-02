@@ -125,6 +125,7 @@ expect_output 'The shared Caddy is installed'
     fail "the network does not say where the shared Caddy is"
 [[ $(compose_in "$CADDY" ps --format '{{.Service}} {{.Health}}') == 'caddy healthy' ]] ||
     fail "Caddy is not the only service, or not healthy" "$(compose_in "$CADDY" ps)"
+mkdir -p "$WORK/sites/second"
 run env GD_IMAGE=$IMAGE "$WORK/launcher-only/ghost-docker" --dir "$WORK/sites/second" install --infra
 expect_status 1
 expect_output "already has the shared Caddy in $CADDY"

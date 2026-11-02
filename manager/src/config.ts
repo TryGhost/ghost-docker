@@ -10,6 +10,7 @@ import { CliError } from './errors.ts';
 import { modeOf, readIfExists } from './fs.ts';
 import type { Io } from './io.ts';
 import { ok, type Check } from './report.ts';
+import { INGRESS_NETWORK } from './shared.ts';
 import {
     COMPOSE_OVERRIDE_FILE,
     ENV_EXAMPLE_FILE,
@@ -265,16 +266,28 @@ function validateInfra(file: string, values: Record<string, string>): Finding[] 
     return [...findings, ...externalIngress(file, values)];
 }
 
-/** The shared Caddy's network is the manager's, so Compose must not create or remove it. */
-const externalIngress = (file: string, values: Record<string, string>): Finding[] =>
-    values.INGRESS_EXTERNAL === 'true'
+/**
+ * The shared Caddy's network is the manager's, so Compose must not create or
+ * remove it; and it is the one the manager finds the shared Caddy by.
+ */
+const externalIngress = (file: string, values: Record<string, string>): Finding[] => [
+    ...(values.INGRESS_NETWORK && values.INGRESS_NETWORK !== INGRESS_NETWORK
+        ? [
+              error(
+                  file,
+                  `INGRESS_NETWORK must be ${INGRESS_NETWORK}, the shared Caddy's network: got ${values.INGRESS_NETWORK}`,
+              ),
+          ]
+        : []),
+    ...(values.INGRESS_EXTERNAL === 'true'
         ? []
         : [
               error(
                   file,
                   `INGRESS_EXTERNAL must be true: ${values.INGRESS_NETWORK || 'the network'} is the shared Caddy's, which no Compose project creates or removes`,
               ),
-          ];
+          ]),
+];
 
 /**
  * `ghost.env` holds Ghost application settings only. Two mistakes matter, and

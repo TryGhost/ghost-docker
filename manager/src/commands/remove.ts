@@ -12,6 +12,7 @@ import { ok } from '../report.ts';
 import {
     describeShared,
     findSharedCaddy,
+    INGRESS_NETWORK,
     removeRoutes,
     routesPath,
     runningCaddy,
@@ -30,6 +31,16 @@ export const removeCommand = defineCommand({
         const project = site.settings.get('COMPOSE_PROJECT_NAME') || '';
         await refuseForeignProject(io, project, dir);
         const shared = site.layout === SHARED_CADDY_PROFILE ? await findSharedCaddy(io) : null;
+        if (site.layout === SHARED_CADDY_PROFILE && shared === null) {
+            // Its routes may still be in the shared Caddy's directory, which only
+            // the running shared Caddy lets the manager change.
+            throw new CliError(
+                `this site is behind the shared Caddy, and this server has none (no ${INGRESS_NETWORK} network),\n` +
+                    '  so its routes cannot be removed. Start the shared Caddy and run this again, or take the\n' +
+                    '  site down alone with docker compose down and remove its routes file by hand.\n' +
+                    '  Nothing has been changed.',
+            );
+        }
         if (shared !== null) {
             runningCaddy(shared);
         }
@@ -53,6 +64,10 @@ export const removeCommand = defineCommand({
             if (down.exitCode !== 0) {
                 throw new CliError(
                     `docker compose down failed: ${composeError(down, 4)}\n` +
+                        (shared === null
+                            ? ''
+                            : `  Its routes are already gone from ${describeShared(shared)}, so the site is not\n` +
+                              '  served until this finishes.\n') +
                         '  Run it again in this directory once the cause is fixed.',
                 );
             }

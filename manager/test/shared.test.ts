@@ -32,6 +32,8 @@ interface FakeShared {
     /** The labels the network was created with, when the manager created it. */
     created: Record<string, string> | null;
     exists: boolean;
+    /** Another installation, creating the network or a routes file first. */
+    raced: { network?: boolean; routes?: string };
 }
 
 function fakeShared(): FakeShared {
@@ -43,6 +45,7 @@ function fakeShared(): FakeShared {
         execs: [],
         created: null,
         exists: true,
+        raced: {},
     };
 }
 
@@ -86,6 +89,10 @@ function sharedApi(shared: FakeShared) {
         if (path === '/networks/create' && method === 'POST') {
             const body = request.body as { Name: string; Labels: Record<string, string> };
             assert.equal(body.Name, 'ghost-ingress');
+            if (shared.raced.network) {
+                shared.exists = true;
+                return json(409, { message: 'network with name ghost-ingress already exists' });
+            }
             shared.created = body.Labels;
             shared.exists = true;
             return json(201, { Id: 'ingress-id' });
@@ -132,7 +139,13 @@ function run(shared: FakeShared, { cmd }: { cmd: string[] }): { stdout: string; 
         case 'stat':
             return { stdout: '1000:1000\n', code: 0 };
         case 'sh': {
-            // sh -c SCRIPT sh ROUTES FILE
+            // sh -c SCRIPT sh ROUTES FILE, which never overwrites a file.
+            if (shared.raced.routes !== undefined) {
+                shared.sites.set(name(cmd[5]!), shared.raced.routes);
+            }
+            if (shared.sites.has(name(cmd[5]!))) {
+                return { stdout: '', code: 1 };
+            }
             shared.sites.set(name(cmd[5]!), cmd[4]!);
             return { stdout: '', code: 0 };
         }
@@ -300,6 +313,14 @@ describe('install --infra', () => {
         const result = await h.run('install', '--infra');
         assert.equal(result.code, 1);
         assert.equal(shared.exists, false);
+        assert.deepEqual(files(), []);
+    });
+
+    test('a network another installation created meanwhile is not removed', async () => {
+        shared.raced.network = true;
+        const result = await h.run('install', '--infra');
+        assert.equal(result.code, 1);
+        assert.equal(shared.exists, true);
         assert.deepEqual(files(), []);
     });
 });
@@ -509,6 +530,15 @@ describe('a production install on a server with the shared Caddy', () => {
         assert.equal(shared.sites.get('ghost-example-com.caddy'), 'routes of another directory');
     });
 
+    test('routes another installation wrote meanwhile are refused, and left alone', async () => {
+        shared.raced.routes = 'routes of another directory';
+        const result = await h.run('install', '--domain', 'example.com', '--no-start');
+        assert.equal(result.code, 1);
+        assert.match(result.stderr, /could not be written to the shared Caddy/);
+        assert.equal(shared.sites.get('ghost-example-com.caddy'), 'routes of another directory');
+        assert.deepEqual(files(), []);
+    });
+
     test('a stopped shared Caddy is refused, saying how to start it', async () => {
         h.daemon.containers = [{ ...CADDY, State: 'exited' }];
         const result = await h.run('install', '--domain', 'example.com', '--no-start');
@@ -599,6 +629,25 @@ describe('remove', () => {
         assert.ok(compose.some((args) => args[0] === 'down' && !args.includes('--volumes')));
         assert.ok(existsSync(join(h.dir, '.env')), 'the directory and its data stay');
         assert.match(result.stdout, /still holds its configuration, data and backups/);
+    });
+
+    test('a server whose shared Caddy is gone is refused, as its routes cannot be removed', async () => {
+        sharedCaddyEnv();
+        shared.exists = false;
+        const result = await h.run('remove', '--yes');
+        assert.equal(result.code, 1);
+        assert.match(result.stderr, /this server has none \(no ghost-ingress network\)/);
+        assert.ok(!compose.some((args) => args[0] === 'down'));
+    });
+
+    test('a failed docker compose down says the routes are already gone', async () => {
+        sharedCaddyEnv();
+        shared.sites.set('ghost-example-com.caddy', 'example.com {\n}\n');
+        h.daemon.composeRun = (args) => (args[0] === 'down' ? failed(1, 'daemon gone') : ok(''));
+        const result = await h.run('remove', '--yes');
+        assert.equal(result.code, 1);
+        assert.match(result.stderr, /Its routes are already gone from the shared Caddy/);
+        assert.equal(shared.sites.size, 0);
     });
 
     test('it is asked, or --yes says so', async () => {
@@ -781,6 +830,20 @@ describe('config validate', () => {
         const invalid = await h.run('config', 'validate');
         assert.equal(invalid.code, 1);
         assert.match(invalid.stdout + invalid.stderr, /INGRESS_EXTERNAL must be true/);
+
+        writeFileSync(
+            join(h.dir, '.env'),
+            env.serializeAll(
+                Object.entries({ ...values, INGRESS_EXTERNAL: 'true', INGRESS_NETWORK: 'other' }),
+            ),
+            { mode: 0o600 },
+        );
+        const elsewhere = await h.run('config', 'validate');
+        assert.equal(elsewhere.code, 1);
+        assert.match(
+            elsewhere.stdout + elsewhere.stderr,
+            /INGRESS_NETWORK must be ghost-ingress, the shared Caddy's network: got other/,
+        );
     });
 
     test('a site needs its database passwords, which compose.yml no longer guards', async () => {

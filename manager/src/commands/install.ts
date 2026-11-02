@@ -814,10 +814,12 @@ async function writeSiteRoutes(
     };
     const names = [domain, adminDomain].filter(Boolean).join(' and ');
     if (shared !== null) {
-        created.routes = true;
-        created.save();
+        // Claimed once written: a file another installation wrote is refused, never removed.
         await io.busy('Adding the routes to the shared Caddy', () =>
-            addRoutes(io, shared, project, renderRoutes(routes)),
+            addRoutes(io, shared, project, renderRoutes(routes), () => {
+                created.routes = true;
+                created.save();
+            }),
         );
         ok(
             io,
@@ -935,12 +937,13 @@ async function installInfra(target: Target, flags: Flags, requested: Requested):
         );
         ok(io, ENV_FILE, 'the shared Caddy\u2019s settings');
         // No project owns it, so taking the shared Caddy down leaves its members attached.
-        created.network = INGRESS_NETWORK;
         await createNetwork(io.docker, INGRESS_NETWORK, {
             [MANAGED_LABEL.split('=')[0]!]: 'true',
             [INFRA_DIR_LABEL]: dir,
             [INFRA_PROJECT_LABEL]: project,
         });
+        // Only now: one another installation created meanwhile is not this one's to remove.
+        created.network = INGRESS_NETWORK;
         ok(io, 'network', `${INGRESS_NETWORK}, which the services of each site behind it join`);
         created.file(join(dir, META_FILE));
         writeMetadata(
