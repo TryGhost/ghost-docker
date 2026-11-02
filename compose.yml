@@ -241,7 +241,7 @@ services:
           - traffic-analytics-${COMPOSE_PROJECT_NAME:-ghost}
 
   activitypub:
-    image: ghcr.io/tryghost/activitypub:1.2.14@sha256:a607c8cd82d7d84eabec7abdb5c98e2788605572a0fa79ba75a872787e0084bc
+    image: ghcr.io/tryghost/activitypub:1.2.16@sha256:b440548b8a87eaf70c9440d4b157beee4898b85ba4294509926517a85e7573c7
     restart: ${RESTART_POLICY:-unless-stopped}
     profiles: [activitypub]
     labels:
@@ -314,7 +314,7 @@ services:
   # or failed job stays stopped instead of being restarted by the daemon.
 
   activitypub-migrate:
-    image: ghcr.io/tryghost/activitypub-migrations:1.2.14@sha256:c116a15f9c8a94542440fadc17bc06c15eeee6e3a61ff2731e3b6e2ea91f7356
+    image: ghcr.io/tryghost/activitypub-migrations:1.2.16@sha256:1ecd26490dc668c6e5e467f85ea2e40d8bfc033bae8eb70f5378a24a27bb75d6
     restart: "no"
     profiles: [activitypub]
     labels:

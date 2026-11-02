@@ -110,7 +110,7 @@ interactive:
 A Ghost-CLI site, local or production, moves to Docker with its posts,
 members, staff accounts, settings, themes, images and configuration. It needs:
 
-- **Ghost-CLI 1.34.0 or later** (`ghost --version`), and
+- **Ghost-CLI 1.34.1 or later** (`ghost --version`), and
 - **Ghost 6.61.0 or later** in the site, the first release with a `next` image.
   The import runs exactly the version the site runs; upgrade afterwards.
 
