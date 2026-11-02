@@ -836,15 +836,23 @@ async function undoInstall(
 function printSummary(site: Site, importing: Importing | null) {
     const { io, flags, intent, url, production, ghost } = site;
     const admin = intent.adminDomain ? `https://${intent.adminDomain}` : url;
+    // Started or not, the operator's proxy is theirs to set up.
+    const proxy =
+        intent.layout === NO_CADDY_PROFILE
+            ? [
+                  `Point your proxy at 127.0.0.1:${site.port} for ${[intent.domain, intent.adminDomain].filter(Boolean).join(' and ')},`,
+                  'over HTTPS, with X-Forwarded-Proto: https (docs/install.md#your-own-proxy).',
+              ]
+            : [];
     const next = flags.noStart
         ? [
               'Nothing is running. Start the site with: docker compose up -d',
+              ...proxy,
               ...(importing?.manifest.kind === 'portable' ? importing.nextSteps : []),
           ]
         : intent.layout === NO_CADDY_PROFILE
           ? [
-                `Point your proxy at 127.0.0.1:${site.port} for ${[intent.domain, intent.adminDomain].filter(Boolean).join(' and ')},`,
-                'over HTTPS, with X-Forwarded-Proto: https (docs/install.md#your-own-proxy).',
+                ...proxy,
                 ...(importing === null
                     ? [
                           'Configure mail (see ghost.env), then open Ghost Admin and create the owner account.',

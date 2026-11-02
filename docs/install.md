@@ -78,8 +78,10 @@ ghost-docker install --import BUNDLE [--domain DOMAIN] [--admin-domain DOMAIN] [
 
 `install` refuses a directory that already holds a site or data, checks the
 host first (as `./ghost-docker doctor` does), generates fresh database
-passwords, then starts the site and verifies it through its own ingress. **A
-failed installation removes everything it created**, so the same command can
+passwords, then starts the site and verifies it: through Caddy, or with
+`--no-caddy`, by Ghost's own health check only, since your proxy cannot be
+reached from the manager's container. **A failed installation removes
+everything it created**, so the same command can
 simply be run again. Details: [What installation does](reference.md#what-installation-does).
 
 Exit statuses: `0` installed, `1` failed, `2` a usage error.
@@ -168,7 +170,8 @@ A production site's bundle is installed as a production site, as
   sign-in code to confirm the new device, so mail has to work.
 - **Nothing is stopped.** If nginx or Apache still holds ports 80 and 443,
   Caddy cannot start and the import fails, naming the port. Stopping it is
-  part of the move below.
+  part of the move below, unless you [keep nginx](#keeping-nginx) and import
+  with `--no-caddy`.
 
 ### Moving a site to Docker
 
@@ -222,15 +225,37 @@ curl -fsSL https://docker.ghost.org/install.sh | bash -s -- install --import ~/m
 ```
 
 - **Stop nginx yourself.** If it serves other sites too, move those first, or
-  keep nginx and import with `--no-caddy`: then stop only the source, and
-  point its server block at the new site's port ([Your own
-  proxy](#your-own-proxy)).
+  [keep nginx](#keeping-nginx).
 - DNS already points here; Caddy gets its own certificate when it starts.
 - **If the import fails:** `sudo systemctl start nginx`, then `ghost start` in
   the source. The bundle is unchanged, so you can retry.
 - **Afterwards**, stop both from starting at boot: `sudo systemctl disable
   nginx`, and disable the source's `ghost_...` service
   (`systemctl list-unit-files 'ghost_*'` names it).
+
+#### Keeping nginx
+
+To keep Ghost-CLI's nginx, and its certificate, serving the site, import
+without Caddy. nginx keeps ports 80 and 443, and only the source stops:
+
+```bash
+cd /var/www/ghost
+ghost stop
+ghost migrate-export --output ~/my-site-bundle
+mkdir ~/my-site && cd ~/my-site
+curl -fsSL https://docker.ghost.org/install.sh | bash -s -- install --import ~/my-site-bundle --no-caddy
+```
+
+- **Check nginx points at the new site.** Ghost-CLI's server block sends
+  requests to the source's port, usually 2368, which the stopped source no
+  longer holds, so the new site is usually given the same one. If the summary
+  names another, change `proxy_pass` to it, then `sudo nginx -t && sudo
+  systemctl reload nginx`; until then nginx answers with a 502 error. Ghost-CLI's
+  block already sends `X-Forwarded-Proto` ([Your own proxy](#your-own-proxy)).
+- **If the import fails:** `ghost start` in the source. nginx was never changed.
+- **Afterwards**, disable the source's `ghost_...` service at boot
+  (`systemctl list-unit-files 'ghost_*'` names it). Leave nginx enabled: it
+  serves the site now.
 
 #### To another host
 

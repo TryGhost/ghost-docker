@@ -644,6 +644,11 @@ describe('a production site behind your own proxy', () => {
             [],
         );
         assert.match(result.stdout, /Loopback {5}127\.0\.0\.1:2368, for your proxy/);
+        // Not started, the proxy is still the operator's to set up first.
+        assert.match(
+            result.stdout,
+            /Nothing is running\.[^\n]*\nPoint your proxy at 127\.0\.0\.1:2368 for example\.com and admin\.example\.com,\nover HTTPS, with X-Forwarded-Proto: https/,
+        );
         assert.match(result.stdout, /\.env and ghost\.env are valid for a production site/);
         assert.ok(!compose.some((args) => args[0] === 'up' || args[0] === 'run'));
     });

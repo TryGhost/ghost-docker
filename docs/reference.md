@@ -45,8 +45,9 @@ happens underneath them.
    [architecture.md](architecture.md#installation-metadata).
 9. **Start and verify**, unless `--no-start`: `docker compose up --wait`, so
    MySQL and Ghost must pass their own health checks, then the site is reached
-   through its own ingress (next section). A running container is not
-   readiness.
+   through Caddy (next section). With `--no-caddy` that last step is a note,
+   not a check: the manager cannot reach your proxy from its container. A
+   running container is not readiness.
 
 **A failed installation removes what it created** — containers, network,
 volumes, the data directories, `.env`, `ghost.env`, the metadata and the
