@@ -32,9 +32,20 @@ export const SERVICE_LABEL = 'com.docker.compose.service';
 /** The default project name of the shared Caddy. */
 export const INFRA_PROJECT = 'ghost-infra';
 
-/** Where the shared Caddy container mounts the members' routes. */
+/** Where the shared Caddy container mounts the sites' routes. */
 const SITES = '/etc/caddy/sites';
 const CADDYFILE = '/etc/caddy/Caddyfile';
+
+/**
+ * `caddy reload` in the shared Caddy's container, one at a time. A reload
+ * reads the configuration, routes included, then loads it: a reload that read
+ * before another site's routes were written, and loaded after that site's own
+ * reload, would drop them from the running Caddy. Each site's manager and the
+ * shared Caddy's self-update see none of each other's directories, so the
+ * lock is taken in the container, on the sites' directory itself (busybox
+ * flock locks a directory), which leaves no file behind.
+ */
+export const RELOAD = ['flock', SITES, 'caddy', 'reload', '--config', CADDYFILE] as const;
 
 export interface SharedCaddy {
     readonly network: string;
@@ -306,7 +317,7 @@ export async function removeRoutes(
  */
 export async function reloadCaddy(io: Io, shared: SharedCaddy): Promise<void> {
     const caddy = runningCaddy(shared);
-    const reloaded = await inCaddy(io, caddy, ['caddy', 'reload', '--config', CADDYFILE]);
+    const reloaded = await inCaddy(io, caddy, RELOAD);
     if (reloaded.status !== 0) {
         throw new CliError(
             `the shared Caddy did not load its configuration, and keeps serving the one it had.\n` +

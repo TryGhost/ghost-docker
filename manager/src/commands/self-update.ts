@@ -19,6 +19,7 @@ import { requireValid } from '../config.ts';
 import type { Context } from '../context.ts';
 import { CliError, describeError, EXIT, UsageError } from '../errors.ts';
 import { refuseForeignProject } from '../project.ts';
+import { RELOAD } from '../shared.ts';
 import { atomicWrite } from '../fs.ts';
 import type { Io } from '../io.ts';
 import { isReleasedMainLayout, migrateReleasedMain } from '../legacy.ts';
@@ -548,7 +549,8 @@ async function caddyUp(io: Io, dir: string, spinner: string): Promise<void> {
     // snippet it mounts is loaded only by a reload.
     const reload = await io.busy(
         'Loading the configuration',
-        () => compose(io, { dir })`exec -T caddy caddy reload --config /etc/caddy/Caddyfile`,
+        // One at a time with the sites' route changes (shared.ts RELOAD).
+        () => compose(io, { dir })`exec -T caddy ${[...RELOAD]}`,
     );
     if (reload.exitCode !== 0) {
         throw new CliError(

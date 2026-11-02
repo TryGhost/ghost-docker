@@ -131,6 +131,10 @@ function sharedApi(shared: FakeShared) {
 function run(shared: FakeShared, { cmd }: { cmd: string[] }): { stdout: string; code: number } {
     const name = (path: string) => path.replace('/etc/caddy/sites/', '');
     switch (cmd[0]) {
+        case 'flock':
+            // Reloads are serialized on the sites' directory.
+            assert.equal(cmd[1], '/etc/caddy/sites');
+            return run(shared, { cmd: cmd.slice(2) });
         case 'wget': {
             const routes = [...shared.hosts].map((host) => ({ match: [{ host: [host] }] }));
             return {
@@ -403,6 +407,21 @@ describe('self-update of the shared Caddy', () => {
             compose.map((args) => args[0]),
             ['config', 'pull', 'up', 'exec', 'ps'],
         );
+        // Serialized with the sites' route changes.
+        assert.deepEqual(
+            compose.find((args) => args[0] === 'exec'),
+            [
+                'exec',
+                '-T',
+                'caddy',
+                'flock',
+                '/etc/caddy/sites',
+                'caddy',
+                'reload',
+                '--config',
+                '/etc/caddy/Caddyfile',
+            ],
+        );
         assert.ok(!existsSync(join(h.dir, 'backups')));
         assert.ok(!existsSync(join(h.dir, '.ghost-docker-update')));
         assert.ok(!existsSync(join(h.dir, '.ghost-docker.lock')));
@@ -573,7 +592,7 @@ describe('a production install on a server with the shared Caddy', () => {
             'stat -c',
             'sh -c as 1000:1000',
             'caddy validate',
-            'caddy reload',
+            'flock /etc/caddy/sites',
         ]);
         assert.ok(shared.hosts.has('example.com'));
         const metadata = JSON.parse(readFileSync(join(h.dir, '.ghost-docker.json'), 'utf8'));
@@ -734,7 +753,7 @@ describe('remove', () => {
         const result = await h.run('remove', '--yes');
         assert.equal(result.code, 0, result.stderr);
         assert.deepEqual([...shared.sites.keys()], ['ghost-other-com.caddy']);
-        assert.deepEqual(shared.execs.map(({ cmd }) => cmd[0]).slice(-2), ['rm', 'caddy']);
+        assert.deepEqual(shared.execs.map(({ cmd }) => cmd[0]).slice(-2), ['rm', 'flock']);
         assert.ok(compose.some((args) => args[0] === 'down' && !args.includes('--volumes')));
         assert.ok(existsSync(join(h.dir, '.env')), 'the directory and its data stay');
         assert.match(result.stdout, /still holds its configuration, data and backups/);

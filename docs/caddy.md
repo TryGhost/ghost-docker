@@ -187,7 +187,9 @@ for a site: untouched stack files are replaced, edited ones kept beside the
 release's `.new`, and the launcher re-pinned; then Caddy is recreated, which
 restarts it as above, reloads its configuration (so a changed Caddyfile or
 snippet is loaded even when the container was not recreated), and must pass
-its health check. There is no backup,
+its health check. Its reloads and those of each site's `install` and `remove`
+take turns, through a lock on `caddy/sites/` inside the container, so none
+loads a configuration read before another site's routes were written. There is no backup,
 because it holds no data. A failed update puts its files back and starts the
 previous Caddy again. It never updates the sites behind it, and their own
 `self-update` never touches it.
