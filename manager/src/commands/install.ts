@@ -816,8 +816,8 @@ async function writeSiteRoutes(
     if (shared !== null) {
         // Claimed once written: a file another installation wrote is refused, never removed.
         await io.busy('Adding the routes to the shared Caddy', () =>
-            addRoutes(io, shared, project, renderRoutes(routes), (owned) => {
-                created.routes = owned;
+            addRoutes(io, shared, project, renderRoutes(routes), (token) => {
+                created.routes = token ?? false;
                 created.save();
             }),
         );

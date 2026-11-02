@@ -10,6 +10,7 @@
 // the site's project. The manager cannot see that directory, only its own
 // site's, so it reads and writes it through the running Caddy container, which
 // mounts it: what is written is exactly what Caddy reads. See docs/caddy.md.
+import { randomUUID } from 'node:crypto';
 import { CliError } from './errors.ts';
 import {
     execInContainer,
@@ -188,19 +189,29 @@ export async function refuseTaken(
 }
 
 /**
+ * The first line of routes an installation wrote: which write they are, so
+ * undoing it removes them only while they are still that write's.
+ */
+export const routesMarker = (token: string): string => `# ghost-docker install ${token}`;
+
+/**
  * Writes a site's routes into the shared Caddy, owned by whoever owns its
  * caddy/sites/, has Caddy validate its whole configuration with them, and
  * reloads it. Routes Caddy refuses are removed again, and Caddy keeps serving
- * what it served. `owned` says whether the file is this call's to undo: true
- * once written, as an existing one is never replaced, and false again once
- * the routes Caddy refused are removed, since another site may then add its own.
+ * what it served.
+ *
+ * `owned` is told the token of the write before it is made, since a write
+ * whose result is unknown may have happened, and null once the file is
+ * certainly not this write's: an existing one is never replaced, and routes
+ * Caddy refused are removed. Undo then removes the file only if it is still
+ * marked with that token (removeRoutes).
  */
 export async function addRoutes(
     io: Io,
     shared: SharedCaddy,
     project: string,
     routes: string,
-    owned: (yes: boolean) => void = () => undefined,
+    owned: (token: string | null) => void = () => undefined,
 ): Promise<void> {
     const caddy = runningCaddy(shared);
     const owner = await inCaddy(io, caddy, ['stat', '-c', '%u:%g', SITES]);
@@ -208,6 +219,8 @@ export async function addRoutes(
         throw new CliError(`the shared Caddy's ${SITES} could not be read:\n${said(owner)}`);
     }
     const file = `${SITES}/${routesFile(project)}`;
+    const token = randomUUID();
+    owned(token);
     // Written beside it under a name of this writer's that the Caddyfile's
     // *.caddy does not import, then linked into place: a link, unlike a
     // rename, fails when the file exists, so another site's is never replaced
@@ -220,15 +233,18 @@ export async function addRoutes(
             '-c',
             'umask 022 && t="$2.$$.new" && printf "%s" "$1" > "$t" && ln "$t" "$2"; s=$?; rm -f "$t"; exit $s',
             'sh',
-            routes,
+            `${routesMarker(token)}\n${routes}`,
             file,
         ],
         owner.stdout.trim(),
     );
     if (write.status !== 0) {
+        // A status means it did not happen; none, that it may have.
+        if (write.status !== null) {
+            owned(null);
+        }
         throw new CliError(`the routes could not be written to the shared Caddy:\n${said(write)}`);
     }
-    owned(true);
     const valid = await inCaddy(io, caddy, ['caddy', 'validate', '--config', CADDYFILE]);
     if (valid.status !== 0) {
         const removed = await inCaddy(io, caddy, ['rm', '-f', file], owner.stdout.trim());
@@ -239,7 +255,7 @@ export async function addRoutes(
                     `  serving, but will not start again. Caddy said:\n${said(valid)}`,
             );
         }
-        owned(false);
+        owned(null);
         throw new CliError(
             `the shared Caddy does not accept its configuration with these routes, so they were removed\n` +
                 `  again; Caddy still serves what it served. Caddy said:\n${said(valid)}`,
@@ -250,11 +266,32 @@ export async function addRoutes(
 
 /**
  * Removes a site's routes from the shared Caddy and reloads it. Routes
- * that are already gone are not an error.
+ * that are already gone are not an error. With a token, only routes that
+ * write made (routesMarker) are removed: undoing an install never takes
+ * another's.
  */
-export async function removeRoutes(io: Io, shared: SharedCaddy, project: string): Promise<void> {
+export async function removeRoutes(
+    io: Io,
+    shared: SharedCaddy,
+    project: string,
+    token?: string,
+): Promise<void> {
     const caddy = runningCaddy(shared);
-    const removed = await inCaddy(io, caddy, ['rm', '-f', `${SITES}/${routesFile(project)}`]);
+    const file = `${SITES}/${routesFile(project)}`;
+    const removed = await inCaddy(
+        io,
+        caddy,
+        token === undefined
+            ? ['rm', '-f', file]
+            : [
+                  'sh',
+                  '-c',
+                  'if head -n 1 "$2" 2>/dev/null | grep -qxF "$1"; then rm -f "$2"; fi',
+                  'sh',
+                  routesMarker(token),
+                  file,
+              ],
+    );
     if (removed.status !== 0) {
         throw new CliError(
             `${routesPath(shared, project)} could not be removed:\n${said(removed)}`,

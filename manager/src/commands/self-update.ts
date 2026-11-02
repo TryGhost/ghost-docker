@@ -544,6 +544,17 @@ async function updateInfra(
 /** `up --wait`, and Caddy healthy by its own check. */
 async function caddyUp(io: Io, dir: string, spinner: string): Promise<void> {
     await upAndWait(io, dir, spinner);
+    // `up` recreates Caddy only when its service changed; a Caddyfile or
+    // snippet it mounts is loaded only by a reload.
+    const reload = await io.busy(
+        'Loading the configuration',
+        () => compose(io, { dir })`exec -T caddy caddy reload --config /etc/caddy/Caddyfile`,
+    );
+    if (reload.exitCode !== 0) {
+        throw new CliError(
+            `Caddy did not load its configuration, and keeps serving the one it had: ${composeError(reload)}`,
+        );
+    }
     const caddy = (await composePs(io, dir))?.find((state) => state.Service === 'caddy');
     if (caddy?.Health !== 'healthy') {
         throw new CliError('Caddy started, but it is not healthy');

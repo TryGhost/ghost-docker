@@ -35,6 +35,8 @@ interface FakeShared {
     exists: boolean;
     /** Another installation, creating the network or a routes file first. */
     raced: { network?: boolean; routes?: string };
+    /** A routes write that runs, but whose result the daemon never reports. */
+    lost: boolean;
 }
 
 function fakeShared(): FakeShared {
@@ -47,6 +49,7 @@ function fakeShared(): FakeShared {
         created: null,
         exists: true,
         raced: {},
+        lost: false,
     };
 }
 
@@ -112,6 +115,9 @@ function sharedApi(shared: FakeShared) {
         if (path === '/exec/exec-1/start') {
             const { stdout, code } = run(shared, pending!);
             status = code;
+            if (shared.lost && pending!.cmd[0] === 'sh' && !pending!.cmd[2]!.includes('grep')) {
+                return { status: 500, body: Buffer.from('connection reset') };
+            }
             return { status: 200, body: frame(code === 0 ? 1 : 2, stdout) };
         }
         if (path === '/exec/exec-1/json') {
@@ -140,6 +146,13 @@ function run(shared: FakeShared, { cmd }: { cmd: string[] }): { stdout: string; 
         case 'stat':
             return { stdout: '1000:1000\n', code: 0 };
         case 'sh': {
+            // sh -c SCRIPT sh MARKER FILE: removes the file if it is that write's.
+            if (cmd[2]!.includes('grep')) {
+                if (shared.sites.get(name(cmd[5]!))?.split('\n')[0] === cmd[4]) {
+                    shared.sites.delete(name(cmd[5]!));
+                }
+                return { stdout: '', code: 0 };
+            }
             // sh -c SCRIPT sh ROUTES FILE, which never overwrites a file.
             if (shared.raced.routes !== undefined) {
                 shared.sites.set(name(cmd[5]!), shared.raced.routes);
@@ -388,7 +401,7 @@ describe('self-update of the shared Caddy', () => {
         assert.equal(after.stack.version, 'v0.1.0-beta.2');
         assert.deepEqual(
             compose.map((args) => args[0]),
-            ['config', 'pull', 'up', 'ps'],
+            ['config', 'pull', 'up', 'exec', 'ps'],
         );
         assert.ok(!existsSync(join(h.dir, 'backups')));
         assert.ok(!existsSync(join(h.dir, '.ghost-docker-update')));
@@ -436,6 +449,27 @@ describe('self-update of the shared Caddy', () => {
         assert.equal(compose.filter((args) => args[0] === 'up').length, 2);
         assert.ok(!existsSync(join(h.dir, '.ghost-docker-update')));
         assert.ok(!existsSync(join(h.dir, '.ghost-docker.lock')));
+    });
+
+    test('a configuration Caddy will not reload is put back, and the old one loaded again', async () => {
+        const before = readFileSync(join(h.dir, 'caddy', 'snippets', 'Logging'), 'utf8');
+        let reloads = 0;
+        h.daemon.composeRun = (args) => {
+            compose.push(args);
+            if (args[0] === 'exec') {
+                return reloads++ === 0 ? failed(1, 'adapting config: unknown directive') : ok('');
+            }
+            if (args[0] === 'config') {
+                return ok(JSON.stringify({ services: { caddy: {} } }));
+            }
+            return args[0] === 'ps' ? ok(ps()) : ok('');
+        };
+        const result = await h.run('self-update');
+        assert.equal(result.code, 1);
+        assert.match(result.stderr, /did not load its configuration[\s\S]*unknown directive/);
+        assert.match(result.stderr, /is back on v0\.1\.0-beta\.1, and running/);
+        assert.equal(readFileSync(join(h.dir, 'caddy', 'snippets', 'Logging'), 'utf8'), before);
+        assert.equal(reloads, 2);
     });
 
     test('a Caddy that will not start again either is left for the operator, with the files kept', async () => {
@@ -592,6 +626,23 @@ describe('a production install on a server with the shared Caddy', () => {
         assert.match(result.stderr, /could not be written to the shared Caddy/);
         assert.equal(shared.sites.get('ghost-example-com.caddy'), 'routes of another directory');
         assert.deepEqual(files(), []);
+    });
+
+    test('routes written with no result reported are still undone, by their marker', async () => {
+        shared.lost = true;
+        const result = await h.run('install', '--domain', 'example.com', '--no-start');
+        assert.equal(result.code, 1);
+        assert.match(result.stderr, /could not be written to the shared Caddy/);
+        assert.equal(shared.sites.size, 0);
+        assert.deepEqual(files(), []);
+    });
+
+    test("another's routes are left alone when a write's result is unknown", async () => {
+        shared.lost = true;
+        shared.raced.routes = 'routes of another directory';
+        const result = await h.run('install', '--domain', 'example.com', '--no-start');
+        assert.equal(result.code, 1);
+        assert.equal(shared.sites.get('ghost-example-com.caddy'), 'routes of another directory');
     });
 
     test('a stopped shared Caddy is refused, saying how to start it', async () => {

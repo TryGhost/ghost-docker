@@ -115,7 +115,9 @@ Then install each site as usual, each in its own directory. On a server with
 the shared Caddy, `install --domain` joins it: the site has no Caddy of its
 own, and its routes are written to the shared Caddy's
 `caddy/sites/<project>.caddy`, which Caddy validates and loads before the
-site starts. A site installed `--no-caddy` does not join it. `<project>` is the site's `COMPOSE_PROJECT_NAME`. A domain the
+site starts. Its first line, `# ghost-docker install <token>`, names the
+write, so a failed install removes the file only while it is still that
+write's. A site installed `--no-caddy` does not join it. `<project>` is the site's `COMPOSE_PROJECT_NAME`. A domain the
 shared Caddy already serves, or a project that already has routes there, is
 refused before anything is written. An existing site cannot be moved behind
 the shared Caddy yet; it keeps its own Caddy, which needs 80 and 443, so set
@@ -183,7 +185,9 @@ Its Caddy image is pinned in its `compose.yml`, by the release it runs.
 `./ghost-docker self-update`, in its directory, moves it to a newer release as
 for a site: untouched stack files are replaced, edited ones kept beside the
 release's `.new`, and the launcher re-pinned; then Caddy is recreated, which
-restarts it as above, and must pass its health check. There is no backup,
+restarts it as above, reloads its configuration (so a changed Caddyfile or
+snippet is loaded even when the container was not recreated), and must pass
+its health check. There is no backup,
 because it holds no data. A failed update puts its files back and starts the
 previous Caddy again. It never updates the sites behind it, and their own
 `self-update` never touches it.

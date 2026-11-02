@@ -22,7 +22,8 @@ const journalSchema = z.object({
     directories: z.array(z.string().startsWith('/')),
     data: z.array(z.string().startsWith('/')),
     project: z.boolean(),
-    routes: z.boolean().default(false),
+    // A write's token (shared.ts routesMarker), or true for whatever is there.
+    routes: z.union([z.string(), z.boolean()]).default(false),
 });
 
 export class Created implements Written {
@@ -33,8 +34,12 @@ export class Created implements Written {
     readonly data: string[] = [];
     /** Compose has created something for this project: a network, containers, volumes. */
     project = false;
-    /** The site's routes are in the shared Caddy, named for its project (shared.ts). */
-    routes = false;
+    /**
+     * The site's routes in the shared Caddy, named for its project
+     * (shared.ts): the token of the write that may have made them, or true
+     * for whatever file is there.
+     */
+    routes: string | boolean = false;
     /** The shared Caddy's network, created by `install --infra`. */
     network: string | null = null;
     /** The import marker, when this is an import. */
@@ -158,7 +163,12 @@ export class Created implements Written {
             if (shared === null) {
                 return [];
             }
-            await removeRoutes(this.io, shared, project);
+            await removeRoutes(
+                this.io,
+                shared,
+                project,
+                typeof this.routes === 'string' ? this.routes : undefined,
+            );
             return [];
         } catch (error) {
             const path =
