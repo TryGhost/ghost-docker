@@ -6,7 +6,7 @@
 // (docs/architecture.md#recovery).
 import { relative } from 'node:path';
 import { takeBackup } from './backup.ts';
-import { upAndWait } from './compose.ts';
+import { compose, composeError, upAndWait } from './compose.ts';
 import { CliError, describeError } from './errors.ts';
 import type { Io } from './io.ts';
 import type { Metadata } from './meta.ts';
@@ -231,6 +231,9 @@ export async function runUpdate(plan: UpdatePlan): Promise<UpdateOutcome> {
             except,
         );
         ok(io, 'services', 'healthy, by their own health checks');
+        if (site.layout === 'production') {
+            await reloadCaddy(io, dir);
+        }
 
         plan.onStage?.('verifying');
         await verifySite(io, dir);
@@ -254,6 +257,23 @@ export async function runUpdate(plan: UpdatePlan): Promise<UpdateOutcome> {
     }
     snapshot.remove();
     return { state: 'done', backup };
+}
+
+/**
+ * `up` recreates Caddy only when its service changed; a Caddyfile or snippet
+ * it mounts is loaded only by a reload. One Caddy refuses is a failed update.
+ */
+async function reloadCaddy(io: Io, dir: string): Promise<void> {
+    const reload = await io.busy(
+        'Loading Caddy’s configuration',
+        () => compose(io, { dir })`exec -T caddy caddy reload --config /etc/caddy/Caddyfile`,
+    );
+    if (reload.exitCode !== 0) {
+        throw new CliError(
+            `Caddy did not load its configuration, and keeps serving the one it had: ${composeError(reload)}`,
+        );
+    }
+    ok(io, 'caddy', 'its configuration loaded');
 }
 
 /** Where a failed change to a running site stands, for recover(). */
