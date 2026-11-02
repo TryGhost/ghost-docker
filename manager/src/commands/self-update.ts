@@ -18,7 +18,7 @@ import { defineCommand, flag } from '../command.ts';
 import { requireValid } from '../config.ts';
 import type { Context } from '../context.ts';
 import { CliError, describeError, EXIT, UsageError } from '../errors.ts';
-import { acquireLock } from '../lock.ts';
+import { refuseForeignProject } from '../project.ts';
 import { atomicWrite } from '../fs.ts';
 import type { Io } from '../io.ts';
 import { isReleasedMainLayout, migrateReleasedMain } from '../legacy.ts';
@@ -462,8 +462,10 @@ async function updateInfra(
         );
     }
     refuseUnfinished(dir, 'self-update');
+    // A project another directory owns would be recreated as this one's.
+    await refuseForeignProject(io, site.settings.get('COMPOSE_PROJECT_NAME') || '', dir);
 
-    const lock = acquireLock(dir, `update to ${describeStack(to)}`);
+    const lock = lockPlanned(dir, `update to ${describeStack(to)}`, metadata, 'self-update');
     try {
         io.stdout(
             `Updating the shared Caddy from ${describeStack(from)} to ${describeStack(to)}\n`,
@@ -501,7 +503,16 @@ async function updateInfra(
             io.stderr(
                 `\n${describeError(error)}\n\nThe update to ${describeStack(to)} did not complete. Putting ${describeStack(from)}'s files back\n`,
             );
-            snapshot.restore();
+            try {
+                snapshot.restore();
+            } catch (restoreError) {
+                throw new CliError(
+                    `the update failed, and ${describeStack(from)}'s files could not be put back: ${describeError(restoreError)}\n` +
+                        `  They are in ${UPDATE_DIR}/files, in ${dir}: copy them back, then docker compose up -d\n` +
+                        `  there, and remove ${UPDATE_DIR} once Caddy runs on them.` +
+                        (started ? ' Caddy may be stopped until then.' : ''),
+                );
+            }
             if (started) {
                 try {
                     await caddyUp(io, dir, `Starting ${describeStack(from)}'s Caddy again`);

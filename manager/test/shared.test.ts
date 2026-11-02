@@ -4,7 +4,8 @@
 // the real Caddy does with the routes is test/integration/shared.test.ts, and
 // several sites on one server tests/e2e/shared-caddy.sh.
 import assert from 'node:assert/strict';
-import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, test } from 'node:test';
 import * as env from '../src/env.ts';
@@ -445,6 +446,60 @@ describe('self-update of the shared Caddy', () => {
         assert.ok(existsSync(join(h.dir, '.ghost-docker-update', 'files')));
     });
 
+    test('files it cannot put back are left for the operator, with Caddy not started on them', async () => {
+        up = () => {
+            // A kept file Node cannot copy back.
+            const kept = join(h.dir, '.ghost-docker-update', 'files', 'compose.yml');
+            rmSync(kept);
+            execFileSync('mkfifo', [kept]);
+            return failed(1, 'container caddy is unhealthy');
+        };
+        const result = await h.run('self-update');
+        assert.equal(result.code, 1);
+        assert.match(
+            result.stderr,
+            /files could not be put back[\s\S]*\.ghost-docker-update\/files/,
+        );
+        assert.equal(compose.filter((args) => args[0] === 'up').length, 1);
+        assert.ok(existsSync(join(h.dir, '.ghost-docker-update')));
+    });
+
+    test('a project another directory owns is refused before anything is pulled', async () => {
+        h.daemon.containers = [
+            {
+                ...CADDY,
+                Labels: {
+                    ...CADDY.Labels,
+                    'com.docker.compose.project.working_dir': '/elsewhere',
+                },
+            },
+        ];
+        const result = await h.run('self-update');
+        assert.equal(result.code, 1);
+        assert.match(result.stderr, /\/elsewhere/);
+        assert.deepEqual(compose, []);
+        assert.equal(metadata().stack.version, 'v0.1.0-beta.1');
+    });
+
+    test('metadata changed while it was planned is refused under the lock', async () => {
+        const path = join(h.dir, '.ghost-docker.json');
+        manager = '';
+        const images = imageApi({
+            manager: () => {
+                const changed = metadata();
+                changed.stack.version = 'v0.1.0-beta.0';
+                writeFileSync(path, JSON.stringify(changed));
+                return SECOND;
+            },
+        });
+        const caddy = sharedApi(shared);
+        h.daemon.api = (request) => images(request) ?? caddy(request);
+        const result = await h.run('self-update');
+        assert.equal(result.code, 1);
+        assert.match(result.stderr, /changed while this update was being prepared/);
+        assert.deepEqual(compose, []);
+    });
+
     test('site commands still refuse it', async () => {
         for (const command of ['backup', 'update', 'check']) {
             const result = await h.run(command);
@@ -552,6 +607,8 @@ describe('a production install on a server with the shared Caddy', () => {
 
     test('routes Caddy refuses are removed with everything else the installation created', async () => {
         shared.refuse = 'Error: adapting config using caddyfile: ambiguous site definition';
+        // Removed once, by addRoutes: the file is then not this install's to undo.
+        const removals = () => shared.execs.filter(({ cmd }) => cmd[0] === 'rm').length;
         const result = await h.run('install', '--domain', 'example.com', '--no-start');
         assert.equal(result.code, 1);
         assert.match(
@@ -560,6 +617,7 @@ describe('a production install on a server with the shared Caddy', () => {
         );
         assert.equal(shared.sites.size, 0);
         assert.deepEqual(files(), []);
+        assert.equal(removals(), 1);
     });
 
     test('a local site never joins it', async () => {

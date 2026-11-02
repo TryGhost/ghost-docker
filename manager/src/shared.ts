@@ -191,15 +191,16 @@ export async function refuseTaken(
  * Writes a site's routes into the shared Caddy, owned by whoever owns its
  * caddy/sites/, has Caddy validate its whole configuration with them, and
  * reloads it. Routes Caddy refuses are removed again, and Caddy keeps serving
- * what it served. `written` is called once the file is this call's: an
- * existing one is never overwritten, so a caller only undoes its own.
+ * what it served. `owned` says whether the file is this call's to undo: true
+ * once written, as an existing one is never replaced, and false again once
+ * the routes Caddy refused are removed, since another site may then add its own.
  */
 export async function addRoutes(
     io: Io,
     shared: SharedCaddy,
     project: string,
     routes: string,
-    written: () => void = () => undefined,
+    owned: (yes: boolean) => void = () => undefined,
 ): Promise<void> {
     const caddy = runningCaddy(shared);
     const owner = await inCaddy(io, caddy, ['stat', '-c', '%u:%g', SITES]);
@@ -207,15 +208,17 @@ export async function addRoutes(
         throw new CliError(`the shared Caddy's ${SITES} could not be read:\n${said(owner)}`);
     }
     const file = `${SITES}/${routesFile(project)}`;
-    // Written beside it under a name the Caddyfile's *.caddy does not import,
-    // then renamed, so Caddy never reads half a file.
+    // Written beside it under a name of this writer's that the Caddyfile's
+    // *.caddy does not import, then linked into place: a link, unlike a
+    // rename, fails when the file exists, so another site's is never replaced
+    // and Caddy never reads half a file.
     const write = await inCaddy(
         io,
         caddy,
         [
             'sh',
             '-c',
-            'umask 022 && [ ! -e "$2" ] && printf "%s" "$1" > "$2.new" && mv "$2.new" "$2"',
+            'umask 022 && t="$2.$$.new" && printf "%s" "$1" > "$t" && ln "$t" "$2"; s=$?; rm -f "$t"; exit $s',
             'sh',
             routes,
             file,
@@ -225,7 +228,7 @@ export async function addRoutes(
     if (write.status !== 0) {
         throw new CliError(`the routes could not be written to the shared Caddy:\n${said(write)}`);
     }
-    written();
+    owned(true);
     const valid = await inCaddy(io, caddy, ['caddy', 'validate', '--config', CADDYFILE]);
     if (valid.status !== 0) {
         const removed = await inCaddy(io, caddy, ['rm', '-f', file], owner.stdout.trim());
@@ -236,6 +239,7 @@ export async function addRoutes(
                     `  serving, but will not start again. Caddy said:\n${said(valid)}`,
             );
         }
+        owned(false);
         throw new CliError(
             `the shared Caddy does not accept its configuration with these routes, so they were removed\n` +
                 `  again; Caddy still serves what it served. Caddy said:\n${said(valid)}`,

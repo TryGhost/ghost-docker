@@ -8,7 +8,7 @@ import { loadContext, type Context } from '../context.ts';
 import { CliError } from '../errors.ts';
 import type { Io } from '../io.ts';
 import { acquireLock, type Lock } from '../lock.ts';
-import { readMetadata, type Metadata } from '../meta.ts';
+import { readMetadata, type AnyMetadata, type Metadata } from '../meta.ts';
 import { channelOf, CHANNELS, isRelease, type Channel } from '../release.ts';
 import {
     ENV_FILE,
@@ -99,7 +99,7 @@ export function refuseUnfinished(dir: string, again: string): void {
 export function lockPlanned(
     dir: string,
     operation: string,
-    planned: Metadata,
+    planned: AnyMetadata,
     again: string,
 ): Lock {
     const lock = acquireLock(dir, operation);
