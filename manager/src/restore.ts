@@ -40,12 +40,23 @@ import {
     COMPOSE_OVERRIDE_FILE,
     DATA_DIRS,
     ENV_FILE,
+    hasProfile,
+    INFRA_PROFILE,
     MAILPIT_DATA_DIR,
+    SHARED_CADDY_PROFILE,
     META_FILE,
     readSettings,
     RESTORE_DIR,
     siteFacts,
 } from './site.ts';
+import {
+    describeShared,
+    findSharedCaddy,
+    routeFiles,
+    routesFile,
+    routesPath,
+    runningCaddy,
+} from './shared.ts';
 import { verifySite } from './verify.ts';
 
 /** `over`: the backup's own site, replaced. `fresh`: a new, empty directory. */
@@ -71,6 +82,7 @@ export async function restoreSite({ io, context, root, yes }: RestoreInput): Pro
     );
 
     const target = classify(context, dir, manifest);
+    await refuseWithoutRoutes(io, root, manifest);
     if (target === 'fresh') {
         await refuseTaken(io, root, manifest);
     } else {
@@ -384,6 +396,36 @@ async function refuseOtherConfiguration(
 }
 
 /**
+ * A site that was behind the shared Caddy is restored behind it: its network
+ * must exist, and its routes, which are the shared Caddy's files rather than
+ * the site's and so not in the backup, must be there to verify it.
+ */
+async function refuseWithoutRoutes(io: Io, root: string, manifest: BackupManifest): Promise<void> {
+    const settings = env.toRecord(readIfExists(join(root, SITE_FILES_DIR, ENV_FILE)) ?? '');
+    if (!hasProfile(settings.COMPOSE_PROFILES ?? '', SHARED_CADDY_PROFILE)) {
+        return;
+    }
+    const shared = await findSharedCaddy(io);
+    if (shared === null) {
+        throw new CliError(
+            `this backup is of a site behind the shared Caddy, and this server has none.\n` +
+                '  Set one up first with ./ghost-docker install --infra, in a directory of its own, and put\n' +
+                `  the site's routes in its caddy/sites/${routesFile(manifest.site.project)}. Nothing has been changed.`,
+        );
+    }
+    const project = manifest.site.project;
+    if (!(await routeFiles(io, runningCaddy(shared))).includes(routesFile(project))) {
+        throw new CliError(
+            `this backup is of a site behind the shared Caddy, which has no routes for it:\n` +
+                `  ${routesPath(shared, project)} does not exist. Routes are the shared Caddy's files, not the\n` +
+                "  site's, so a backup does not hold them: put them back (or write them as docs/caddy.md\n" +
+                '  describes), then run the restore again. Nothing has been changed.',
+        );
+    }
+    ok(io, 'routes', `${routesPath(shared, project)}, in ${describeShared(shared)}`);
+}
+
+/**
  * A site restored into a new directory keeps its project name and its ports,
  * so nothing running on this daemon may already use them; a stopped site
  * that publishes one is warned about. The site the backup was
@@ -619,7 +661,12 @@ function writeSiteFiles(
     }
     const metadata = readMetadata(dir);
     const pin = restoredPin(manifest);
-    if (metadata.state === 'present' && (metadata.metadata.site.dir !== dir || pin !== null)) {
+    // A backup is always of a site, never of the shared Caddy.
+    if (
+        metadata.state === 'present' &&
+        metadata.metadata.mode !== INFRA_PROFILE &&
+        (metadata.metadata.site.dir !== dir || pin !== null)
+    ) {
         const recorded = metadata.metadata.ghost;
         writeMetadata(dir, {
             ...metadata.metadata,

@@ -32,12 +32,16 @@ export const isCheckout = (context: Context, dir: string): boolean =>
 /**
  * The top-level payload entries a directory of each layout does without: a
  * site with no Caddy has no routes, and cannot select analytics, whose
- * Tinybird jobs are built from tinybird/.
+ * Tinybird jobs are built from tinybird/; a site behind the shared Caddy has
+ * its routes in the shared Caddy's directory; and that directory runs Caddy
+ * alone.
  */
 const UNUSED: Record<Layout, readonly string[]> = {
     local: ['caddy', 'tinybird'],
     production: [],
     'no-caddy': ['caddy', 'tinybird'],
+    'shared-caddy': ['caddy'],
+    infra: ['mysql-init', 'tinybird', 'ghost.env.example'],
 };
 
 /**

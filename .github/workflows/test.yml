@@ -123,6 +123,7 @@ jobs:
           - { name: Ghost nightly channel, script: ghost-nightly }
           - { name: Migration from the released main layout, script: migrate-main }
           - { name: Backup and restore, script: backup }
+          - { name: Shared Caddy, script: shared-caddy }
           - { name: Import, script: import, node: "22" }
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

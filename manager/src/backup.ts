@@ -44,7 +44,14 @@ import {
     runningImages,
     type ResolvedSite,
 } from './resolved.ts';
-import { BACKUPS_DIR, DATA_DIRS, hasProfile, splitProfiles, type SiteFacts } from './site.ts';
+import {
+    BACKUPS_DIR,
+    DATA_DIRS,
+    hasProfile,
+    SHARED_CADDY_PROFILE,
+    splitProfiles,
+    type SiteFacts,
+} from './site.ts';
 import { managerVersion } from './versions.ts';
 
 /** mysqldump's last line, which a dump cut short never has. */
@@ -174,7 +181,11 @@ export function siteOverrides(resolved: ResolvedSite): string[] {
 function notIncluded(site: SiteFacts): string[] {
     const profiles = site.settings.get('COMPOSE_PROFILES') ?? '';
     const lines: string[] = [];
-    if (site.layout === 'production') {
+    if (site.layout === SHARED_CADDY_PROFILE) {
+        lines.push(
+            "its routes, in the shared Caddy's caddy/sites/, which are the shared Caddy's files, with its certificates",
+        );
+    } else if (site.layout === 'production') {
         lines.push(
             "Caddy's certificates and state, which Caddy obtains again when the site starts",
         );

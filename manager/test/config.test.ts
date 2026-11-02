@@ -75,7 +75,7 @@ describe('.env', () => {
         makeSite(h, { ...PRODUCTION, COMPOSE_PROFILES: 'no-caddy,production' });
         assert.match(
             (await validate()).errors,
-            /exactly one site mode \(local, production, no-caddy\)/,
+            /exactly one site mode \(local, production, no-caddy, shared-caddy\)/,
         );
         makeSite(h, { ...PRODUCTION, URL: 'http://example.com', COMPOSE_PROFILES: 'no-caddy' });
         assert.match((await validate()).errors, /URL must be https:\/\//);

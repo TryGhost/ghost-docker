@@ -12,6 +12,7 @@ import { readMetadata, type Metadata } from '../meta.ts';
 import { channelOf, CHANNELS, isRelease, type Channel } from '../release.ts';
 import {
     ENV_FILE,
+    isInfra,
     META_FILE,
     readSettings,
     siteFacts,
@@ -42,9 +43,10 @@ export function siteContext(io: Io): Context {
 /**
  * The launcher's context, and the site in its directory. A site whose .env
  * names another directory is refused, unless `moved` allows it: `config get`
- * and `config set` are how a moved site's PROJECT_DIR is put right.
+ * and `config set` are how a moved site's PROJECT_DIR is put right. The
+ * shared Caddy's directory is refused unless `infra` allows it: it has no site.
  */
-export function installedSite(io: Io, { moved = false } = {}): InstalledSite {
+export function installedSite(io: Io, { moved = false, infra = false } = {}): InstalledSite {
     const context = siteContext(io);
     const dir = context.siteDir;
     const settings = readSettings(dir);
@@ -52,6 +54,13 @@ export function installedSite(io: Io, { moved = false } = {}): InstalledSite {
         throw new CliError(
             `${dir}/${ENV_FILE} does not exist, so this directory does not hold a site.\n` +
                 '  Run ./ghost-docker install, or ./ghost-docker --dir PATH ... for a site elsewhere.',
+        );
+    }
+    if (!infra && isInfra(settings)) {
+        throw new CliError(
+            `${dir} holds the shared Caddy, not a site, so there is nothing here for this command.\n` +
+                '  ./ghost-docker list shows it and the sites behind it; docker compose ps and logs, in\n' +
+                '  this directory, show Caddy itself (docs/caddy.md#the-shared-caddy).',
         );
     }
     const site = siteFacts(dir, settings);
