@@ -214,7 +214,7 @@ fi
 
 # --- An existing proxy on 80 and 443 ------------------------------------------
 
-step "A proxy already serving 80 and 443"
+step "A proxy already serving 80 and 443, and a site behind it"
 new_site e2e-existing-proxy
 X=$SITE
 if port_free 80 && port_free 443; then
@@ -228,6 +228,36 @@ if port_free 80 && port_free 443; then
     [[ $(docker inspect -f '{{.State.Running}}' "$PROXY") == true ]] || fail "the proxy was stopped"
     [[ -z $(ls -A "$X") ]] || fail "files were written" "$(ls -A "$X")"
     ok "refused before anything was written, naming the container, which still runs"
+
+    # Behind that proxy instead: no Caddy, and 80 and 443 left alone.
+    run install_alone "$X" --domain "$DOMAIN" --no-caddy
+    expect_status 0
+    expect_output 'ok +ghost +healthy'
+    expect_output 'note +ingress +your own proxy, which the manager does not configure or check'
+    [[ $(docker inspect -f '{{.State.Running}}' "$PROXY") == true ]] || fail "the proxy was stopped"
+    [[ ! -e $X/caddy && -z $(compose_in "$X" ps --quiet caddy 2>/dev/null || true) ]] || fail "Caddy was installed"
+    [[ $(setting "$X" COMPOSE_PROFILES) == no-caddy && $(setting "$X" SITE_MODE) == production ]] ||
+        fail "not configured as a production site behind a proxy" "$(cat "$X/.env")"
+    ok "installed beside the proxy, with no Caddy"
+
+    # What the operator's proxy sends, from the host's loopback port.
+    port=$(setting "$X" GHOST_PORT)
+    body=$(curl --silent --noproxy '*' --max-time 20 --header "Host: $DOMAIN" \
+        --header 'X-Forwarded-Proto: https' --header 'X-Forwarded-For: 203.0.113.7' \
+        "http://127.0.0.1:$port/ghost/api/admin/site/" || true)
+    [[ $(jq -r .site.url <<<"$body" 2>/dev/null) == "https://$DOMAIN/" ]] ||
+        fail "Ghost did not answer on 127.0.0.1:$port with X-Forwarded-Proto: https" "$body"
+    # Without the header, Ghost sends the proxy back to HTTPS: the loop the docs warn about.
+    location=$(curl --silent --noproxy '*' --max-time 20 --output /dev/null --write-out '%{redirect_url}' \
+        --header "Host: $DOMAIN" "http://127.0.0.1:$port/" || true)
+    [[ $location == "https://$DOMAIN/"* ]] || fail "Ghost did not redirect a request without X-Forwarded-Proto (got '$location')"
+    ok "Ghost answers on loopback with X-Forwarded-Proto: https, and redirects without it"
+
+    run "$X/ghost-docker" --dir "$X" check
+    expect_status 0
+    expect_output 'note +ingress +your own proxy'
+    ok "check passes, and leaves the ingress to the proxy"
+    compose_in "$X" down --volumes >/dev/null 2>&1
     docker rm -f "$PROXY" >/dev/null
 else
     skip "something on this host already holds 80 or 443"

@@ -291,6 +291,22 @@ test('a local site has no Caddy, and nothing to ask on its network', async () =>
     assert.deepEqual(h.network.probes, []);
 });
 
+describe('a production site behind your own proxy', () => {
+    test("Ghost's health is all that is verified: the proxy is the operator's, and nothing is asked through it", async () => {
+        site.caddy = 'unhealthy';
+        const checks = await verify({ ...PRODUCTION, COMPOSE_PROFILES: 'no-caddy' });
+        assert.deepEqual(Object.keys(checks), ['ghost', 'ingress', 'published ports']);
+        assert.equal(checks.ghost!.status, 'ok');
+        assert.equal(checks.ingress!.status, 'note');
+        assert.match(
+            checks.ingress!.detail,
+            /your own proxy[\s\S]*https:\/\/example\.com over HTTPS and pass it to 127\.0\.0\.1:2368 with\nX-Forwarded-Proto: https/,
+        );
+        assert.doesNotMatch(checks['published ports']!.detail, /Caddy/);
+        assert.deepEqual(h.network.probes, []);
+    });
+});
+
 describe('a local site with Mailpit', () => {
     const MAILPIT = { ...LOCAL, COMPOSE_PROFILES: 'local,mailpit' };
 

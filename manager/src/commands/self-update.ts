@@ -42,7 +42,7 @@ import { compareReleases, isRelease } from '../release.ts';
 import { resolveSite } from '../resolved.ts';
 import { heading, note, ok } from '../report.ts';
 import * as env from '../env.ts';
-import { COMPOSE_FILE, ENV_FILE, META_FILE, type SiteFacts, type SiteMode } from '../site.ts';
+import { COMPOSE_FILE, ENV_FILE, META_FILE, type Layout, type SiteFacts } from '../site.ts';
 import {
     reportNeedsOperator,
     reportRestored,
@@ -131,12 +131,12 @@ const checksumOf = (path: string): string | null =>
 function planPayload(
     dir: string,
     stack: string,
-    mode: SiteMode,
+    layout: Layout,
     recorded: Record<string, string>,
 ): Payload {
     const changes: FileChange[] = [];
     const checksums: Record<string, string> = {};
-    const files = payloadFiles(stack, mode);
+    const files = payloadFiles(stack, layout);
     for (const file of files) {
         const wanted = sha256(readFileSync(join(stack, file)));
         const present = checksumOf(join(dir, file));
@@ -339,7 +339,7 @@ export const selfUpdateCommand = defineCommand({
         }
 
         const stack = stackDir(io.env);
-        const payload = planPayload(dir, stack, metadata.mode, metadata.payload);
+        const payload = planPayload(dir, stack, site.layout, metadata.payload);
         const update: Update = { io, site, metadata, from, to, release, stack, payload };
 
         if (flags.check) {

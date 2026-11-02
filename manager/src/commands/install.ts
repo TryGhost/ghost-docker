@@ -1,4 +1,5 @@
 // `install`: a local or production site, configured, started and verified.
+// A production site has Caddy, or with --no-caddy, the operator's own proxy.
 // `run` takes the parts in order, each a function of its own: refusals that
 // need nothing; with --import, the bundle (import.ts); preflight, ports, the
 // exact Ghost image and a free project name, still changing nothing; then
@@ -47,6 +48,8 @@ import {
     MAILPIT_DATA_DIR,
     META_FILE,
     profileConflict,
+    NO_CADDY_PROFILE,
+    type Layout,
     type SiteMode,
 } from '../site.ts';
 import { takenPorts } from '../ports.ts';
@@ -128,6 +131,9 @@ const options = z
         adminDomain: hostname
             .optional()
             .describe('Serve Ghost Admin on a separate domain. Production only.'),
+        noCaddy: flag(
+            'A production site behind your own proxy (nginx, Apache) on this host: Ghost on 127.0.0.1:PORT, no Caddy, and ports 80 and 443 left to your proxy. See docs/install.md#your-own-proxy.',
+        ),
         email: z
             .string()
             .regex(ACME_EMAIL, refused('must be an email address'))
@@ -208,6 +214,12 @@ const options = z
             (flags.local && flags.domain !== undefined
                 ? 'choose one site mode: --local, or --domain example.com, not both'
                 : null) ??
+            (flags.local && flags.noCaddy
+                ? '--no-caddy applies to production sites: a local site has no Caddy'
+                : null) ??
+            (flags.noCaddy && flags.email !== undefined
+                ? "--email is Caddy's ACME account; with --no-caddy, your proxy obtains the certificate"
+                : null) ??
             (flags.channel !== undefined && flags.release !== undefined
                 ? 'choose --channel or --release, not both'
                 : null) ??
@@ -232,6 +244,8 @@ type Flags = z.output<typeof options>;
 
 interface Plan {
     readonly mode: SiteMode;
+    /** Its mode, or for a production site behind the operator's proxy, `no-caddy`. */
+    readonly layout: Layout;
     readonly domain: string;
     readonly adminDomain: string;
     readonly email: string;
@@ -269,6 +283,7 @@ async function plan(flags: Flags, prompt: Prompter | null): Promise<Plan> {
     }
     return checked({
         mode,
+        layout: layoutFor(mode, flags),
         domain,
         adminDomain: flags.adminDomain ?? '',
         email: flags.email ?? '',
@@ -277,13 +292,30 @@ async function plan(flags: Flags, prompt: Prompter | null): Promise<Plan> {
 }
 
 /** An import's plan: the bundle says what kind of site it is, and options may name its domains. */
-const imported = (importing: Importing, flags: Flags): Plan =>
-    checked({ ...importing.address(flags), email: flags.email ?? '', services: flags.with });
+function imported(importing: Importing, flags: Flags): Plan {
+    const address = importing.address(flags);
+    if (address.mode === 'local' && flags.noCaddy) {
+        throw new UsageError(
+            '--no-caddy applies to production sites, and this bundle is of a local site,\n' +
+                '  which is imported as one.',
+        );
+    }
+    return checked({
+        ...address,
+        layout: layoutFor(address.mode, flags),
+        email: flags.email ?? '',
+        services: flags.with,
+    });
+}
+
+/** A production site's ingress is Caddy unless --no-caddy says it is the operator's proxy. */
+const layoutFor = (mode: SiteMode, flags: Flags): Layout =>
+    mode === 'production' && flags.noCaddy ? NO_CADDY_PROFILE : mode;
 
 /** What a site of its mode cannot be, however its domains were given. */
 function checked(intent: Plan): Plan {
     for (const service of intent.services) {
-        const conflict = profileConflict(intent.mode, service);
+        const conflict = profileConflict(intent.layout, service);
         if (conflict !== null) {
             throw new UsageError(`--with ${service} ${conflict}`);
         }
@@ -434,7 +466,7 @@ async function prepare(
     }
     const { port, mailpitPort } = await sitePorts(
         io,
-        intent.mode,
+        intent.layout,
         flags.port,
         intent.services.includes('mailpit'),
     );
@@ -460,7 +492,7 @@ async function prepare(
     const production = intent.mode === 'production';
     return {
         ...target,
-        files: clone ? [] : payloadFiles(target.stack, intent.mode),
+        files: clone ? [] : payloadFiles(target.stack, intent.layout),
         flags,
         intent,
         port,
@@ -468,7 +500,7 @@ async function prepare(
         ghost,
         pin,
         project,
-        profiles: [intent.mode, ...intent.services].join(','),
+        profiles: [intent.layout, ...intent.services].join(','),
         production,
         url: production ? `https://${intent.domain}` : `http://localhost:${port}`,
         release,
@@ -489,7 +521,8 @@ async function preflight(io: Io, context: Context): Promise<void> {
 
 /**
  * The ports Ghost, and with --with mailpit Mailpit's inbox, are published on.
- * Any port the site needs that a running container publishes is refused,
+ * Any port the site needs, Caddy's 80 and 443 among them when it has Caddy,
+ * that a running container publishes is refused,
  * naming the container; one only a stopped site publishes is warned about. Where Docker would publish over a port a host process
  * holds (io.hostListens), Ghost's port must also be free on the host: a
  * chosen one skips it, a requested one is refused. Mailpit's is always
@@ -497,7 +530,7 @@ async function preflight(io: Io, context: Context): Promise<void> {
  */
 async function sitePorts(
     io: Io,
-    mode: SiteMode,
+    layout: Layout,
     requested: number | undefined,
     mailpit: boolean,
 ): Promise<{ port: number; mailpitPort: number | null }> {
@@ -509,7 +542,7 @@ async function sitePorts(
         : null;
     const wanted = [
         port,
-        ...(mode === 'production' ? [PRODUCTION_PORTS.http, PRODUCTION_PORTS.https] : []),
+        ...(layout === 'production' ? [PRODUCTION_PORTS.http, PRODUCTION_PORTS.https] : []),
     ];
     const holders = taken.holders(wanted);
     if (holders.size > 0) {
@@ -595,7 +628,7 @@ function writeStack(site: Site, created: Created) {
     ok(
         io,
         'stack files',
-        `compose.yml, ${site.production ? 'caddy/, mysql-init/, tinybird/' : 'mysql-init/'} from the manager image`,
+        `compose.yml, ${site.intent.layout === 'production' ? 'caddy/, mysql-init/, tinybird/' : 'mysql-init/'} from the manager image`,
     );
     writeLauncher(dir, io.env, { image: pin!, channel: site.release.channel }, created);
     created.save();
@@ -689,8 +722,8 @@ async function validateConfiguration({ io, dir, intent }: Site) {
 }
 
 /** A production site's Caddy routes. Written once; from here on the file is the operator's. */
-function writeSiteRoutes({ io, dir, production, project, intent }: Site, created: Created) {
-    if (!production) {
+function writeSiteRoutes({ io, dir, project, intent }: Site, created: Created) {
+    if (intent.layout !== 'production') {
         return;
     }
     const { domain, adminDomain, email, services } = intent;
@@ -734,15 +767,18 @@ function writeSiteMetadata(site: Site, created: Created) {
     ok(io, META_FILE, 'installation metadata');
 }
 
-async function startAndVerify({ io, dir }: Site, created: Created) {
+async function startAndVerify({ io, dir, intent }: Site, created: Created) {
     heading(io, 'Starting the services');
     created.project = true;
     await upAndWait(
         io,
         dir,
         'Pulling images, starting the services and waiting for them to be healthy',
-        '  If a port is already in use, choose another for Ghost with --port; a production\n' +
-            '  site needs 80 and 443 free for Caddy. Nothing that was already running was stopped.',
+        (intent.layout === 'production'
+            ? '  If a port is already in use, choose another for Ghost with --port; a production\n' +
+              '  site needs 80 and 443 free for Caddy.'
+            : '  If a port is already in use, choose another for Ghost with --port.') +
+            ' Nothing that was already running was stopped.',
     );
     ok(io, 'services', 'healthy, by their own health checks');
 
@@ -800,24 +836,42 @@ async function undoInstall(
 function printSummary(site: Site, importing: Importing | null) {
     const { io, flags, intent, url, production, ghost } = site;
     const admin = intent.adminDomain ? `https://${intent.adminDomain}` : url;
+    // Started or not, the operator's proxy is theirs to set up.
+    const proxy =
+        intent.layout === NO_CADDY_PROFILE
+            ? [
+                  `Point your proxy at 127.0.0.1:${site.port} for ${[intent.domain, intent.adminDomain].filter(Boolean).join(' and ')},`,
+                  'over HTTPS, with X-Forwarded-Proto: https (docs/install.md#your-own-proxy).',
+              ]
+            : [];
     const next = flags.noStart
         ? [
               'Nothing is running. Start the site with: docker compose up -d',
+              ...proxy,
               ...(importing?.manifest.kind === 'portable' ? importing.nextSteps : []),
           ]
-        : production
+        : intent.layout === NO_CADDY_PROFILE
           ? [
-                "Point the domain's DNS at this host; Caddy then obtains a certificate, and",
-                './ghost-docker check reports it.',
+                ...proxy,
                 ...(importing === null
                     ? [
                           'Configure mail (see ghost.env), then open Ghost Admin and create the owner account.',
                       ]
                     : importing.nextSteps),
             ]
-          : importing !== null
-            ? importing.nextSteps
-            : ['Open Ghost Admin and create the owner account.'];
+          : production
+            ? [
+                  "Point the domain's DNS at this host; Caddy then obtains a certificate, and",
+                  './ghost-docker check reports it.',
+                  ...(importing === null
+                      ? [
+                            'Configure mail (see ghost.env), then open Ghost Admin and create the owner account.',
+                        ]
+                      : importing.nextSteps),
+              ]
+            : importing !== null
+              ? importing.nextSteps
+              : ['Open Ghost Admin and create the owner account.'];
     io.stdout(
         [
             '',
@@ -832,7 +886,7 @@ function printSummary(site: Site, importing: Importing | null) {
                       `  Channel      nightly: a build of Ghost's main branch, for testing, ${production ? 'which this production site should not run' : 'never for production'}`,
                   ]
                 : []),
-            `  Loopback     127.0.0.1:${site.port}`,
+            `  Loopback     127.0.0.1:${site.port}${intent.layout === NO_CADDY_PROFILE ? ', for your proxy' : ''}`,
             ...(site.mailpitPort === null
                 ? []
                 : [`  Mailpit      http://127.0.0.1:${site.mailpitPort}, the mail Ghost sends`]),

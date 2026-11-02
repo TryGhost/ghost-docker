@@ -134,6 +134,25 @@ test('every profile is `*` to Compose, so undo finds whatever a failed install s
     }
 });
 
+test("a site behind the operator's own proxy is Ghost and MySQL, Ghost on loopback, and no Caddy", async () => {
+    const site = makeSite(io, 'no-caddy', {
+        profiles: 'no-caddy,supervisor',
+        url: 'https://example.com',
+        override: '',
+    });
+    const listed = await compose(io, { dir: site.dir })`config --services`;
+    assert.equal(listed.exitCode, 0, listed.stderr);
+    assert.deepEqual(listed.stdout.trim().split('\n').sort(), ['db', 'ghost', 'supervisor']);
+    const config = await compose(io, { dir: site.dir })`config --format json`;
+    assert.equal(config.exitCode, 0, config.stderr);
+    const ghost = JSON.parse(config.stdout).services.ghost;
+    assert.deepEqual(
+        ghost.ports.map((port: Record<string, unknown>) => [port.host_ip, port.published]),
+        [['127.0.0.1', '2368']],
+    );
+    assert.equal(ghost.environment.url, 'https://example.com');
+});
+
 for (const rootOverride of [false, true]) {
     for (const absolute of [false, true]) {
         test(`a nested compose.override.yml COMPOSE_FILE names is effective and inventoried (root ${rootOverride}, absolute ${absolute})`, async () => {

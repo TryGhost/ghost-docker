@@ -10,7 +10,7 @@ import { inspectContainer } from '../../src/docker/client.ts';
 import * as env from '../../src/env.ts';
 import { processIo, type Io } from '../../src/io.ts';
 import { onSiteNetwork } from '../../src/network.ts';
-import { readSettings, siteFacts, type SiteFacts } from '../../src/site.ts';
+import { readSettings, siteFacts, siteMode, type SiteFacts } from '../../src/site.ts';
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
@@ -84,7 +84,7 @@ export function makeSite(io: Io, name: string, options: SiteOptions): TestSite {
         env.serializeAll([
             ['COMPOSE_PROJECT_NAME', project],
             ['COMPOSE_PROFILES', options.profiles],
-            ['SITE_MODE', options.profiles.includes('production') ? 'production' : 'local'],
+            ['SITE_MODE', siteMode(options.profiles) ?? 'local'],
             ['URL', options.url ?? 'http://localhost:2368'],
             ['DATABASE_PASSWORD', secret()],
             ['DATABASE_ROOT_PASSWORD', secret()],

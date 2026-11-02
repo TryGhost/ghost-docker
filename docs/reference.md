@@ -15,7 +15,8 @@ happens underneath them.
    ownership, and that a sibling container sees the directory at the same
    path), and disk and memory, which warn rather than refuse.
 3. **Ports Docker knows about.** The default port skips any that a container
-   publishes. An explicit `--port`, or 80 and 443 for a production site, that
+   publishes. An explicit `--port`, or 80 and 443 for a production site with
+   Caddy, that
    a container publishes is an error naming the container. Nothing is
    stopped. Ports held by anything else are found when the services start;
    see [Ports](#ports).
@@ -38,13 +39,15 @@ happens underneath them.
    copy of the example, whose SMTP block is a placeholder.
 7. **Routing**, in production: `caddy/sites/site.caddy`, written once with
    the site's domains, its network aliases and every snippet argument. It is
-   yours from then on; see [caddy.md](caddy.md).
+   yours from then on; see [caddy.md](caddy.md). With `--no-caddy`, nothing:
+   the routing is your proxy's ([configuration.md](configuration.md#your-own-proxy)).
 8. **Metadata**: `.ghost-docker.json`, described in
    [architecture.md](architecture.md#installation-metadata).
 9. **Start and verify**, unless `--no-start`: `docker compose up --wait`, so
    MySQL and Ghost must pass their own health checks, then the site is reached
-   through its own ingress (next section). A running container is not
-   readiness.
+   through Caddy (next section). With `--no-caddy` that last step is a note,
+   not a check: the manager cannot reach your proxy from its container. A
+   running container is not readiness.
 
 **A failed installation removes what it created** — containers, network,
 volumes, the data directories, `.env`, `ghost.env`, the metadata and the
@@ -67,6 +70,7 @@ Each answer is reported for what it is:
 | caddy | Its health check: its admin API answers, with its configuration loaded. That says Caddy is up, not that it serves each name; **https** shows that once there is a certificate. | `ok` or `ERROR` |
 | https | An HTTPS request to Caddy's container for Ghost's `/ghost/api/admin/site/`, with the domain as its server name and Host, as a browser asks. **serving** means this site's Ghost answered through Caddy: Ghost reports its site's URL, and that must be the site's `URL` (by either name, the canonical one, not the admin domain). It names the certificate's issuer and expiry; a certificate from a CA browsers do not trust (staging, or Caddy's internal CA) is a `warning`. **pending** means Caddy has no certificate for the name yet, so Ghost could not be asked through it: Caddy obtains one once the domain's DNS reaches this host, `./ghost-docker check` reports the change, and `docker compose logs caddy` shows each attempt. Caddy answering with something other than Ghost (a broken route, a 502), another site's Ghost (a route to the wrong upstream), or an out-of-date certificate, is an `ERROR`. | `ok`, `warning`, `note` or `ERROR` |
 | admin https | With an admin domain of its own: the same, for that name. Ghost reached by the admin domain still reports the site's `URL`, which is what is checked. On the site's domain, Ghost answering the Admin API path with a redirect to the admin domain counts as Ghost answering; the admin domain's own answer then names the site. | `ok`, `warning`, `note` or `ERROR` |
+| ingress | With `--no-caddy` (the `no-caddy` profile), in place of **caddy** and **https**: the site is served by your own proxy, which the manager cannot reach from its container, so it is not checked. The note names the URL and the loopback port the proxy must pass it to with `X-Forwarded-Proto: https`. | `note` |
 | mailpit | With `--with mailpit`: its health check. The check names `mailpit-${COMPOSE_PROJECT_NAME}:1025`, where Ghost sends mail. | `ok` or `ERROR` |
 | published ports | The ports Docker says it published. A container cannot reach the host's own loopback interface, so they are not checked from there (the **https** request goes to Caddy's container, not to the host's ports): opening the URL is that check. | `note` |
 
@@ -94,7 +98,8 @@ offered; for a private name, put `tls internal` in a `caddy/custom/` file.
   records its port, and a new site may be given the same one.
 - A port you *asked for* does not: `--port` on a busy port is an error, because
   a site at an address nothing else expects is worse than a refusal.
-- A production site needs 80 and 443. If a container holds them, installation
+- A production site needs 80 and 443 for Caddy; one installed `--no-caddy`
+  does not. If a container holds them, installation
   stops before writing anything and names it. If another program holds them,
   Docker refuses to start Caddy; the error names the port, says nothing that
   was running was stopped, and the directory is as it was.
@@ -204,8 +209,8 @@ so set those up again. Export without `--sqlite-format portable` to get a
 
 - `--import` with `--with`: import the site first, then enable optional
   services. A local site may take `--with mailpit`.
-- `--domain`, `--admin-domain` or `--email` with a local site's bundle, and
-  `--local` with a production site's.
+- `--domain`, `--admin-domain`, `--email` or `--no-caddy` with a local site's
+  bundle, and `--local` with a production site's.
 - A `portable` bundle of a production site. The exporter makes portable
   bundles of local SQLite sites only; a site that must move through Ghost
   Admin is installed new, then its content and members are imported there.

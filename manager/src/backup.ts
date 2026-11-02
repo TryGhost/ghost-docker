@@ -174,7 +174,7 @@ export function siteOverrides(resolved: ResolvedSite): string[] {
 function notIncluded(site: SiteFacts): string[] {
     const profiles = site.settings.get('COMPOSE_PROFILES') ?? '';
     const lines: string[] = [];
-    if (site.mode === 'production') {
+    if (site.layout === 'production') {
         lines.push(
             "Caddy's certificates and state, which Caddy obtains again when the site starts",
         );
