@@ -16,9 +16,10 @@ import {
     ENV_FILE,
     GHOST_ENV_FILE,
     hostOf,
+    layoutOf,
+    MODE_PROFILE_NAMES,
     OPTIONAL_PROFILES,
     profileConflict,
-    SITE_MODES,
     siteMode,
     splitProfiles,
     unknownProfiles,
@@ -92,7 +93,7 @@ export async function validateEnv(io: Io, dir: string): Promise<Finding[]> {
         return [
             error(
                 file,
-                `COMPOSE_PROFILES is not set; it must name exactly one site mode (${SITE_MODES.join(', ')})`,
+                `COMPOSE_PROFILES is not set; it must name exactly one site mode (${MODE_PROFILE_NAMES.join(', ')})`,
             ),
         ];
     }
@@ -101,7 +102,7 @@ export async function validateEnv(io: Io, dir: string): Promise<Finding[]> {
         findings.push(
             error(
                 file,
-                `COMPOSE_PROFILES=${profiles} must name exactly one site mode (${SITE_MODES.join(', ')})`,
+                `COMPOSE_PROFILES=${profiles} must name exactly one site mode (${MODE_PROFILE_NAMES.join(', ')})`,
             ),
         );
     }
@@ -115,7 +116,7 @@ export async function validateEnv(io: Io, dir: string): Promise<Finding[]> {
         );
     }
     for (const profile of splitProfiles(profiles)) {
-        const conflict = mode === null ? null : profileConflict(mode, profile);
+        const conflict = mode === null ? null : profileConflict(layoutOf(profiles), profile);
         if (conflict !== null) {
             findings.push(error(file, `COMPOSE_PROFILES selects ${profile}, which ${conflict}`));
         }
@@ -142,8 +143,8 @@ export async function validateEnv(io: Io, dir: string): Promise<Finding[]> {
         }
     }
 
-    // A production site is served by Caddy, over HTTPS, on the host its URL
-    // names; that host is the site's domain.
+    // A production site is served over HTTPS, by Caddy or the operator's own
+    // proxy, on the host its URL names; that host is the site's domain.
     if (mode === 'production') {
         for (const key of ['URL', 'ADMIN_URL']) {
             const url = values[key];

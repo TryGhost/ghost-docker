@@ -619,6 +619,21 @@ describe('importing a production site', () => {
         assert.match(result.stdout, /every count matches the bundle/);
     });
 
+    test("behind your own proxy, it keeps the source's domains and writes no Caddy", async () => {
+        const result = await install(
+            '--import',
+            bundle(fixture('mysql-dump')),
+            '--no-caddy',
+            '--no-start',
+        );
+        assert.equal(result.code, 0, result.stderr);
+        assert.equal(setting('COMPOSE_PROFILES'), 'proxy');
+        assert.equal(setting('SITE_MODE'), 'production');
+        assert.equal(setting('URL'), 'https://example.com');
+        assert.equal(setting('ADMIN_URL'), 'https://admin.example.com');
+        assert.ok(!existsSync(join(h.dir, 'caddy')));
+    });
+
     test('a failure removes what it created, leaving the directory as it was', async () => {
         load = () => failed(1, 'ERROR 1064 (42000) at line 1');
         const result = await install('--import', bundle(fixture('mysql-dump')));
@@ -666,6 +681,11 @@ describe('refusals that change nothing', () => {
             ['--import', path, '--email', 'ops@example.com'],
             2,
             /--email applies to production sites, and this bundle is of a local site/,
+        );
+        await refusedWith(
+            ['--import', path, '--no-caddy'],
+            2,
+            /--no-caddy applies to production sites, and this bundle is of a local site/,
         );
         await refusedWith(
             ['--import', path, '--with', 'mailpit,activitypub'],

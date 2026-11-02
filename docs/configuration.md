@@ -106,13 +106,17 @@ value in either file may be a credential.
 
 ## Site modes and profiles
 
-Site mode is selected through `COMPOSE_PROFILES`, and exactly one of `local`
-or `production` must be present:
+Site mode is selected through `COMPOSE_PROFILES`, and exactly one of `local`,
+`production` or `proxy` must be present:
 
-| Profile | Services | Ingress |
-| --- | --- | --- |
-| `local` | `ghost`, `db` | Ghost on `127.0.0.1:${GHOST_PORT}` |
-| `production` | `ghost`, `db`, `caddy` | Caddy on `${HTTP_PORT}` / `${HTTPS_PORT}` |
+| Profile | Services | Ingress | `SITE_MODE` |
+| --- | --- | --- | --- |
+| `local` | `ghost`, `db` | Ghost on `127.0.0.1:${GHOST_PORT}` | `local` |
+| `production` | `ghost`, `db`, `caddy` | Caddy on `${HTTP_PORT}` / `${HTTPS_PORT}` | `production` |
+| `proxy` | `ghost`, `db` | [Your own proxy](#your-own-proxy), to Ghost on `127.0.0.1:${GHOST_PORT}` | `production` |
+
+A `proxy` site is a production site in every other way: backup, restore,
+update, `self-update` and the upgrade supervisor treat it as one.
 
 Optional per-site profiles are added to the same list and are purely additive.
 Adding one never changes the site mode:
@@ -130,10 +134,11 @@ supervisor` writes and `self-update` keeps on the release it installs. Every
 site's Ghost mounts the `upgrade` volume read-only, where the supervisor's
 socket is; it stays empty without the supervisor.
 
-`mailpit` is for local sites only: validation rejects it beside `production`,
-where it would catch the site's real mail. `analytics` and `activitypub` are
-for production sites only: validation rejects them beside `local`, because
-only Caddy's routes reach their services, and a local site has no Caddy. Selecting the profile only runs
+`mailpit` is for local sites only: validation rejects it beside `production`
+or `proxy`, where it would catch the site's real mail. `analytics` and
+`activitypub` need Caddy's routes: validation rejects them beside `local`,
+which has no Caddy, and beside `proxy`, whose proxy the manager does not
+configure. Selecting the profile only runs
 Mailpit; Ghost sends to it because `ghost.env` says so (`install --with
 mailpit` writes those settings; see [install.md](install.md#optional-services)).
 
@@ -145,17 +150,92 @@ ActivityPub and analytics are **per-site**: each site owns its ActivityPub
 database, storage and serving URL, and its own Tinybird credentials, workspace
 selection and schema deployment.
 
-Ghost is always published on the loopback interface only, in both modes, so it
-is never exposed publicly except through Caddy.
+Ghost is always published on the loopback interface only, in every mode, so
+it is never exposed publicly except through Caddy or your own proxy.
 
-Caddy is part of `production` rather than an optional profile, deliberately: a
-supported bring-your-own-proxy path would mean validating the operator's
-forwarded-header configuration, and getting `X-Forwarded-Proto` wrong yields
-incorrect absolute URLs and non-secure cookies — a site that half works. If you
-already run nginx or Apache, you can still point it at
-`127.0.0.1:${GHOST_PORT}` and edit `compose.yml` to drop the caddy service or
-move it off 80/443, but that is an unsupported manual customization and stack
-updates may touch `compose.yml`.
+### Your own proxy
+
+If the host already runs nginx or Apache, `install --domain example.com
+--no-caddy` installs a production site without Caddy, as Ghost-CLI's
+`ghost install --no-setup-nginx --no-setup-ssl` did. `COMPOSE_PROFILES` is
+`proxy`; no `caddy/` is written, and ports 80 and 443 stay your proxy's.
+Your proxy terminates HTTPS, with a certificate it obtains, and passes
+requests to Ghost on `127.0.0.1:${GHOST_PORT}` (`./ghost-docker info` shows
+the port).
+
+The manager does not configure your proxy, and cannot check it: it runs in a
+container, which cannot reach the host's loopback port or ask the host's
+proxy. Installation and `check` verify Ghost's own health check, and report
+the ingress as yours. Opening the site's URL is the check.
+
+The proxy must send three headers:
+
+| Header | Value | Why |
+| --- | --- | --- |
+| `Host` | the requested host | Ghost serves the site, and Ghost Admin on an admin domain, by name |
+| `X-Forwarded-For` | the client's address | Ghost's logs, rate limits and member sign-in see the visitor, not `127.0.0.1` |
+| `X-Forwarded-Proto` | `https` | Ghost's `URL` is `https://`, and Ghost redirects a request it believes is plain HTTP to HTTPS |
+
+**A missing or wrong `X-Forwarded-Proto` breaks the site.** Ghost takes
+every request for plain HTTP and redirects it to HTTPS, which the proxy
+passes back as plain HTTP again: a redirect loop. Where a request does get
+through, Ghost treats the connection as insecure, which breaks its secure
+session and member cookies: sign-in to Ghost Admin and member sign-in fail.
+
+For nginx, in place of Ghost-CLI's server block (with a certificate from
+certbot or any other ACME client):
+
+```nginx
+server {
+    listen 80;
+    listen [::]:80;
+    server_name example.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/example.com/privkey.pem;
+
+    # Ghost accepts image, media and theme uploads larger than nginx's 1 MB default.
+    client_max_body_size 50m;
+
+    location / {
+        proxy_pass http://127.0.0.1:2368;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+}
+```
+
+Replace `2368` with the site's `GHOST_PORT`. With `--admin-domain`, add the
+same `server` blocks for the admin domain. For Apache, with `mod_proxy`,
+`mod_proxy_http` and `mod_headers`, inside the HTTPS `VirtualHost`:
+
+```apache
+ProxyPreserveHost On
+RequestHeader set X-Forwarded-Proto "https"
+ProxyPass / http://127.0.0.1:2368/
+ProxyPassReverse / http://127.0.0.1:2368/
+```
+
+`mod_proxy` adds `X-Forwarded-For` itself.
+
+ActivityPub and analytics are refused on a `proxy` site: they are served by
+routes Caddy writes (`/.ghost/activitypub/`, `/.well-known/`,
+`/.ghost/analytics/`), which your proxy would have to reproduce. To use them,
+install with Caddy instead.
+
+On Linux, use Docker Engine 28 or later: older engines let other machines on
+the local network reach ports published on `127.0.0.1`, and so reach Ghost
+around your proxy ([Ports](install.md#ports-and-your-existing-proxy)).
 
 ## Lifecycle
 

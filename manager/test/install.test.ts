@@ -61,6 +61,15 @@ describe('refusals that change nothing', () => {
             [['--local', '--with', 'redis'], /unknown optional service: redis/],
             [['--domain', 'example.com', '--with', 'mailpit'], /mailpit is for local sites only/],
             [['--local', '--with', 'activitypub'], /activitypub is for production sites only/],
+            [['--local', '--no-caddy'], /--no-caddy applies to production sites/],
+            [
+                ['--domain', 'example.com', '--no-caddy', '--email', 'ops@example.com'],
+                /--email is Caddy's ACME account/,
+            ],
+            [
+                ['--domain', 'example.com', '--no-caddy', '--with', 'activitypub'],
+                /--with activitypub needs Caddy's routes, and this site is behind your own proxy[\s\S]*docs\/configuration\.md#your-own-proxy/,
+            ],
             [['--local', '--with', 'production'], /--with selects optional services/],
             [['--local', '--port', '70000'], /port number/],
             [['--local', '--frobnicate'], /frobnicate/],
@@ -584,6 +593,89 @@ describe('a production site, not started', () => {
         // The email lives in the routes, where changing it takes effect.
         assert.equal(env.get(readFileSync(join(h.dir, '.env'), 'utf8'), 'ACME_EMAIL'), undefined);
         assert.ok(!compose.some((args) => args[0] === 'run' || args[0] === 'up'));
+    });
+});
+
+describe('a production site behind your own proxy', () => {
+    test('ports 80 and 443 are left to the proxy, even when a container publishes them', async () => {
+        h.daemon.containers = [
+            {
+                Id: 'p',
+                Names: ['/operators-proxy'],
+                Ports: [
+                    { PrivatePort: 80, PublicPort: 80, Type: 'tcp' },
+                    { PrivatePort: 443, PublicPort: 443, Type: 'tcp' },
+                ],
+            },
+        ];
+        const result = await install('--domain', 'example.com', '--no-caddy', '--no-start');
+        assert.equal(result.code, 0, result.stderr);
+    });
+
+    test('it is a production site with no Caddy: no routes, no Caddy ports, and the proxy is told where Ghost is', async () => {
+        const result = await install(
+            '--domain',
+            'example.com',
+            '--admin-domain',
+            'admin.example.com',
+            '--no-caddy',
+            '--with',
+            'supervisor',
+            '--no-start',
+        );
+        assert.equal(result.code, 0, result.stderr);
+        const values = env.toRecord(readFileSync(join(h.dir, '.env'), 'utf8'));
+        assert.equal(values.COMPOSE_PROFILES, 'proxy,supervisor');
+        assert.equal(values.SITE_MODE, 'production');
+        assert.equal(values.NODE_ENV, 'production');
+        assert.equal(values.RESTART_POLICY, 'unless-stopped');
+        assert.equal(values.URL, 'https://example.com');
+        assert.equal(values.ADMIN_URL, 'https://admin.example.com');
+        assert.equal(values.COMPOSE_PROJECT_NAME, 'ghost-example-com');
+        assert.equal(values.HTTP_PORT, undefined);
+        assert.equal(values.HTTPS_PORT, undefined);
+        assert.ok(!existsSync(join(h.dir, 'caddy')));
+        assert.ok(!existsSync(join(h.dir, 'tinybird')));
+        const metadata = JSON.parse(readFileSync(join(h.dir, '.ghost-docker.json'), 'utf8'));
+        assert.equal(metadata.mode, 'production');
+        assert.deepEqual(metadata.profiles, ['proxy', 'supervisor']);
+        assert.deepEqual(
+            Object.keys(metadata.payload).filter((file) => /^(caddy|tinybird)\//.test(file)),
+            [],
+        );
+        assert.match(result.stdout, /Loopback {5}127\.0\.0\.1:2368, for your proxy/);
+        assert.match(result.stdout, /\.env and ghost\.env are valid for a production site/);
+        assert.ok(!compose.some((args) => args[0] === 'up' || args[0] === 'run'));
+    });
+
+    test('started, it is verified by Ghost alone, and the proxy is left to the operator', async () => {
+        h.daemon.composeRun = (args) => {
+            compose.push(args);
+            switch (args[0]) {
+                case 'config':
+                    return ok(JSON.stringify({ services: { ghost: { environment: {} } } }));
+                case 'ps':
+                    return ok(
+                        JSON.stringify({
+                            Service: 'ghost',
+                            State: 'running',
+                            Health: 'healthy',
+                            Publishers: [{ URL: '127.0.0.1', PublishedPort: 2368 }],
+                        }),
+                    );
+                default:
+                    return ok('');
+            }
+        };
+        const result = await install('--domain', 'example.com', '--no-caddy');
+        assert.equal(result.code, 0, result.stderr);
+        assert.match(
+            result.stdout,
+            /ingress {12}your own proxy, which the manager does not configure/,
+        );
+        assert.match(result.stdout, /Point your proxy at 127\.0\.0\.1:2368 for example\.com/);
+        assert.doesNotMatch(result.stdout, /caddy|Caddy obtains/);
+        assert.deepEqual(h.network.probes, []);
     });
 });
 

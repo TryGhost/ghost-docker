@@ -160,7 +160,7 @@ function dockerEngine({ daemon, context }: Facts): Check | null {
             label,
             detail:
                 `${version}: before ${LOOPBACK_ISOLATED}, machines on this host's local network can reach ports ` +
-                "published on 127.0.0.1, Ghost's among them, bypassing Caddy. Upgrade Docker Engine to " +
+                "published on 127.0.0.1, Ghost's among them, bypassing its proxy. Upgrade Docker Engine to " +
                 `${LOOPBACK_ISOLATED} or later`,
         };
     }

@@ -1,5 +1,7 @@
 // Health checks establish readiness; an HTTPS request through Caddy must also
-// identify this Ghost site by its canonical URL. Probe the site network, since
+// identify this Ghost site by its canonical URL. Behind the operator's own
+// proxy there is no Caddy to ask, and the host's proxy cannot be reached from
+// here, so only Ghost's health is verified. Probe the site network, since
 // manager loopback is not host loopback. See docs/architecture.md#verification-and-service-access.
 import { ServiceUnreachable, type HttpsAnswer } from './clients.ts';
 import { composePs, type ServiceState } from './compose.ts';
@@ -190,7 +192,7 @@ export async function verifyIngress(
     site: SiteFacts,
     known?: readonly ServiceState[] | null,
 ): Promise<Check[]> {
-    const production = site.mode === 'production';
+    const production = site.layout === 'production';
     const withMailpit = hasProfile(site.settings.get('COMPOSE_PROFILES') ?? '', 'mailpit');
     // `check` has the service states already.
     const services = known ?? (await composePs(io, site.dir));
@@ -249,6 +251,16 @@ export async function verifyIngress(
                 }
             }
         }
+    }
+    if (site.layout === 'proxy') {
+        checks.push({
+            status: 'note',
+            label: 'ingress',
+            detail:
+                `your own proxy, which the manager does not configure or check. It must serve\n` +
+                `${site.settings.get('URL') || 'URL'} over HTTPS and pass it to 127.0.0.1:${site.settings.get('GHOST_PORT') || '2368'} with\n` +
+                'X-Forwarded-Proto: https (docs/configuration.md#your-own-proxy)',
+        });
     }
     if (withMailpit) {
         const alias = `mailpit-${site.settings.get('COMPOSE_PROJECT_NAME') || 'ghost'}`;

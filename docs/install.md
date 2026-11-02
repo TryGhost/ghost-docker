@@ -51,11 +51,11 @@ clone](#updating-a-clone)) rather than `self-update`.
 
 ```text
 ghost-docker install [--local | --domain example.com [--admin-domain admin.example.com]
-                                [--email ops@example.com]]
+                                [--email ops@example.com | --no-caddy]]
                      [--name NAME] [--port 2368] [--version 6.61.0] [--with activitypub,mailpit,supervisor]
                      [--channel stable|beta | --release vX.Y.Z] [--no-prompt] [--no-start]
 ghost-docker install --import BUNDLE [--name NAME] [--port 2368] [--with mailpit] [--no-prompt] [--no-start]
-ghost-docker install --import BUNDLE [--domain DOMAIN] [--admin-domain DOMAIN] [--email EMAIL] [--no-start]
+ghost-docker install --import BUNDLE [--domain DOMAIN] [--admin-domain DOMAIN] [--email EMAIL | --no-caddy] [--no-start]
 ```
 
 | Option | Meaning |
@@ -64,6 +64,7 @@ ghost-docker install --import BUNDLE [--domain DOMAIN] [--admin-domain DOMAIN] [
 | `--domain DOMAIN` | A production site: Ghost, MySQL and Caddy with HTTPS on `DOMAIN`. Asked for at a terminal when omitted. |
 | `--admin-domain DOMAIN` | A separate Ghost Admin domain. Production only. |
 | `--email EMAIL` | The email Caddy registers with Let's Encrypt, which sends expiry notices to it. Production only; optional. |
+| `--no-caddy` | A production site behind your own nginx or Apache: no Caddy, and 80 and 443 left to your proxy. See [Your own proxy](#your-own-proxy). |
 | `--name NAME` | The site's `COMPOSE_PROJECT_NAME`: lowercase letters, digits and dashes, at most 45 characters. Default: `ghost-example-com` in production, a generated `ghost-local-...` name locally. |
 | `--port PORT` | The loopback port Ghost is published on. Default: the first free port at or above 2368. |
 | `--version VERSION` | A Ghost version (`6.61.0`) or a full `next` image tag (`6-next-alpine`), pinned to its exact digest. |
@@ -87,12 +88,12 @@ Exit statuses: `0` installed, `1` failed, `2` a usage error.
 
 | Service | For | What it does |
 | --- | --- | --- |
-| `--with activitypub` | Production | Runs the site's own ActivityPub service and database, routed through Caddy. |
+| `--with activitypub` | Production, with Caddy | Runs the site's own ActivityPub service and database, routed through Caddy. |
 | `--with mailpit` | Local | Sends Ghost's mail (invites, password resets, sign-in links) to a [Mailpit](https://mailpit.axllent.org) inbox at `http://127.0.0.1:MAILPIT_PORT` (`./ghost-docker info` shows it). Newsletters go through Mailgun's API, so Mailpit never sees them. |
 | `--with supervisor` | Either | Lets Ghost Admin run Ghost updates within the site's major version, each with a checked backup first. Needs Ghost 6.72.0 or later; refused under rootless Docker. See [upgrade-supervisor.md](upgrade-supervisor.md). |
 
-ActivityPub and analytics need Caddy's routes, so a local site cannot select
-them; Mailpit would catch a production site's real mail, so a production site
+ActivityPub and analytics need Caddy's routes, so a local site, or one
+installed `--no-caddy`, cannot select them; Mailpit would catch a production site's real mail, so a production site
 cannot select it.
 
 **Analytics** is added after installation, because its Tinybird login is
@@ -221,7 +222,9 @@ curl -fsSL https://docker.ghost.org/install.sh | bash -s -- install --import ~/m
 ```
 
 - **Stop nginx yourself.** If it serves other sites too, move those first, or
-  keep the source (see [Ports](#ports-and-your-existing-proxy)).
+  keep nginx and import with `--no-caddy`: then stop only the source, and
+  point its server block at the new site's port ([Your own
+  proxy](#your-own-proxy)).
 - DNS already points here; Caddy gets its own certificate when it starts.
 - **If the import fails:** `sudo systemctl start nginx`, then `ghost start` in
   the source. The bundle is unchanged, so you can retry.
@@ -281,19 +284,33 @@ directory, with `sudo` because MySQL owns `data/mysql`. For the real move, expor
 - A port `install` chooses skips ports other containers publish, and on
   macOS ports other programs hold too. A busy port you ask for with `--port`
   is an error.
-- A production site needs 80 and 443. If anything holds them, installation
-  fails, names the port, and leaves the directory as it was.
+- A production site needs 80 and 443 for Caddy. If anything holds them,
+  installation fails, names the port, and leaves the directory as it was. A
+  site installed `--no-caddy` does not use them.
 
 **On Linux, use Docker Engine 28 or later.** Ghost (and Mailpit) are published
 on `127.0.0.1` only, but older engines let other machines on the local network
-reach those ports, and so Ghost around Caddy. `doctor` and `check` warn about
+reach those ports, and so Ghost around Caddy or your own proxy. `doctor` and `check` warn about
 such an engine. Docker Desktop, OrbStack and rootless Docker are not affected.
 
-To run Ghost behind your own nginx or Apache instead, point it at
-`127.0.0.1:${GHOST_PORT}` and drop the `caddy` service from `compose.yml` or
-move it off 80/443. That is an unsupported customization, and stack updates
-may touch `compose.yml`; see
-[configuration.md](configuration.md#site-modes-and-profiles).
+### Your own proxy
+
+If nginx or Apache already serves this host, install without Caddy, as
+Ghost-CLI's `ghost install --no-setup-nginx --no-setup-ssl` did:
+
+```bash
+curl -fsSL https://docker.ghost.org/install.sh | bash -s -- install --domain example.com --no-caddy
+```
+
+Ghost is published on `127.0.0.1:PORT`, which the summary names, and your
+proxy serves the domain over HTTPS and passes requests there with `Host`,
+`X-Forwarded-For` and **`X-Forwarded-Proto: https`**. Without that last
+header Ghost redirects every request to HTTPS, in a loop, and treats the
+connection as insecure, which breaks its secure cookies. The nginx server block, the Apache directives, and what is
+refused (ActivityPub and analytics) are in
+[configuration.md](configuration.md#your-own-proxy). The manager does not
+configure or check your proxy; `check` verifies Ghost and reports the ingress
+as yours.
 
 How ports are detected on each platform: [Ports](reference.md#ports).
 

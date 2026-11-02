@@ -51,6 +51,38 @@ export type ConfigFile = (typeof CONFIG_FILES)[number];
 export const SITE_MODES = ['local', 'production'] as const;
 export type SiteMode = (typeof SITE_MODES)[number];
 
+/**
+ * A production site behind the operator's own proxy (nginx, Apache) on the
+ * host: Ghost and MySQL, no Caddy. Its mode is production.
+ */
+export const PROXY_PROFILE = 'proxy';
+
+/** The profiles that select a site's mode, and the mode each selects. */
+const MODE_PROFILES: Readonly<Record<string, SiteMode>> = {
+    local: 'local',
+    production: 'production',
+    [PROXY_PROFILE]: 'production',
+};
+export const MODE_PROFILE_NAMES = Object.keys(MODE_PROFILES);
+
+/**
+ * What a directory's files are for: a site of either mode, or a production
+ * site behind the operator's own proxy. The stack files each one needs differ
+ * (payload.ts), and only a production layout has Caddy.
+ */
+export type Layout = SiteMode | typeof PROXY_PROFILE;
+
+/** The layout COMPOSE_PROFILES selects; a production one unless it says otherwise. */
+export function layoutOf(profiles: string): Layout {
+    const selected = splitProfiles(profiles);
+    for (const layout of [PROXY_PROFILE, 'local'] as const) {
+        if (selected.includes(layout)) {
+            return layout;
+        }
+    }
+    return 'production';
+}
+
 /** Additive, per-site. `supervisor` runs the upgrade supervisor (docs/upgrade-supervisor.md). */
 export const OPTIONAL_PROFILES = ['analytics', 'activitypub', 'mailpit', 'supervisor'] as const;
 
@@ -66,13 +98,22 @@ export const LOCAL_ONLY_PROFILES = ['mailpit'] as const;
  */
 export const PRODUCTION_ONLY_PROFILES = ['analytics', 'activitypub'] as const;
 
-/** Why a site of `mode` must not select `profile`, or null when it may. */
-export function profileConflict(mode: SiteMode, profile: string): string | null {
-    if (mode === 'production' && (LOCAL_ONLY_PROFILES as readonly string[]).includes(profile)) {
+/** Why a site of `layout` must not select `profile`, or null when it may. */
+export function profileConflict(layout: Layout, profile: string): string | null {
+    if (layout !== 'local' && (LOCAL_ONLY_PROFILES as readonly string[]).includes(profile)) {
         return "is for local sites only: it would catch a production site's real mail";
     }
-    if (mode === 'local' && (PRODUCTION_ONLY_PROFILES as readonly string[]).includes(profile)) {
+    if (layout === 'local' && (PRODUCTION_ONLY_PROFILES as readonly string[]).includes(profile)) {
         return 'is for production sites only: a local site has no Caddy to route to it';
+    }
+    if (
+        layout === PROXY_PROFILE &&
+        (PRODUCTION_ONLY_PROFILES as readonly string[]).includes(profile)
+    ) {
+        return (
+            "needs Caddy's routes, and this site is behind your own proxy, which the manager\n" +
+            '  does not configure; see docs/configuration.md#your-own-proxy'
+        );
     }
     return null;
 }
@@ -89,17 +130,17 @@ export const splitProfiles = (profiles: string): string[] =>
  * none or more than one. Optional profiles never select a mode.
  */
 export function siteMode(profiles: string): SiteMode | null {
-    const modes = splitProfiles(profiles).filter((profile): profile is SiteMode =>
-        (SITE_MODES as readonly string[]).includes(profile),
+    const modes = splitProfiles(profiles).filter((profile) =>
+        Object.hasOwn(MODE_PROFILES, profile),
     );
-    return modes.length === 1 ? modes[0]! : null;
+    return modes.length === 1 ? MODE_PROFILES[modes[0]!]! : null;
 }
 
 /** Profiles that are neither a site mode nor a known optional profile. */
 export const unknownProfiles = (profiles: string): string[] =>
     splitProfiles(profiles).filter(
         (profile) =>
-            !(SITE_MODES as readonly string[]).includes(profile) &&
+            !Object.hasOwn(MODE_PROFILES, profile) &&
             !(OPTIONAL_PROFILES as readonly string[]).includes(profile),
     );
 
@@ -135,7 +176,7 @@ export function generatedSettings(input: {
     >;
     readonly port: number;
     readonly mailpitPort: number | null;
-    /** Caddy's, written for a production site. */
+    /** Caddy's, written for a production site with Caddy. */
     readonly ports: { readonly http: string; readonly https: string };
     readonly database: {
         readonly user: string;
@@ -145,6 +186,7 @@ export function generatedSettings(input: {
 }): [string, string][] {
     const { ghost, database } = input;
     const production = input.mode === 'production';
+    const caddy = layoutOf(input.profiles.join(',')) === 'production';
     return Object.entries({
         COMPOSE_PROFILES: input.profiles.join(','),
         SITE_MODE: input.mode,
@@ -161,7 +203,7 @@ export function generatedSettings(input: {
         GHOST_PORT: String(input.port),
         ...(input.mailpitPort === null ? {} : { MAILPIT_PORT: String(input.mailpitPort) }),
         RESTART_POLICY: production ? 'unless-stopped' : 'no',
-        ...(production ? { HTTP_PORT: input.ports.http, HTTPS_PORT: input.ports.https } : {}),
+        ...(caddy ? { HTTP_PORT: input.ports.http, HTTPS_PORT: input.ports.https } : {}),
         DATABASE_HOST: 'db',
         DATABASE_PORT: '3306',
         DATABASE_NAME: 'ghost',
@@ -184,6 +226,8 @@ export const hostOf = (url: string): string => {
 export interface SiteFacts {
     readonly dir: string;
     readonly mode: SiteMode | null;
+    /** Whether Caddy serves it ('production'), or the operator's own proxy ('proxy'). */
+    readonly layout: Layout;
     /** The hosts of URL and ADMIN_URL: what Caddy should serve, in production. */
     readonly domain: string;
     readonly adminDomain: string;
@@ -196,6 +240,7 @@ export function siteFacts(dir: string, settings: SiteSettings): SiteFacts {
         dir,
         settings,
         mode: siteMode(value('COMPOSE_PROFILES')),
+        layout: layoutOf(value('COMPOSE_PROFILES')),
         domain: hostOf(value('URL')),
         adminDomain: hostOf(value('ADMIN_URL')),
     };
