@@ -666,6 +666,66 @@ describe('the writers through an update', () => {
     });
 });
 
+describe('a production site, with its own Caddy', () => {
+    beforeEach(async () => {
+        // Installed from the first release again, as production.
+        for (const entry of readdirSync(h.dir)) {
+            rmSync(join(h.dir, entry), { recursive: true, force: true });
+        }
+        release('v0.1.0-beta.1');
+        managerId = FIRST;
+        const installed = await h.run('install', '--domain', 'example.com', '--no-start');
+        assert.equal(installed.code, 0, installed.stderr);
+        writeSiteData(h.dir);
+        site.running.add('ghost').add('db').add('caddy');
+        compose.length = 0;
+
+        // A release that changes only a file Caddy mounts: `up` leaves Caddy as it is.
+        release('v0.1.0-beta.2');
+        managerId = SECOND;
+        appendFileSync(join(stack, 'caddy', 'Caddyfile'), '# changed in beta.2\n');
+    });
+
+    const reloads = () => compose.filter((args) => args[0] === 'exec' && args.includes('reload'));
+
+    test('Caddy loads the release’s configuration once the services are up', async () => {
+        const result = await update();
+        assert.equal(result.code, 0, result.stderr);
+        assert.equal(
+            readSite('caddy/Caddyfile'),
+            readFileSync(join(stack, 'caddy', 'Caddyfile'), 'utf8'),
+        );
+        assert.deepEqual(reloads(), [
+            ['exec', '-T', 'caddy', 'caddy', 'reload', '--config', '/etc/caddy/Caddyfile'],
+        ]);
+        const commands = compose.map((args) => args[0]);
+        assert.ok(commands.lastIndexOf('up') < commands.lastIndexOf('exec'));
+        assert.match(result.stdout, /caddy +its configuration loaded/);
+        assert.equal(metadata().stack.version, 'v0.1.0-beta.2');
+    });
+
+    test('a configuration Caddy refuses fails the update, which puts the files back', async () => {
+        const before = siteOnly();
+        site.reloads = [
+            failed(1, 'Error: adapting config using caddyfile: unrecognized directive'),
+        ];
+        const result = await update();
+        assert.equal(result.code, 1);
+        assert.match(
+            result.stderr,
+            /Caddy did not load its configuration, and keeps serving the one it had: Error: adapting config using caddyfile: unrecognized directive/,
+        );
+        assert.match(result.stderr, /The files are v0\.1\.0-beta\.1's again\./);
+        assert.match(result.stderr, /the update failed, and the site needs the operator/);
+        assert.deepEqual(siteOnly(), before);
+        assert.equal(metadata().stack.version, 'v0.1.0-beta.1');
+        assert.equal(pinnedImage(), FIRST);
+        // Stopped, Caddy among them: started again, it reads the files as they were.
+        assert.deepEqual([...site.running], []);
+        assert.equal(reloads().length, 1);
+    });
+});
+
 describe('a checkout', () => {
     let gitCalls: string[][];
 

@@ -47,6 +47,9 @@ docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile
 A reload loads the new configuration whole or not at all: if it does not
 load, Caddy says why and keeps serving the previous one. Production uses an
 explicit reload; Caddy documents `--watch` as a local development feature.
+An update (`self-update`, `update`) reloads Caddy once the services are up,
+so it loads what the files say then, edits not yet reloaded included; a
+configuration Caddy refuses fails the update.
 
 The changes people make most often, inside the site's block:
 

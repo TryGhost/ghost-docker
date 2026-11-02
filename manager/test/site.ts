@@ -401,6 +401,8 @@ export interface ScriptedSite {
     downs: ProgramResult[];
     /** What each `up --no-recreate`, starting stopped services again, answers; then success. */
     resumes: ProgramResult[];
+    /** What each `caddy reload` answers, in order; then success. */
+    reloads: ProgramResult[];
     /** The services running: what `up` started, until `down` or `stop`; none at first. */
     readonly running: Set<string>;
     /** Ghost's database, table by table, as the site's MySQL holds it. */
@@ -439,6 +441,7 @@ export function scriptSite(
         ups: [],
         downs: [],
         resumes: [],
+        reloads: [],
         running: new Set(),
         rows: { posts: 3, users: 1, migrations: 120 },
         onUp: () => {},
@@ -530,6 +533,9 @@ export function scriptSite(
                         .join('\n') + '\n',
                 );
             case 'exec':
+                if (args.includes('reload')) {
+                    return site.reloads.shift() ?? ok('');
+                }
                 if ((args[args.indexOf('-c') + 1] ?? '').includes('mysqldump')) {
                     dumped = { ...site.rows };
                     return ok(SITE_DUMP);
