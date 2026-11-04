@@ -16,8 +16,8 @@ happens underneath them.
    path), and disk and memory, which warn rather than refuse.
 3. **Ports Docker knows about.** The default port skips any that a container
    publishes. An explicit `--port`, or 80 and 443 for a production site with
-   Caddy, that
-   a container publishes is an error naming the container. Nothing is
+   a Caddy of its own, that a container publishes is an error naming the
+   container. Nothing is
    stopped. Ports held by anything else are found when the services start;
    see [Ports](#ports).
 4. **The exact Ghost image.** The requested tag is pulled, and the pulled
@@ -41,6 +41,15 @@ happens underneath them.
    the site's domains, its network aliases and every snippet argument. It is
    yours from then on; see [caddy.md](caddy.md). With `--no-caddy`, nothing:
    the routing is your proxy's ([configuration.md](configuration.md#your-own-proxy)).
+   On a server with [the shared Caddy](caddy.md#the-shared-caddy), the site
+   selects the `shared-caddy` profile instead of `production` and has no Caddy
+   of its own: the routes are written to the shared Caddy's
+   `caddy/sites/<project>.caddy`, through its running container, as the owner
+   of that directory, then Caddy validates its whole configuration and
+   reloads. Before anything is written, a shared Caddy that is not running, a
+   project that already has routes there, and a domain it already serves are
+   refused; routes Caddy does not accept are removed again. A `--no-caddy`
+   site never joins the shared Caddy.
 8. **Metadata**: `.ghost-docker.json`, described in
    [architecture.md](architecture.md#installation-metadata).
 9. **Start and verify**, unless `--no-start`: `docker compose up --wait`, so
@@ -50,11 +59,40 @@ happens underneath them.
    running container is not readiness.
 
 **A failed installation removes what it created** — containers, network,
-volumes, the data directories, `.env`, `ghost.env`, the metadata and the
-written stack files — so the same command can simply be run again in the same
+volumes, the data directories, `.env`, `ghost.env`, the metadata, the
+written stack files and the site's routes in the shared Caddy — so the same command can simply be run again in the same
 directory. That covers a port conflict, a failed pull, a service that never
 becomes healthy, and a site that starts but cannot be reached. Before removing
 anything it prints the services' last log lines.
+
+### install --infra
+
+Sets up [the shared Caddy](caddy.md#the-shared-caddy) in an empty directory:
+`compose.yml`, `caddy/` and the launcher, an `.env` selecting the `infra`
+profile, and the network `ghost-ingress`, labelled with the directory and
+project, which no Compose project owns. It takes no site options, and writes
+no `ghost.env` or data directories: there is no Ghost. Its metadata records
+the `infra` mode, no Ghost, and the stack files, for `self-update`. It refuses a
+daemon that already has the network, and 80 and 443 held by a container.
+Caddy must start and pass its health check; a failure removes everything,
+the network included. Site commands (`check`, `backup`, `update`, `restore`,
+`remove`, ...) refuse its directory; `config`, `info` and `self-update` work
+there. Its `self-update` takes no backup and pauses no writers: it writes the
+release's files, recreates Caddy and waits for its health check, and on a
+failure puts the files back and starts the previous Caddy (see
+[caddy.md](caddy.md#restarting-and-updating-it)).
+
+## remove
+
+`./ghost-docker remove [--yes]` takes the site in this directory down and
+leaves everything else on the server as it was. Behind the shared Caddy, it
+first removes the site's `caddy/sites/<project>.caddy` there and reloads the
+shared Caddy, which must be running. Then `docker compose down` removes the
+site's containers and networks; its volumes, directory, data and backups
+stay, and `docker compose up -d` starts it again (behind the shared Caddy,
+once its routes are back). It asks first, at a terminal; without one it needs
+`--yes`. It holds the site's lock, so it is refused while a backup, restore or
+update runs.
 
 ## How a site is verified
 
@@ -71,6 +109,7 @@ Each answer is reported for what it is:
 | https | An HTTPS request to Caddy's container for Ghost's `/ghost/api/admin/site/`, with the domain as its server name and Host, as a browser asks. **serving** means this site's Ghost answered through Caddy: Ghost reports its site's URL, and that must be the site's `URL` (by either name, the canonical one, not the admin domain). It names the certificate's issuer and expiry; a certificate from a CA browsers do not trust (staging, or Caddy's internal CA) is a `warning`. **pending** means Caddy has no certificate for the name yet, so Ghost could not be asked through it: Caddy obtains one once the domain's DNS reaches this host, `./ghost-docker check` reports the change, and `docker compose logs caddy` shows each attempt. Caddy answering with something other than Ghost (a broken route, a 502), another site's Ghost (a route to the wrong upstream), or an out-of-date certificate, is an `ERROR`. | `ok`, `warning`, `note` or `ERROR` |
 | admin https | With an admin domain of its own: the same, for that name. Ghost reached by the admin domain still reports the site's `URL`, which is what is checked. On the site's domain, Ghost answering the Admin API path with a redirect to the admin domain counts as Ghost answering; the admin domain's own answer then names the site. | `ok`, `warning`, `note` or `ERROR` |
 | ingress | With `--no-caddy` (the `no-caddy` profile), in place of **caddy** and **https**: the site is served by your own proxy, which the manager cannot reach from its container, so it is not checked. The note names the URL and the loopback port the proxy must pass it to with `X-Forwarded-Proto: https`. | `note` |
+| shared caddy, routes | Behind [the shared Caddy](caddy.md#the-shared-caddy), in place of **caddy**: the shared Caddy's health check, from its container, and that its `caddy/sites/<project>.caddy` exists. A server without the shared Caddy's network is an `ERROR`. **https** then asks the shared Caddy, on its network. | `ok` or `ERROR` |
 | mailpit | With `--with mailpit`: its health check. The check names `mailpit-${COMPOSE_PROJECT_NAME}:1025`, where Ghost sends mail. | `ok` or `ERROR` |
 | published ports | The ports Docker says it published. A container cannot reach the host's own loopback interface, so they are not checked from there (the **https** request goes to Caddy's container, not to the host's ports): opening the URL is that check. | `note` |
 
@@ -98,8 +137,8 @@ offered; for a private name, put `tls internal` in a `caddy/custom/` file.
   records its port, and a new site may be given the same one.
 - A port you *asked for* does not: `--port` on a busy port is an error, because
   a site at an address nothing else expects is worse than a refusal.
-- A production site needs 80 and 443 for Caddy; one installed `--no-caddy`
-  does not. If a container holds them, installation
+- A production site needs 80 and 443 for Caddy; one installed `--no-caddy`,
+  or behind the shared Caddy, does not. If a container holds them, installation
   stops before writing anything and names it. If another program holds them,
   Docker refuses to start Caddy; the error names the port, says nothing that
   was running was stopped, and the directory is as it was.
@@ -363,6 +402,7 @@ self-update. Compose files you used with `-f` by hand, such as
 | `database/ghost.sql` | A `mysqldump` of Ghost's database, taken as the site's own database user in one consistent snapshot. |
 | `database/activitypub.sql` | ActivityPub's database, when the `activitypub` profile is on. |
 | `content.tar.gz` | The content directory, `data/ghost`: images, media, files, themes, settings. |
+| `routes.caddy` | Behind the shared Caddy: the site's routes, its `caddy/sites/<project>.caddy` there, without the marker line its install wrote. When the shared Caddy cannot be read, the backup warns and holds none. |
 | `site/` | `.env`, `ghost.env`, `.ghost-docker.json`, `compose.override.yml` and the overrides `COMPOSE_FILE` names, `caddy/sites/`, `caddy/custom/`, `caddy/global/` and, for a site installed from the image, the stack's files and the launcher the site ran. |
 
 A backup is **checked** before it counts as one: every dump is loaded into a
@@ -374,8 +414,9 @@ is an error, not a backup:** `backup` exits `1` and leaves nothing in
 `backups/`.
 
 What a backup cannot hold is named in its manifest and in the summary:
-Caddy's certificates, which Caddy obtains again when the site starts; the
-Tinybird workspace and analytics data outside the site; Mailpit's inbox.
+Caddy's certificates, which Caddy obtains again when the site starts (behind
+the shared Caddy, its own configuration and certificates); the Tinybird
+workspace and analytics data outside the site; Mailpit's inbox.
 
 ### What a backup captures
 
@@ -446,7 +487,10 @@ In order:
    project and busy ports are refused, named, and never stopped. The
    backup's configuration (for a clone, with the clone's `compose.yml`) is
    resolved outside the site, and must name exactly the images the backup
-   records and mount the data where restore loads it. Nothing has changed.
+   records and mount the data where restore loads it. Behind the shared
+   Caddy, it must be running; routes it already has for the project are kept,
+   and otherwise the backup must hold them, for domains it does not already
+   serve. Nothing has changed.
 2. **The lock**, then every image the backup records is pulled before anything
    stops, and each service that was running must get, by its image ID or a
    registry digest, the very image it ran. A reference that names another
@@ -466,6 +510,8 @@ In order:
 5. **The databases.** MySQL starts on an empty data directory, which creates
    the site's databases and user from the restored `.env`; each dump is loaded
    as the site's user, and every table's rows must match the manifest.
+   Behind the shared Caddy, the backup's routes, when it has none for the
+   project, are written into it, validated and loaded, as an install's are.
 6. **Start and verify.** `up --wait`, then the site is verified through its
    ingress as `check` does. `.ghost-docker-restore/` is removed.
 

@@ -3,7 +3,7 @@
 import { join } from 'node:path';
 import { z } from 'zod';
 import { atomicWrite, PRIVATE, readIfExists } from './fs.ts';
-import { META_FILE, OPERATOR_FILES, SITE_MODES } from './site.ts';
+import { INFRA_PROFILE, META_FILE, OPERATOR_FILES, SITE_MODES } from './site.ts';
 import { CliError } from './errors.ts';
 
 export const SCHEMA_VERSION = 1;
@@ -11,12 +11,12 @@ export const SCHEMA_VERSION = 1;
 /** A field nobody supplied is null, so "not known" and "empty" stay distinct. */
 const nullable = z.string().min(1).nullable();
 
-export const metadataSchema = z.strictObject({
+/** What a site's and the shared Caddy's metadata have alike. */
+const common = {
     schemaVersion: z.literal(SCHEMA_VERSION),
     installedAt: z.iso.datetime(),
     /** When `self-update` last completed; null until it has. */
     updatedAt: z.iso.datetime().nullable(),
-    mode: z.enum(SITE_MODES),
     channel: z.enum(['stable', 'beta', 'edge']).nullable(),
     // `image`: the payload was written from the manager image. `checkout`: the
     // site is a clone of the repository and its files are used in place.
@@ -32,6 +32,18 @@ export const metadataSchema = z.strictObject({
          */
         previous: z.strictObject({ version: nullable, image: nullable }).nullable(),
     }),
+    profiles: z.array(z.string().min(1)),
+    /**
+     * SHA-256 of every file the manager wrote from the image's payload, by
+     * path relative to the site. An update replaces an untouched file and
+     * never silently replaces an edited one (docs/architecture.md#releases-and-compatibility). Empty in clone mode.
+     */
+    payload: z.record(z.string(), z.string().regex(/^[0-9a-f]{64}$/)),
+};
+
+export const metadataSchema = z.strictObject({
+    ...common,
+    mode: z.enum(SITE_MODES),
     site: z.strictObject({
         project: z.string().min(1),
         dir: z.string().startsWith('/'),
@@ -45,16 +57,33 @@ export const metadataSchema = z.strictObject({
         version: z.string().min(1),
         digest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
     }),
-    profiles: z.array(z.string().min(1)),
-    /**
-     * SHA-256 of every file the manager wrote from the image's payload, by
-     * path relative to the site. An update replaces an untouched file and
-     * never silently replaces an edited one (docs/architecture.md#releases-and-compatibility). Empty in clone mode.
-     */
-    payload: z.record(z.string(), z.string().regex(/^[0-9a-f]{64}$/)),
 });
 
+/**
+ * The shared Caddy's directory (shared.ts): the stack files and launcher
+ * `self-update` keeps current, and no site or Ghost.
+ */
+export const infraMetadataSchema = z.strictObject({
+    ...common,
+    mode: z.literal(INFRA_PROFILE),
+    site: z.strictObject({
+        project: z.string().min(1),
+        dir: z.string().startsWith('/'),
+    }),
+    ghost: z.null(),
+});
+
+/** A site's metadata: what every command about a site works from. */
 export type Metadata = z.infer<typeof metadataSchema>;
+export type InfraMetadata = z.infer<typeof infraMetadataSchema>;
+/** Whatever `.ghost-docker.json` holds. */
+export type AnyMetadata = Metadata | InfraMetadata;
+
+/** The schema a document's `mode` selects, so a mismatch names its fields. */
+const schemaOf = (document: unknown) =>
+    (document as { mode?: unknown } | null)?.mode === INFRA_PROFILE
+        ? infraMetadataSchema
+        : metadataSchema;
 
 /** A moment as metadata, locks and backups record it: ISO 8601 to the second. */
 export const isoSeconds = (date = new Date()): string =>
@@ -66,6 +95,11 @@ export const isoSeconds = (date = new Date()): string =>
  */
 export function requireMetadata(dir: string, why: string): Metadata {
     const read = readMetadata(dir);
+    if (read.state === 'present' && read.metadata.mode === INFRA_PROFILE) {
+        throw new CliError(
+            `${dir} holds the shared Caddy, not a site, and ${why}. Nothing has been changed.`,
+        );
+    }
     if (read.state === 'absent') {
         throw new CliError(
             `${dir} has no ${META_FILE}, so it was not installed by ./ghost-docker install, and ${why}.\n` +
@@ -75,7 +109,7 @@ export function requireMetadata(dir: string, why: string): Metadata {
     if (read.state === 'invalid') {
         throw new CliError(`${read.reason}. Nothing has been changed.`);
     }
-    return read.metadata;
+    return read.metadata as Metadata;
 }
 
 /**
@@ -86,7 +120,7 @@ export function requireMetadata(dir: string, why: string): Metadata {
  * images this one did.
  */
 export const siteFiles = (
-    metadata: Metadata | null,
+    metadata: Pick<AnyMetadata, 'source' | 'payload'> | null,
     overrides: readonly string[] = [],
 ): string[] => [
     ...new Set([
@@ -98,7 +132,7 @@ export const siteFiles = (
 
 export type MetadataRead =
     | { state: 'absent' }
-    | { state: 'present'; metadata: Metadata }
+    | { state: 'present'; metadata: AnyMetadata }
     | { state: 'invalid'; reason: string };
 
 export const metaPath = (dir: string): string => join(dir, META_FILE);
@@ -128,7 +162,7 @@ export function readMetadata(dir: string): MetadataRead {
                     : ''),
         };
     }
-    const parsed = metadataSchema.safeParse(document);
+    const parsed = schemaOf(document).safeParse(document);
     if (!parsed.success) {
         const where = parsed.error.issues.map((issue) => issue.path.join('.') || '(root)');
         return {
@@ -167,13 +201,42 @@ export function installationMetadata(
     };
 }
 
+/** The shared Caddy's metadata as `install --infra` first writes it. */
+export function infraMetadata(input: {
+    readonly channel: InfraMetadata['channel'];
+    readonly source: InfraMetadata['source'];
+    readonly stack: { readonly version: string | null; readonly image: string | null };
+    readonly project: string;
+    readonly dir: string;
+    readonly payload: Record<string, string>;
+}): InfraMetadata {
+    return {
+        schemaVersion: SCHEMA_VERSION,
+        installedAt: isoSeconds(),
+        updatedAt: null,
+        mode: INFRA_PROFILE,
+        channel: input.channel,
+        source: input.source,
+        stack: {
+            version: input.stack.version,
+            ref: input.source === 'checkout' ? null : input.stack.version,
+            image: input.stack.image,
+            previous: null,
+        },
+        site: { project: input.project, dir: input.dir },
+        ghost: null,
+        profiles: [INFRA_PROFILE],
+        payload: input.payload,
+    };
+}
+
 /**
  * Validated before it is written, so a bad document never replaces a good
  * one. Two writes of the same document are the same bytes: the parse orders
  * the objects' keys as the schema does, and `payload`, a record, is sorted.
  */
-export function writeMetadata(dir: string, metadata: Metadata): void {
-    const valid = metadataSchema.parse(metadata);
+export function writeMetadata(dir: string, metadata: AnyMetadata): void {
+    const valid = schemaOf(metadata).parse(metadata);
     valid.payload = Object.fromEntries(
         Object.entries(valid.payload).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
     );
@@ -203,10 +266,14 @@ export function describeMetadata(read: MetadataRead): string[] {
         ...(m.stack.previous ? [`previous       ${unknown(m.stack.previous.version)}`] : []),
         `project        ${m.site.project}`,
         `directory      ${m.site.dir}`,
-        `url            ${m.site.url}`,
-        ...(m.site.adminDomain ? [`admin domain   ${m.site.adminDomain}`] : []),
-        `ghost          ${m.ghost.version} (${m.ghost.image}:${m.ghost.tag})`,
-        `ghost image    ${m.ghost.image}@${m.ghost.digest}`,
+        ...(m.mode === INFRA_PROFILE
+            ? ['the shared Caddy: no site, and no Ghost']
+            : [
+                  `url            ${m.site.url}`,
+                  ...(m.site.adminDomain ? [`admin domain   ${m.site.adminDomain}`] : []),
+                  `ghost          ${m.ghost.version} (${m.ghost.image}:${m.ghost.tag})`,
+                  `ghost image    ${m.ghost.image}@${m.ghost.digest}`,
+              ]),
         `profiles       ${m.profiles.join(',')}`,
     ];
 }

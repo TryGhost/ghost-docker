@@ -1,0 +1,909 @@
+// The shared Caddy, against a scripted daemon and Compose: `install --infra`,
+// a production install joining it, the refusals before anything is written,
+// and `list`, `check`, `remove` and `config validate` knowing about it. What
+// the real Caddy does with the routes is test/integration/shared.test.ts, and
+// several sites on one server tests/e2e/shared-caddy.sh.
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, test } from 'node:test';
+import * as env from '../src/env.ts';
+import { payloadFiles } from '../src/payload.ts';
+import { layoutOf, readSettings, siteFacts, siteMode } from '../src/site.ts';
+import { verifyIngress } from '../src/verify.ts';
+import { failed, harness, ok, type Harness } from './helpers.ts';
+import { CADDY, fakeShared, sharedApi, type FakeShared } from './shared-caddy.ts';
+import { imageApi, imageStack, rootContainer } from './site.ts';
+
+let h: Harness;
+let shared: FakeShared;
+let compose: string[][];
+let ps: () => string;
+beforeEach(() => {
+    h = harness();
+    imageStack(h);
+    shared = fakeShared();
+    compose = [];
+    ps = () => '';
+    const images = imageApi();
+    const caddy = sharedApi(shared);
+    h.daemon.api = (request) => images(request) ?? caddy(request);
+    h.daemon.run = rootContainer;
+    h.daemon.containers = [CADDY];
+    h.daemon.composeRun = (args) => {
+        compose.push(args);
+        switch (args[0]) {
+            case 'config':
+                return ok(JSON.stringify({ services: { ghost: { environment: {} } } }));
+            case 'ps':
+                return ok(ps());
+            default:
+                return ok('');
+        }
+    };
+});
+afterEach(() => h.cleanup());
+
+const settings = () => env.toRecord(readFileSync(join(h.dir, '.env'), 'utf8'));
+const files = () =>
+    readdirSync(h.dir)
+        .filter((name) => name !== '.ghost-docker-probe')
+        .sort();
+
+describe('install --infra', () => {
+    beforeEach(() => {
+        shared.exists = false;
+        h.daemon.containers = [];
+    });
+
+    test('sets up Caddy alone, on a network no project owns, labelled with where it is', async () => {
+        ps = () =>
+            JSON.stringify({ ID: 'c', Service: 'caddy', State: 'running', Health: 'healthy' });
+        const result = await h.run('install', '--infra');
+        assert.equal(result.code, 0, result.stderr);
+        assert.deepEqual(shared.created, {
+            'org.ghost.docker.managed': 'true',
+            'org.ghost.docker.infra.dir': h.dir,
+            'org.ghost.docker.infra.project': 'ghost-infra',
+        });
+        assert.deepEqual(
+            {
+                profiles: settings().COMPOSE_PROFILES,
+                mode: settings().SITE_MODE,
+                project: settings().COMPOSE_PROJECT_NAME,
+                network: settings().INGRESS_NETWORK,
+                external: settings().INGRESS_EXTERNAL,
+                http: settings().HTTP_PORT,
+                url: settings().URL,
+            },
+            {
+                profiles: 'infra',
+                mode: 'infra',
+                project: 'ghost-infra',
+                network: 'ghost-ingress',
+                external: 'true',
+                http: '80',
+                url: undefined,
+            },
+        );
+        // Caddy's files, and nothing of a site's: no Ghost or MySQL.
+        assert.deepEqual(files(), [
+            '.env',
+            '.env.example',
+            '.ghost-docker.json',
+            'caddy',
+            'compose.ipv6.yml',
+            'compose.yml',
+            'ghost-docker',
+        ]);
+        const metadata = JSON.parse(readFileSync(join(h.dir, '.ghost-docker.json'), 'utf8'));
+        assert.equal(metadata.mode, 'infra');
+        assert.equal(metadata.ghost, null);
+        assert.deepEqual(metadata.site, { project: 'ghost-infra', dir: h.dir });
+        assert.ok(metadata.payload['caddy/Caddyfile'] && metadata.payload['ghost-docker']);
+        assert.ok(!Object.keys(metadata.payload).some((file) => file.startsWith('mysql-init/')));
+        assert.ok(existsSync(join(h.dir, 'caddy', 'sites')));
+        assert.ok(compose.some((args) => args[0] === 'up'));
+        assert.match(result.stdout, /The shared Caddy is installed/);
+    });
+
+    test('a server has one: a second is refused before anything is written', async () => {
+        shared.exists = true;
+        const result = await h.run('install', '--infra');
+        assert.equal(result.code, 1);
+        assert.match(result.stderr, /already has the shared Caddy in \/srv\/caddy/);
+        assert.deepEqual(files(), []);
+    });
+
+    test('80 and 443 must be free', async () => {
+        h.daemon.containers = [{ ...CADDY, Id: 'p', Names: ['/operators-proxy'], Labels: {} }];
+        const result = await h.run('install', '--infra');
+        assert.equal(result.code, 1);
+        assert.match(
+            result.stderr,
+            /port 80 is already in use by the Docker container operators-proxy/,
+        );
+        assert.equal(shared.created, null);
+    });
+
+    test('it takes no site options', async () => {
+        const result = await h.run(
+            'install',
+            '--infra',
+            '--domain',
+            'example.com',
+            '--with',
+            'activitypub',
+        );
+        assert.equal(result.code, 2);
+        assert.match(
+            result.stderr,
+            /--infra sets up the shared Caddy alone, so it takes no --domain, --with/,
+        );
+    });
+
+    test('it is Caddy, so it takes no --no-caddy', async () => {
+        const result = await h.run('install', '--infra', '--no-caddy');
+        assert.equal(result.code, 2);
+        assert.match(result.stderr, /so it takes no --no-caddy/);
+    });
+
+    test('a failed start removes the network with everything else', async () => {
+        h.daemon.composeRun = (args) =>
+            args[0] === 'up' ? failed(1, 'Bind for 0.0.0.0:80 failed') : ok('');
+        const result = await h.run('install', '--infra');
+        assert.equal(result.code, 1);
+        assert.equal(shared.exists, false);
+        assert.deepEqual(files(), []);
+    });
+
+    test('a network another installation created meanwhile is not removed', async () => {
+        shared.raced.network = true;
+        const result = await h.run('install', '--infra');
+        assert.equal(result.code, 1);
+        assert.equal(shared.exists, true);
+        assert.deepEqual(files(), []);
+    });
+});
+
+describe('self-update of the shared Caddy', () => {
+    const FIRST = `sha256:${'2'.repeat(64)}`;
+    const SECOND = `sha256:${'3'.repeat(64)}`;
+    let manager: string;
+    let up: () => ReturnType<typeof ok>;
+    const release = (version: string) =>
+        writeFileSync(h.env.GD_VERSION_FILE!, JSON.stringify({ version, commit: 'c'.repeat(40) }));
+    const metadata = () => JSON.parse(readFileSync(join(h.dir, '.ghost-docker.json'), 'utf8'));
+
+    beforeEach(async () => {
+        shared.exists = false;
+        h.daemon.containers = [];
+        const stack = h.env.GD_STACK_DIR!;
+        h.env.GD_VERSION_FILE = `${stack}-version.json`;
+        manager = FIRST;
+        const images = imageApi({ manager: () => manager });
+        const caddy = sharedApi(shared);
+        h.daemon.api = (request) => images(request) ?? caddy(request);
+        up = () => ok('');
+        ps = () =>
+            JSON.stringify({ ID: 'c', Service: 'caddy', State: 'running', Health: 'healthy' });
+        h.daemon.composeRun = (args) => {
+            compose.push(args);
+            switch (args[0]) {
+                case 'config':
+                    return ok(JSON.stringify({ services: { caddy: {} } }));
+                case 'ps':
+                    return ok(ps());
+                case 'up':
+                    return up();
+                default:
+                    return ok('');
+            }
+        };
+        release('v0.1.0-beta.1');
+        h.env.GD_CHANNEL = 'beta';
+        const installed = await h.run('install', '--infra');
+        assert.equal(installed.code, 0, installed.stderr);
+        compose.length = 0;
+        // The next release: a new image, with a changed snippet.
+        release('v0.1.0-beta.2');
+        manager = SECOND;
+        writeFileSync(join(stack, 'caddy', 'snippets', 'Logging'), '# changed in beta.2\n');
+    });
+
+    test('moves its files and launcher to the release, and recreates Caddy, with no backup', async () => {
+        const result = await h.run('self-update');
+        assert.equal(result.code, 0, result.stderr);
+        assert.equal(
+            readFileSync(join(h.dir, 'caddy', 'snippets', 'Logging'), 'utf8'),
+            '# changed in beta.2\n',
+        );
+        assert.match(
+            readFileSync(join(h.dir, 'ghost-docker'), 'utf8'),
+            new RegExp(`GD_PINNED_IMAGE="${SECOND}"`),
+        );
+        const after = metadata();
+        assert.equal(after.mode, 'infra');
+        assert.deepEqual(after.stack.previous, { version: 'v0.1.0-beta.1', image: FIRST });
+        assert.equal(after.stack.version, 'v0.1.0-beta.2');
+        assert.deepEqual(
+            compose.map((args) => args[0]),
+            ['pull', 'config', 'up', 'exec', 'ps'],
+        );
+        // Serialized with the sites' route changes.
+        assert.deepEqual(
+            compose.find((args) => args[0] === 'exec'),
+            [
+                'exec',
+                '-T',
+                'caddy',
+                'flock',
+                '/etc/caddy/sites',
+                'caddy',
+                'reload',
+                '--config',
+                '/etc/caddy/Caddyfile',
+            ],
+        );
+        assert.ok(!existsSync(join(h.dir, 'backups')));
+        assert.ok(!existsSync(join(h.dir, '.ghost-docker-update')));
+        assert.ok(!existsSync(join(h.dir, '.ghost-docker.lock')));
+        assert.match(
+            result.stdout,
+            /Updated the shared Caddy from v0\.1\.0-beta\.1 to v0\.1\.0-beta\.2/,
+        );
+    });
+
+    test('--check says what it would change, and changes nothing', async () => {
+        const before = readFileSync(join(h.dir, 'caddy', 'snippets', 'Logging'), 'utf8');
+        const result = await h.run('self-update', '--check');
+        assert.equal(result.code, 0, result.stderr);
+        assert.match(result.stdout, /An update is available\. Caddy restarts with it\./);
+        assert.match(result.stdout, /caddy\/snippets\/Logging: replaced/);
+        assert.equal(readFileSync(join(h.dir, 'caddy', 'snippets', 'Logging'), 'utf8'), before);
+        assert.deepEqual(compose, []);
+    });
+
+    test("an edited file is kept, with the release's beside it", async () => {
+        writeFileSync(join(h.dir, 'caddy', 'snippets', 'Logging'), '# mine\n');
+        const result = await h.run('self-update');
+        assert.equal(result.code, 0, result.stderr);
+        assert.equal(readFileSync(join(h.dir, 'caddy', 'snippets', 'Logging'), 'utf8'), '# mine\n');
+        assert.equal(
+            readFileSync(join(h.dir, 'caddy', 'snippets', 'Logging.new'), 'utf8'),
+            '# changed in beta.2\n',
+        );
+    });
+
+    test('a Caddy that does not become healthy is put back on the files it ran', async () => {
+        const before = readFileSync(join(h.dir, 'caddy', 'snippets', 'Logging'), 'utf8');
+        let ups = 0;
+        up = () => (ups++ === 0 ? failed(1, 'container caddy is unhealthy') : ok(''));
+        const result = await h.run('self-update');
+        assert.equal(result.code, 1);
+        assert.match(result.stderr, /is back on v0\.1\.0-beta\.1, and running/);
+        assert.equal(readFileSync(join(h.dir, 'caddy', 'snippets', 'Logging'), 'utf8'), before);
+        assert.match(
+            readFileSync(join(h.dir, 'ghost-docker'), 'utf8'),
+            new RegExp(`GD_PINNED_IMAGE="${FIRST}"`),
+        );
+        assert.equal(metadata().stack.version, 'v0.1.0-beta.1');
+        assert.equal(compose.filter((args) => args[0] === 'up').length, 2);
+        assert.ok(!existsSync(join(h.dir, '.ghost-docker-update')));
+        assert.ok(!existsSync(join(h.dir, '.ghost-docker.lock')));
+    });
+
+    test('a configuration Caddy will not reload is put back, and the old one loaded again', async () => {
+        const before = readFileSync(join(h.dir, 'caddy', 'snippets', 'Logging'), 'utf8');
+        let reloads = 0;
+        h.daemon.composeRun = (args) => {
+            compose.push(args);
+            if (args[0] === 'exec') {
+                return reloads++ === 0 ? failed(1, 'adapting config: unknown directive') : ok('');
+            }
+            if (args[0] === 'config') {
+                return ok(JSON.stringify({ services: { caddy: {} } }));
+            }
+            return args[0] === 'ps' ? ok(ps()) : ok('');
+        };
+        const result = await h.run('self-update');
+        assert.equal(result.code, 1);
+        assert.match(result.stderr, /did not load its configuration[\s\S]*unknown directive/);
+        assert.match(result.stderr, /is back on v0\.1\.0-beta\.1, and running/);
+        assert.equal(readFileSync(join(h.dir, 'caddy', 'snippets', 'Logging'), 'utf8'), before);
+        assert.equal(reloads, 2);
+    });
+
+    test('images it cannot pull refuse the update before any file is written', async () => {
+        const before = readFileSync(join(h.dir, 'caddy', 'snippets', 'Logging'), 'utf8');
+        h.daemon.composeRun = (args) => {
+            compose.push(args);
+            return args[0] === 'pull' ? failed(1, 'manifest unknown') : ok('');
+        };
+        const result = await h.run('self-update');
+        assert.equal(result.code, 1);
+        assert.match(result.stderr, /could not be pulled[\s\S]*Nothing has been changed/);
+        assert.equal(readFileSync(join(h.dir, 'caddy', 'snippets', 'Logging'), 'utf8'), before);
+        assert.deepEqual(
+            compose.map((args) => args[0]),
+            ['pull'],
+        );
+        assert.equal(metadata().stack.version, 'v0.1.0-beta.1');
+    });
+
+    test("a failure before Caddy restarts reloads the old files, which a site's reload may have replaced", async () => {
+        const before = readFileSync(join(h.dir, 'caddy', 'snippets', 'Logging'), 'utf8');
+        let live = before;
+        h.daemon.composeRun = (args) => {
+            compose.push(args);
+            switch (args[0]) {
+                case 'config':
+                    // A site installs meanwhile, and its reload loads the
+                    // release's files; then the release does not validate.
+                    live = readFileSync(join(h.dir, 'caddy', 'snippets', 'Logging'), 'utf8');
+                    return failed(1, 'services.caddy: invalid');
+                case 'exec':
+                    live = readFileSync(join(h.dir, 'caddy', 'snippets', 'Logging'), 'utf8');
+                    return ok('');
+                case 'ps':
+                    return ok(ps());
+                default:
+                    return ok('');
+            }
+        };
+        const result = await h.run('self-update');
+        assert.equal(result.code, 1);
+        assert.match(
+            result.stderr,
+            /back on v0\.1\.0-beta\.1, with its configuration loaded again/,
+        );
+        assert.equal(live, before);
+        assert.equal(compose.filter((args) => args[0] === 'up').length, 0);
+        assert.deepEqual(compose.at(-1)!.slice(0, 5), [
+            'exec',
+            '-T',
+            'caddy',
+            'flock',
+            '/etc/caddy/sites',
+        ]);
+        assert.ok(!existsSync(join(h.dir, '.ghost-docker-update')));
+    });
+
+    test('a Caddy that will not reload the old files is left for the operator', async () => {
+        h.daemon.composeRun = (args) => {
+            compose.push(args);
+            if (args[0] === 'config') {
+                return failed(1, 'services.caddy: invalid');
+            }
+            return args[0] === 'exec' ? failed(1, 'container caddy is not running') : ok('');
+        };
+        const result = await h.run('self-update');
+        assert.equal(result.code, 1);
+        assert.match(result.stderr, /Caddy did not load them[\s\S]*not running/);
+        assert.ok(existsSync(join(h.dir, '.ghost-docker-update', 'files')));
+    });
+
+    test('a Caddy that will not start again either is left for the operator, with the files kept', async () => {
+        up = () => failed(1, 'Bind for 0.0.0.0:443 failed');
+        const result = await h.run('self-update');
+        assert.equal(result.code, 1);
+        assert.match(result.stderr, /Caddy did not start on them[\s\S]*may be unreachable/);
+        assert.ok(existsSync(join(h.dir, '.ghost-docker-update', 'files')));
+    });
+
+    test('files it cannot put back are left for the operator, with Caddy not started on them', async () => {
+        up = () => {
+            // A kept file Node cannot copy back.
+            const kept = join(h.dir, '.ghost-docker-update', 'files', 'compose.yml');
+            rmSync(kept);
+            execFileSync('mkfifo', [kept]);
+            return failed(1, 'container caddy is unhealthy');
+        };
+        const result = await h.run('self-update');
+        assert.equal(result.code, 1);
+        assert.match(
+            result.stderr,
+            /files could not be put back[\s\S]*\.ghost-docker-update\/files/,
+        );
+        assert.equal(compose.filter((args) => args[0] === 'up').length, 1);
+        assert.ok(existsSync(join(h.dir, '.ghost-docker-update')));
+    });
+
+    test('a project another directory owns is refused before anything is pulled', async () => {
+        h.daemon.containers = [
+            {
+                ...CADDY,
+                Labels: {
+                    ...CADDY.Labels,
+                    'com.docker.compose.project.working_dir': '/elsewhere',
+                },
+            },
+        ];
+        const result = await h.run('self-update');
+        assert.equal(result.code, 1);
+        assert.match(result.stderr, /\/elsewhere/);
+        assert.deepEqual(compose, []);
+        assert.equal(metadata().stack.version, 'v0.1.0-beta.1');
+    });
+
+    test('metadata changed while it was planned is refused under the lock', async () => {
+        const path = join(h.dir, '.ghost-docker.json');
+        manager = '';
+        const images = imageApi({
+            manager: () => {
+                const changed = metadata();
+                changed.stack.version = 'v0.1.0-beta.0';
+                writeFileSync(path, JSON.stringify(changed));
+                return SECOND;
+            },
+        });
+        const caddy = sharedApi(shared);
+        h.daemon.api = (request) => images(request) ?? caddy(request);
+        const result = await h.run('self-update');
+        assert.equal(result.code, 1);
+        assert.match(result.stderr, /changed while this update was being prepared/);
+        assert.deepEqual(compose, []);
+    });
+
+    test('site commands still refuse it', async () => {
+        for (const command of ['backup', 'update', 'check']) {
+            const result = await h.run(command);
+            assert.equal(result.code, 1, command);
+            assert.match(result.stderr, /holds the shared Caddy, not a site/, command);
+        }
+    });
+});
+
+describe('a production install on a server with the shared Caddy', () => {
+    test('joins it: no Caddy of its own, its routes in the shared Caddy, loaded', async () => {
+        const result = await h.run(
+            'install',
+            '--domain',
+            'example.com',
+            '--with',
+            'activitypub',
+            '--no-start',
+        );
+        assert.equal(result.code, 0, result.stderr);
+        const values = settings();
+        assert.equal(values.COMPOSE_PROFILES, 'shared-caddy,activitypub');
+        assert.equal(values.SITE_MODE, 'production');
+        assert.equal(values.INGRESS_NETWORK, 'ghost-ingress');
+        assert.equal(values.INGRESS_EXTERNAL, 'true');
+        assert.equal(values.HTTP_PORT, undefined);
+        assert.ok(!existsSync(join(h.dir, 'caddy')), 'a site behind it has no caddy/ of its own');
+        const routes = shared.sites.get('ghost-example-com.caddy')!;
+        assert.match(routes, /^example\.com \{$/m);
+        assert.match(routes, /reverse_proxy ghost-ghost-example-com:2368/);
+        assert.match(routes, /ActivityPub activitypub-ghost-example-com:8080/);
+        // Written as whoever owns caddy/sites/, then validated, then loaded.
+        const commands = shared.execs.map(
+            ({ cmd, user }) => `${cmd[0]} ${cmd[1]}${user ? ` as ${user}` : ''}`,
+        );
+        assert.deepEqual(commands.slice(-4), [
+            'stat -c',
+            'sh -c as 1000:1000',
+            'caddy validate',
+            'flock /etc/caddy/sites',
+        ]);
+        assert.ok(shared.hosts.has('example.com'));
+        const metadata = JSON.parse(readFileSync(join(h.dir, '.ghost-docker.json'), 'utf8'));
+        assert.equal(metadata.mode, 'production');
+        assert.ok(!Object.keys(metadata.payload).some((file) => file.startsWith('caddy/')));
+        assert.match(
+            result.stdout,
+            /Routes +\/srv\/caddy\/caddy\/sites\/ghost-example-com\.caddy, served by the shared Caddy/,
+        );
+    });
+
+    test('80 and 443 are the shared Caddy’s, and not asked for', async () => {
+        const result = await h.run('install', '--domain', 'example.com', '--no-start');
+        assert.equal(result.code, 0, result.stderr);
+    });
+
+    test('a domain it already serves is refused before anything is written', async () => {
+        shared.hosts.add('www.example.com');
+        const result = await h.run(
+            'install',
+            '--domain',
+            'blog.example.com',
+            '--admin-domain',
+            'www.example.com',
+            '--no-start',
+        );
+        assert.equal(result.code, 1);
+        assert.match(result.stderr, /already serves www\.example\.com/);
+        assert.deepEqual(files(), []);
+        assert.equal(shared.sites.size, 0);
+    });
+
+    test('a project that already has routes is refused before anything is written', async () => {
+        shared.sites.set('ghost-example-com.caddy', 'routes of another directory');
+        const result = await h.run('install', '--domain', 'example.com', '--no-start');
+        assert.equal(result.code, 1);
+        assert.match(
+            result.stderr,
+            /ghost-example-com\.caddy already exists: the project ghost-example-com already has routes/,
+        );
+        assert.match(result.stderr, /--name/);
+        assert.deepEqual(files(), []);
+        assert.equal(shared.sites.get('ghost-example-com.caddy'), 'routes of another directory');
+    });
+
+    test('routes another installation wrote meanwhile are refused, and left alone', async () => {
+        shared.raced.routes = 'routes of another directory';
+        const result = await h.run('install', '--domain', 'example.com', '--no-start');
+        assert.equal(result.code, 1);
+        assert.match(result.stderr, /could not be written to the shared Caddy/);
+        assert.equal(shared.sites.get('ghost-example-com.caddy'), 'routes of another directory');
+        assert.deepEqual(files(), []);
+    });
+
+    test('routes written with no result reported are still undone, by their marker', async () => {
+        shared.lost = true;
+        const result = await h.run('install', '--domain', 'example.com', '--no-start');
+        assert.equal(result.code, 1);
+        assert.match(result.stderr, /could not be written to the shared Caddy/);
+        assert.equal(shared.sites.size, 0);
+        assert.deepEqual(files(), []);
+    });
+
+    test("another's routes are left alone when a write's result is unknown", async () => {
+        shared.lost = true;
+        shared.raced.routes = 'routes of another directory';
+        const result = await h.run('install', '--domain', 'example.com', '--no-start');
+        assert.equal(result.code, 1);
+        assert.equal(shared.sites.get('ghost-example-com.caddy'), 'routes of another directory');
+    });
+
+    test('a stopped shared Caddy is refused, saying how to start it', async () => {
+        h.daemon.containers = [{ ...CADDY, State: 'exited' }];
+        const result = await h.run('install', '--domain', 'example.com', '--no-start');
+        assert.equal(result.code, 1);
+        assert.match(
+            result.stderr,
+            /the shared Caddy in \/srv\/caddy is not running[\s\S]*cd \/srv\/caddy && docker compose up -d/,
+        );
+        assert.deepEqual(files(), []);
+    });
+
+    test('routes Caddy refuses are removed with everything else the installation created', async () => {
+        shared.refuse = 'Error: adapting config using caddyfile: ambiguous site definition';
+        // Removed once, by addRoutes: the file is then not this install's to undo.
+        const removals = () => shared.execs.filter(({ cmd }) => cmd[0] === 'rm').length;
+        const result = await h.run('install', '--domain', 'example.com', '--no-start');
+        assert.equal(result.code, 1);
+        assert.match(
+            result.stderr,
+            /does not accept its configuration[\s\S]*ambiguous site definition/,
+        );
+        assert.equal(shared.sites.size, 0);
+        assert.deepEqual(files(), []);
+        assert.equal(removals(), 1);
+    });
+
+    test('a local site never joins it', async () => {
+        const result = await h.run('install', '--local', '--no-start');
+        assert.equal(result.code, 0, result.stderr);
+        assert.equal(settings().COMPOSE_PROFILES, 'local');
+        assert.equal(settings().INGRESS_NETWORK, undefined);
+        assert.deepEqual(shared.execs, []);
+    });
+
+    test('a site behind your own proxy never joins it', async () => {
+        const result = await h.run(
+            'install',
+            '--domain',
+            'example.com',
+            '--no-caddy',
+            '--no-start',
+        );
+        assert.equal(result.code, 0, result.stderr);
+        assert.equal(settings().COMPOSE_PROFILES, 'no-caddy');
+        assert.equal(settings().INGRESS_NETWORK, undefined);
+        assert.deepEqual(shared.execs, []);
+        assert.equal(shared.sites.size, 0);
+    });
+});
+
+describe('a server without one', () => {
+    test('a production site gets a Caddy and a network of its own, as before', async () => {
+        shared.exists = false;
+        h.daemon.containers = [];
+        const result = await h.run('install', '--domain', 'example.com', '--no-start');
+        assert.equal(result.code, 0, result.stderr);
+        assert.equal(settings().COMPOSE_PROFILES, 'production');
+        assert.equal(settings().INGRESS_NETWORK, undefined);
+        assert.ok(existsSync(join(h.dir, 'caddy', 'sites', 'site.caddy')));
+    });
+});
+
+/** A .env behind the shared Caddy, as install writes it. */
+const sharedCaddyEnv = (project = 'ghost-example-com') =>
+    writeFileSync(
+        join(h.dir, '.env'),
+        env.serializeAll([
+            ['COMPOSE_PROFILES', 'shared-caddy'],
+            ['SITE_MODE', 'production'],
+            ['COMPOSE_PROJECT_NAME', project],
+            ['PROJECT_DIR', h.dir],
+            ['URL', 'https://example.com'],
+            ['GHOST_VERSION', '6-next-alpine'],
+            ['DATABASE_PASSWORD', 'a'],
+            ['DATABASE_ROOT_PASSWORD', 'b'],
+            ['INGRESS_NETWORK', 'ghost-ingress'],
+            ['INGRESS_EXTERNAL', 'true'],
+        ]),
+        { mode: 0o600 },
+    );
+
+describe('remove', () => {
+    test("a site's routes are removed and the shared Caddy reloaded, then the site is taken down", async () => {
+        sharedCaddyEnv();
+        shared.sites.set('ghost-example-com.caddy', 'example.com {\n}\n');
+        shared.sites.set('ghost-other-com.caddy', 'other.com {\n}\n');
+        const result = await h.run('remove', '--yes');
+        assert.equal(result.code, 0, result.stderr);
+        assert.deepEqual([...shared.sites.keys()], ['ghost-other-com.caddy']);
+        assert.deepEqual(shared.execs.map(({ cmd }) => cmd[0]).slice(-2), ['rm', 'flock']);
+        assert.ok(compose.some((args) => args[0] === 'down' && !args.includes('--volumes')));
+        assert.ok(existsSync(join(h.dir, '.env')), 'the directory and its data stay');
+        assert.match(result.stdout, /still holds its configuration, data and backups/);
+    });
+
+    test('a server whose shared Caddy is gone is refused, as its routes cannot be removed', async () => {
+        sharedCaddyEnv();
+        shared.exists = false;
+        const result = await h.run('remove', '--yes');
+        assert.equal(result.code, 1);
+        assert.match(result.stderr, /this server has none \(no ghost-ingress network\)/);
+        assert.ok(!compose.some((args) => args[0] === 'down'));
+    });
+
+    test('a failed docker compose down says the routes are already gone', async () => {
+        sharedCaddyEnv();
+        shared.sites.set('ghost-example-com.caddy', 'example.com {\n}\n');
+        h.daemon.composeRun = (args) => (args[0] === 'down' ? failed(1, 'daemon gone') : ok(''));
+        const result = await h.run('remove', '--yes');
+        assert.equal(result.code, 1);
+        assert.match(result.stderr, /Its routes are already gone from the shared Caddy/);
+        assert.equal(shared.sites.size, 0);
+    });
+
+    test('it is asked, or --yes says so', async () => {
+        sharedCaddyEnv();
+        shared.sites.set('ghost-example-com.caddy', 'x');
+        const result = await h.run('remove');
+        assert.equal(result.code, 2);
+        assert.match(result.stderr, /Run it again with --yes/);
+        assert.equal(shared.sites.size, 1);
+        assert.ok(!compose.some((args) => args[0] === 'down'));
+    });
+
+    test('the shared Caddy itself is not a site', async () => {
+        writeFileSync(
+            join(h.dir, '.env'),
+            env.serializeAll([
+                ['COMPOSE_PROFILES', 'infra'],
+                ['SITE_MODE', 'infra'],
+            ]),
+        );
+        const result = await h.run('remove', '--yes');
+        assert.equal(result.code, 1);
+        assert.match(result.stderr, /holds the shared Caddy, not a site/);
+    });
+});
+
+describe('verification', () => {
+    const answer = {
+        status: 200,
+        body: JSON.stringify({ site: { url: 'https://example.com/' } }),
+        location: null,
+        certificate: {
+            issuer: "Let's Encrypt",
+            covers: true,
+            validTo: '2027-01-07T12:00:00.000Z',
+            expired: false,
+            untrusted: null,
+        },
+    };
+
+    test("a site behind it is asked for through the shared Caddy, whose routes file is this site's", async () => {
+        sharedCaddyEnv();
+        shared.sites.set('ghost-example-com.caddy', 'example.com {\n}\n');
+        ps = () =>
+            JSON.stringify({ ID: 'g', Service: 'ghost', State: 'running', Health: 'healthy' });
+        h.daemon.https = ({ host, servername }) => {
+            assert.equal(host, 'caddy-ghost-example-com');
+            assert.equal(servername, 'example.com');
+            return answer;
+        };
+        const checks = await verifyIngress(h.io(), siteFacts(h.dir, readSettings(h.dir)!));
+        const by = Object.fromEntries(checks.map((check) => [check.label, check]));
+        assert.equal(by['shared caddy']?.status, 'ok');
+        assert.equal(by.routes?.status, 'ok');
+        assert.match(by.routes!.detail, /\/srv\/caddy\/caddy\/sites\/ghost-example-com\.caddy/);
+        assert.equal(by.https?.status, 'ok', by.https?.detail ?? '');
+        assert.match(
+            by['published ports']!.detail,
+            /the shared Caddy on 0\.0\.0\.0:80, 0\.0\.0\.0:443/,
+        );
+    });
+
+    test('routes that are gone, or a shared Caddy that is gone, are errors', async () => {
+        sharedCaddyEnv();
+        ps = () =>
+            JSON.stringify({ ID: 'g', Service: 'ghost', State: 'running', Health: 'healthy' });
+        h.daemon.https = () => answer;
+        let checks = await verifyIngress(h.io(), siteFacts(h.dir, readSettings(h.dir)!));
+        assert.match(
+            checks.find((check) => check.label === 'routes')!.detail,
+            /ghost-example-com\.caddy does not exist/,
+        );
+        shared.exists = false;
+        checks = await verifyIngress(h.io(), siteFacts(h.dir, readSettings(h.dir)!));
+        const missing = checks.find((check) => check.label === 'shared caddy')!;
+        assert.equal(missing.status, 'error');
+        assert.match(missing.detail, /this server has none/);
+    });
+});
+
+describe('list', () => {
+    test('shows the shared Caddy and the sites behind it', async () => {
+        h.daemon.containers = [
+            CADDY,
+            {
+                Id: 'm',
+                Names: ['/ghost-example-com-ghost-1'],
+                Labels: {
+                    'org.ghost.docker.managed': 'true',
+                    'org.ghost.docker.mode': 'production',
+                    'com.docker.compose.project': 'ghost-example-com',
+                },
+                Ports: [],
+                NetworkSettings: {
+                    Networks: { 'ghost-example-com_ghost_network': {}, 'ghost-ingress': {} },
+                },
+            },
+            {
+                Id: 's',
+                Names: ['/ghost-solo-com-ghost-1'],
+                Labels: {
+                    'org.ghost.docker.managed': 'true',
+                    'org.ghost.docker.mode': 'production',
+                    'com.docker.compose.project': 'ghost-solo-com',
+                },
+                Ports: [],
+                NetworkSettings: { Networks: { 'ghost-solo-com_ingress': {} } },
+            },
+        ];
+        h.daemon.composeRun = (args) =>
+            args[0] === 'ls'
+                ? ok(
+                      JSON.stringify(
+                          ['ghost-infra', 'ghost-example-com', 'ghost-solo-com'].map((name) => ({
+                              Name: name,
+                              Status: 'running(1)',
+                              ConfigFiles: `/srv/${name}/compose.yml`,
+                          })),
+                      ),
+                  )
+                : undefined;
+        const result = await h.run('list');
+        assert.equal(result.code, 0, result.stderr);
+        assert.match(result.stdout, /^ghost-example-com +shared-caddy /m);
+        assert.match(result.stdout, /^ghost-infra +infra /m);
+        assert.match(result.stdout, /^ghost-solo-com +production /m);
+        assert.match(result.stdout, /shared-caddy is a production site behind the shared Caddy/);
+    });
+});
+
+describe('config validate', () => {
+    test("the shared Caddy's .env needs no Ghost, but its network", async () => {
+        writeFileSync(
+            join(h.dir, '.env'),
+            env.serializeAll([
+                ['COMPOSE_PROFILES', 'infra'],
+                ['SITE_MODE', 'infra'],
+                ['COMPOSE_PROJECT_NAME', 'ghost-infra'],
+                ['PROJECT_DIR', h.dir],
+                ['INGRESS_NETWORK', 'ghost-ingress'],
+                ['INGRESS_EXTERNAL', 'true'],
+            ]),
+            { mode: 0o600 },
+        );
+        const valid = await h.run('config', 'validate');
+        assert.equal(valid.code, 0, valid.stdout + valid.stderr);
+        assert.match(valid.stdout, /valid for the shared Caddy/);
+
+        writeFileSync(
+            join(h.dir, '.env'),
+            env.serializeAll([
+                ['COMPOSE_PROFILES', 'infra,activitypub'],
+                ['SITE_MODE', 'infra'],
+                ['COMPOSE_PROJECT_NAME', 'ghost-infra'],
+                ['PROJECT_DIR', h.dir],
+            ]),
+            { mode: 0o600 },
+        );
+        const invalid = await h.run('config', 'validate');
+        assert.equal(invalid.code, 1);
+        assert.match(invalid.stdout + invalid.stderr, /runs Caddy alone: remove activitypub/);
+        assert.match(
+            invalid.stdout + invalid.stderr,
+            /INGRESS_NETWORK is required for the shared Caddy/,
+        );
+        assert.match(invalid.stdout + invalid.stderr, /INGRESS_EXTERNAL must be true/);
+    });
+
+    test('a site behind it is a production site, and must be on the shared network', async () => {
+        sharedCaddyEnv();
+        const valid = await h.run('config', 'validate');
+        assert.equal(valid.code, 0, valid.stdout + valid.stderr);
+        assert.match(valid.stdout, /valid for a production site/);
+
+        const values = settings();
+        delete values.INGRESS_EXTERNAL;
+        writeFileSync(join(h.dir, '.env'), env.serializeAll(Object.entries(values)), {
+            mode: 0o600,
+        });
+        const invalid = await h.run('config', 'validate');
+        assert.equal(invalid.code, 1);
+        assert.match(invalid.stdout + invalid.stderr, /INGRESS_EXTERNAL must be true/);
+
+        writeFileSync(
+            join(h.dir, '.env'),
+            env.serializeAll(
+                Object.entries({ ...values, INGRESS_EXTERNAL: 'true', INGRESS_NETWORK: 'other' }),
+            ),
+            { mode: 0o600 },
+        );
+        const elsewhere = await h.run('config', 'validate');
+        assert.equal(elsewhere.code, 1);
+        assert.match(
+            elsewhere.stdout + elsewhere.stderr,
+            /INGRESS_NETWORK must be ghost-ingress, the shared Caddy's network: got other/,
+        );
+    });
+
+    test('a site needs its database passwords, which compose.yml no longer guards', async () => {
+        sharedCaddyEnv();
+        const values = settings();
+        delete values.DATABASE_ROOT_PASSWORD;
+        writeFileSync(join(h.dir, '.env'), env.serializeAll(Object.entries(values)), {
+            mode: 0o600,
+        });
+        const result = await h.run('config', 'validate');
+        assert.equal(result.code, 1);
+        assert.match(result.stdout + result.stderr, /DATABASE_ROOT_PASSWORD is required/);
+    });
+});
+
+describe('the pieces', () => {
+    test('shared-caddy selects production; infra selects no site mode', () => {
+        assert.equal(siteMode('shared-caddy,activitypub'), 'production');
+        assert.equal(siteMode('shared-caddy,production'), null);
+        assert.equal(siteMode('infra'), null);
+        assert.equal(layoutOf('shared-caddy,analytics'), 'shared-caddy');
+        assert.equal(layoutOf('infra'), 'infra');
+        assert.equal(layoutOf('production'), 'production');
+        assert.equal(layoutOf('local,mailpit'), 'local');
+    });
+
+    test("each layout's stack files", () => {
+        const stack = h.env.GD_STACK_DIR!;
+        const tops = (layout: Parameters<typeof payloadFiles>[1]) => [
+            ...new Set(payloadFiles(stack, layout).map((file) => file.split('/')[0])),
+        ];
+        assert.deepEqual(tops('infra'), [
+            '.env.example',
+            'caddy',
+            'compose.ipv6.yml',
+            'compose.yml',
+        ]);
+        assert.ok(!tops('shared-caddy').includes('caddy'));
+        assert.ok(tops('shared-caddy').includes('tinybird'));
+        assert.ok(tops('production').includes('caddy'));
+    });
+});

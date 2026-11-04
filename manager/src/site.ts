@@ -56,32 +56,54 @@ export type SiteMode = (typeof SITE_MODES)[number];
  * host: Ghost and MySQL, no Caddy. Its mode is production.
  */
 export const NO_CADDY_PROFILE = 'no-caddy';
+/**
+ * A production site behind the shared Caddy (shared.ts): Ghost and MySQL of
+ * its own, its routes in the shared Caddy's directory. Its mode is production.
+ */
+export const SHARED_CADDY_PROFILE = 'shared-caddy';
+/** The shared Caddy's own directory: Caddy alone, and no site. */
+export const INFRA_PROFILE = 'infra';
 
 /** The profiles that select a site's mode, and the mode each selects. */
 const MODE_PROFILES: Readonly<Record<string, SiteMode>> = {
     local: 'local',
     production: 'production',
     [NO_CADDY_PROFILE]: 'production',
+    [SHARED_CADDY_PROFILE]: 'production',
 };
 export const MODE_PROFILE_NAMES = Object.keys(MODE_PROFILES);
 
 /**
- * What a directory's files are for: a site of either mode, or a production
- * site behind the operator's own proxy. The stack files each one needs differ
- * (payload.ts), and only a production layout has Caddy.
+ * What a directory's files are for: a site of either mode, a production site
+ * behind the operator's own proxy or behind the shared Caddy, or the shared
+ * Caddy itself. The stack files each one needs differ (payload.ts), and only a
+ * production layout has a Caddy of its own.
  */
-export type Layout = SiteMode | typeof NO_CADDY_PROFILE;
+export type Layout =
+    | SiteMode
+    | typeof NO_CADDY_PROFILE
+    | typeof SHARED_CADDY_PROFILE
+    | typeof INFRA_PROFILE;
 
 /** The layout COMPOSE_PROFILES selects; a production one unless it says otherwise. */
 export function layoutOf(profiles: string): Layout {
     const selected = splitProfiles(profiles);
-    for (const layout of [NO_CADDY_PROFILE, 'local'] as const) {
+    for (const layout of [
+        INFRA_PROFILE,
+        NO_CADDY_PROFILE,
+        SHARED_CADDY_PROFILE,
+        'local',
+    ] as const) {
         if (selected.includes(layout)) {
             return layout;
         }
     }
     return 'production';
 }
+
+/** Does this `.env` belong to the shared Caddy's directory rather than a site? */
+export const isInfra = (settings: SiteSettings): boolean =>
+    hasProfile(settings.get('COMPOSE_PROFILES') ?? '', INFRA_PROFILE);
 
 /** Additive, per-site. `supervisor` runs the upgrade supervisor (docs/upgrade-supervisor.md). */
 export const OPTIONAL_PROFILES = ['analytics', 'activitypub', 'mailpit', 'supervisor'] as const;
@@ -176,8 +198,10 @@ export function generatedSettings(input: {
     >;
     readonly port: number;
     readonly mailpitPort: number | null;
-    /** Caddy's, written for a production site with Caddy. */
+    /** Caddy's, written for a production site with a Caddy of its own. */
     readonly ports: { readonly http: string; readonly https: string };
+    /** The shared Caddy's network, for a site behind it; null for one with its own. */
+    readonly ingress: string | null;
     readonly database: {
         readonly user: string;
         readonly password: string;
@@ -204,6 +228,7 @@ export function generatedSettings(input: {
         ...(input.mailpitPort === null ? {} : { MAILPIT_PORT: String(input.mailpitPort) }),
         RESTART_POLICY: production ? 'unless-stopped' : 'no',
         ...(caddy ? { HTTP_PORT: input.ports.http, HTTPS_PORT: input.ports.https } : {}),
+        ...(input.ingress === null ? {} : ingressSettings(input.ingress)),
         DATABASE_HOST: 'db',
         DATABASE_PORT: '3306',
         DATABASE_NAME: 'ghost',
@@ -212,6 +237,12 @@ export function generatedSettings(input: {
         DATABASE_ROOT_PASSWORD: database.rootPassword,
     });
 }
+
+/** What puts a directory's services on the shared Caddy's network, which it does not create. */
+export const ingressSettings = (network: string): Record<string, string> => ({
+    INGRESS_NETWORK: network,
+    INGRESS_EXTERNAL: 'true',
+});
 
 /** The hostname a URL names, or '' when it is not a URL. */
 export const hostOf = (url: string): string => {
@@ -226,7 +257,10 @@ export const hostOf = (url: string): string => {
 export interface SiteFacts {
     readonly dir: string;
     readonly mode: SiteMode | null;
-    /** Whether Caddy serves it ('production'), or the operator's own proxy ('no-caddy'). */
+    /**
+     * Whether its own Caddy serves it ('production'), the shared Caddy
+     * ('shared-caddy'), or the operator's own proxy ('no-caddy').
+     */
     readonly layout: Layout;
     /** The hosts of URL and ADMIN_URL: what Caddy should serve, in production. */
     readonly domain: string;

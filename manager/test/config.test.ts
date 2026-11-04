@@ -75,7 +75,7 @@ describe('.env', () => {
         makeSite(h, { ...PRODUCTION, COMPOSE_PROFILES: 'no-caddy,production' });
         assert.match(
             (await validate()).errors,
-            /exactly one site mode \(local, production, no-caddy\)/,
+            /exactly one site mode \(local, production, no-caddy, shared-caddy\)/,
         );
         makeSite(h, { ...PRODUCTION, URL: 'http://example.com', COMPOSE_PROFILES: 'no-caddy' });
         assert.match((await validate()).errors, /URL must be https:\/\//);
@@ -143,10 +143,11 @@ describe('.env', () => {
         assert.match(result.errors, /warning .*mode is 0644; it holds credentials/);
     });
 
-    test('Compose guards URL itself, so validation does not list it twice', async () => {
+    test('a local site needs URL too: compose.yml no longer guards it', async () => {
         makeSite(h, { ...LOCAL, URL: undefined });
         const result = await validate();
-        assert.doesNotMatch(result.errors, /\.env +URL is required/);
+        assert.equal(result.code, 1);
+        assert.match(result.errors, /URL is required for mode local/);
     });
 });
 
