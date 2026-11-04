@@ -649,6 +649,29 @@ describe('a site behind the shared Caddy', () => {
         );
     });
 
+    test('routes with no checksum are refused before anything changes', async () => {
+        const root = await backUp();
+        const manifest = JSON.parse(readFileSync(join(root, 'manifest.json'), 'utf8'));
+        delete manifest.files['routes.caddy'];
+        writeFileSync(join(root, 'manifest.json'), JSON.stringify(manifest));
+        writeFileSync(
+            join(root, 'routes.caddy'),
+            'example.com {\n\trespond "not the backup\'s"\n}\n',
+        );
+        shared.sites.clear();
+        shared.execs.length = 0;
+        const before = readSite('.env');
+        const restored = await h.run('restore', '--yes', root);
+        assert.equal(restored.code, 1);
+        assert.match(
+            restored.stderr,
+            /lists no checksum for routes\.caddy\. Nothing has been changed/,
+        );
+        assert.equal(readSite('.env'), before);
+        assert.equal(shared.sites.size, 0);
+        assert.deepEqual(shared.execs, []);
+    });
+
     test("routes whose domain another site's routes serve are refused before anything changes", async () => {
         const root = await backUp();
         shared.sites.clear();

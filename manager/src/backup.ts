@@ -642,7 +642,11 @@ export async function readBackup(io: Io, root: string): Promise<BackupManifest> 
         throw new CliError(`${read.reason}. Nothing has been changed.`);
     }
     const { manifest } = read;
-    const wanted = [manifest.content.file, ...manifest.databases.map((database) => database.file)];
+    const wanted = [
+        manifest.content.file,
+        ...manifest.databases.map((database) => database.file),
+        ...(manifest.routes === undefined ? [] : [manifest.routes]),
+    ];
     for (const file of wanted) {
         if (!(file in manifest.files)) {
             throw new CliError(
