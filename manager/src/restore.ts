@@ -1,7 +1,15 @@
 // Restore validates the inputs it will write before replacing the site.
 // After writing begins, failure needs the operator; recovery instructions must
 // name only copies that exist. See docs/architecture.md#restore.
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import {
+    cpSync,
+    existsSync,
+    mkdirSync,
+    mkdtempSync,
+    readdirSync,
+    readFileSync,
+    rmSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { backupSiteFiles, readBackup, refuseMovedData } from './backup.ts';
@@ -50,12 +58,15 @@ import {
     siteFacts,
 } from './site.ts';
 import {
+    addRoutes,
     describeShared,
     findSharedCaddy,
+    refuseTaken as refuseServed,
     routeFiles,
     routesFile,
     routesPath,
     runningCaddy,
+    type SharedCaddy,
 } from './shared.ts';
 import { verifySite } from './verify.ts';
 
@@ -82,7 +93,7 @@ export async function restoreSite({ io, context, root, yes }: RestoreInput): Pro
     );
 
     const target = classify(context, dir, manifest);
-    await refuseWithoutRoutes(io, root, manifest);
+    const routes = await refuseWithoutRoutes(io, root, manifest);
     if (target === 'fresh') {
         await refuseTaken(io, root, manifest);
     } else {
@@ -134,6 +145,16 @@ export async function restoreSite({ io, context, root, yes }: RestoreInput): Pro
         writeSiteFiles(io, root, dir, manifest, pin === null ? null : pulled.get(pin)!);
         await checkImages(io, dir, manifest);
         await loadBackupData(io, root, dir, manifest);
+        if (routes !== null) {
+            await io.busy('Writing the routes into the shared Caddy', () =>
+                addRoutes(io, routes.shared, manifest.site.project, routes.text),
+            );
+            ok(
+                io,
+                'routes',
+                `${routesPath(routes.shared, manifest.site.project)}, from the backup; the shared Caddy reloaded`,
+            );
+        }
 
         heading(io, 'Starting the services');
         await upAndWait(io, dir, 'Starting the services and waiting for them to be healthy');
@@ -396,33 +417,57 @@ async function refuseOtherConfiguration(
 }
 
 /**
- * A site that was behind the shared Caddy is restored behind it: its network
- * must exist, and its routes, which are the shared Caddy's files rather than
- * the site's and so not in the backup, must be there to verify it.
+ * A site that was behind the shared Caddy is restored behind it: the shared
+ * Caddy must run, and serve the site's routes. Routes it already has are
+ * kept, as the operator may have edited them since; otherwise the backup's
+ * are written back (returned here, written once the site's data is), when
+ * no other site serves their domains. A backup without routes needs them in
+ * place first.
  */
-async function refuseWithoutRoutes(io: Io, root: string, manifest: BackupManifest): Promise<void> {
+async function refuseWithoutRoutes(
+    io: Io,
+    root: string,
+    manifest: BackupManifest,
+): Promise<{ shared: SharedCaddy; text: string } | null> {
     const settings = env.toRecord(readIfExists(join(root, SITE_FILES_DIR, ENV_FILE)) ?? '');
     if (!hasProfile(settings.COMPOSE_PROFILES ?? '', SHARED_CADDY_PROFILE)) {
-        return;
+        return null;
     }
+    const project = manifest.site.project;
     const shared = await findSharedCaddy(io);
     if (shared === null) {
         throw new CliError(
             `this backup is of a site behind the shared Caddy, and this server has none.\n` +
-                '  Set one up first with ./ghost-docker install --infra, in a directory of its own, and put\n' +
-                `  the site's routes in its caddy/sites/${routesFile(manifest.site.project)}. Nothing has been changed.`,
+                '  Set one up first with ./ghost-docker install --infra, in a directory of its own' +
+                (manifest.routes === undefined
+                    ? `, and put\n  the site's routes in its caddy/sites/${routesFile(project)}`
+                    : '; the restore\n  writes the routes the backup holds') +
+                '. Nothing has been changed.',
         );
     }
-    const project = manifest.site.project;
-    if (!(await routeFiles(io, runningCaddy(shared))).includes(routesFile(project))) {
+    if ((await routeFiles(io, runningCaddy(shared))).includes(routesFile(project))) {
+        ok(
+            io,
+            'routes',
+            `${routesPath(shared, project)}, kept as it is, in ${describeShared(shared)}`,
+        );
+        return null;
+    }
+    if (manifest.routes === undefined) {
         throw new CliError(
             `this backup is of a site behind the shared Caddy, which has no routes for it:\n` +
-                `  ${routesPath(shared, project)} does not exist. Routes are the shared Caddy's files, not the\n` +
-                "  site's, so a backup does not hold them: put them back (or write them as docs/caddy.md\n" +
-                '  describes), then run the restore again. Nothing has been changed.',
+                `  ${routesPath(shared, project)} does not exist, and the backup holds none. Put them back\n` +
+                '  (or write them as docs/caddy.md describes), then run the restore again. Nothing has\n' +
+                '  been changed.',
         );
     }
-    ok(io, 'routes', `${routesPath(shared, project)}, in ${describeShared(shared)}`);
+    const domains = [settings.URL, settings.ADMIN_URL]
+        .filter((url): url is string => Boolean(url))
+        .map((url) => URL.parse(url)?.hostname)
+        .filter((host): host is string => Boolean(host));
+    await refuseServed(io, shared, project, domains);
+    ok(io, 'routes', `the backup's, written to ${routesPath(shared, project)} once the data is`);
+    return { shared, text: readFileSync(join(root, manifest.routes), 'utf8') };
 }
 
 /**

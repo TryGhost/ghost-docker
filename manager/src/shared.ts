@@ -166,6 +166,31 @@ export async function routeFiles(io: Io, caddy: ContainerFacts): Promise<string[
     return result.stdout.split('\n').filter((line) => line !== '');
 }
 
+/** The marker line an install writes first in its routes (routesMarker). */
+const MARKER_LINE = /^# ghost-docker install [0-9a-f-]+\n/;
+
+/**
+ * A site's routes as the shared Caddy holds them, without the marker line
+ * of the install that wrote them, or null when it has none: what a backup
+ * keeps, and what a restore writes back with addRoutes.
+ */
+export async function readRoutes(
+    io: Io,
+    shared: SharedCaddy,
+    project: string,
+): Promise<string | null> {
+    const caddy = runningCaddy(shared);
+    if (!(await routeFiles(io, caddy)).includes(routesFile(project))) {
+        return null;
+    }
+    const read = await inCaddy(io, caddy, ['cat', `${SITES}/${routesFile(project)}`]);
+    if (read.status !== 0) {
+        throw new CliError(`${routesPath(shared, project)} could not be read:
+${said(read)}`);
+    }
+    return read.stdout.replace(MARKER_LINE, '');
+}
+
 /**
  * Refuses a site whose project already has routes in the shared Caddy, or
  * whose domains it already serves, for whichever site: before anything is

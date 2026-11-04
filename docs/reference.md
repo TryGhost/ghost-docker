@@ -402,6 +402,7 @@ self-update. Compose files you used with `-f` by hand, such as
 | `database/ghost.sql` | A `mysqldump` of Ghost's database, taken as the site's own database user in one consistent snapshot. |
 | `database/activitypub.sql` | ActivityPub's database, when the `activitypub` profile is on. |
 | `content.tar.gz` | The content directory, `data/ghost`: images, media, files, themes, settings. |
+| `routes.caddy` | Behind the shared Caddy: the site's routes, its `caddy/sites/<project>.caddy` there, without the marker line its install wrote. When the shared Caddy cannot be read, the backup warns and holds none. |
 | `site/` | `.env`, `ghost.env`, `.ghost-docker.json`, `compose.override.yml` and the overrides `COMPOSE_FILE` names, `caddy/sites/`, `caddy/custom/`, `caddy/global/` and, for a site installed from the image, the stack's files and the launcher the site ran. |
 
 A backup is **checked** before it counts as one: every dump is loaded into a
@@ -413,8 +414,9 @@ is an error, not a backup:** `backup` exits `1` and leaves nothing in
 `backups/`.
 
 What a backup cannot hold is named in its manifest and in the summary:
-Caddy's certificates, which Caddy obtains again when the site starts; the
-Tinybird workspace and analytics data outside the site; Mailpit's inbox.
+Caddy's certificates, which Caddy obtains again when the site starts (behind
+the shared Caddy, its own configuration and certificates); the Tinybird
+workspace and analytics data outside the site; Mailpit's inbox.
 
 ### What a backup captures
 
@@ -485,7 +487,10 @@ In order:
    project and busy ports are refused, named, and never stopped. The
    backup's configuration (for a clone, with the clone's `compose.yml`) is
    resolved outside the site, and must name exactly the images the backup
-   records and mount the data where restore loads it. Nothing has changed.
+   records and mount the data where restore loads it. Behind the shared
+   Caddy, it must be running; routes it already has for the project are kept,
+   and otherwise the backup must hold them, for domains it does not already
+   serve. Nothing has changed.
 2. **The lock**, then every image the backup records is pulled before anything
    stops, and each service that was running must get, by its image ID or a
    registry digest, the very image it ran. A reference that names another
@@ -505,6 +510,8 @@ In order:
 5. **The databases.** MySQL starts on an empty data directory, which creates
    the site's databases and user from the restored `.env`; each dump is loaded
    as the site's user, and every table's rows must match the manifest.
+   Behind the shared Caddy, the backup's routes, when it has none for the
+   project, are written into it, validated and loaded, as an install's are.
 6. **Start and verify.** `up --wait`, then the site is verified through its
    ingress as `check` does. `.ghost-docker-restore/` is removed.
 

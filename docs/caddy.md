@@ -144,8 +144,13 @@ and each site behind it as `shared-caddy`.
 `./ghost-docker remove`, in a site's directory, removes its routes file,
 reloads the shared Caddy, and takes the site's containers down; no other site
 is touched. The site's directory, data and backups stay until you delete them.
-A backup does not hold a site's routes, which are the shared Caddy's files:
-restoring a site behind it needs them in place, and says so when they are not.
+A site's backup holds its routes, read from the shared Caddy. Restoring it
+keeps the routes the shared Caddy has for the project, since they may have
+been edited since, and otherwise writes the backup's back: a site removed, or
+moved to a new server with a shared Caddy of its own, comes back with them.
+The shared Caddy's own directory has no backup; it holds no data, and
+`install --infra` sets it up again, with your edits to its Caddyfile and
+snippets yours to keep.
 
 ### How it is connected
 
@@ -190,8 +195,11 @@ snippet is loaded even when the container was not recreated), and must pass
 its health check. Its reloads and those of each site's `install` and `remove`
 take turns, through a lock on `caddy/sites/` inside the container, so none
 loads a configuration read before another site's routes were written. There is no backup,
-because it holds no data. A failed update puts its files back and starts the
-previous Caddy again. It never updates the sites behind it, and their own
+because it holds no data. The release's images are pulled before any file is
+written, so one that cannot be pulled changes nothing. Once files are written,
+a site's reload can load them, so a failed update puts its files back and
+reloads them into Caddy, or starts the previous Caddy again when it had been
+recreated. It never updates the sites behind it, and their own
 `self-update` never touches it.
 
 ### Capacity

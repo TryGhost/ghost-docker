@@ -23,12 +23,14 @@ import {
     DATABASE_NAME,
     MANIFEST_FILE,
     readBackupManifest,
+    ROUTES_FILE,
     SITE_FILES_DIR,
     type BackupManifest,
 } from './backup/manifest.ts';
 import { compose, composeError, composeOverrides, composePs, composeUp } from './compose.ts';
 import { runOnce } from './docker/client.ts';
-import { CliError } from './errors.ts';
+import { CliError, describeError } from './errors.ts';
+import { describeShared, findSharedCaddy, readRoutes, routesPath } from './shared.ts';
 import { WriterPause } from './writers.ts';
 import { atomicWrite, copyPresent, filesUnder, PRIVATE } from './fs.ts';
 import { DATABASE_MS, tableCount, withSiteDatabase } from './import/database.ts';
@@ -177,13 +179,47 @@ export function siteOverrides(resolved: ResolvedSite): string[] {
     });
 }
 
+/**
+ * Behind the shared Caddy, the site's routes, copied into the backup so a
+ * restore can write them back. They are the shared Caddy's files, read
+ * through its container; one that cannot be read leaves the backup without
+ * them, with a warning, rather than failing it.
+ */
+async function captureRoutes(io: Io, project: string, partial: string): Promise<boolean> {
+    try {
+        const shared = await findSharedCaddy(io);
+        if (shared === null) {
+            warn(io, 'routes', 'this server has no shared Caddy, so the backup holds no routes');
+            return false;
+        }
+        const routes = await readRoutes(io, shared, project);
+        if (routes === null) {
+            warn(
+                io,
+                'routes',
+                `${routesPath(shared, project)} does not exist, so the backup holds no routes`,
+            );
+            return false;
+        }
+        atomicWrite(join(partial, ROUTES_FILE), routes, PRIVATE);
+        ok(io, 'routes', `${routesPath(shared, project)}, from ${describeShared(shared)}`);
+        return true;
+    } catch (failure) {
+        warn(io, 'routes', `${describeError(failure)}\n  The backup holds no routes.`);
+        return false;
+    }
+}
+
 /** What the site has that a backup cannot hold, for the manifest and the summary. */
-function notIncluded(site: SiteFacts): string[] {
+function notIncluded(site: SiteFacts, routes: boolean): string[] {
     const profiles = site.settings.get('COMPOSE_PROFILES') ?? '';
     const lines: string[] = [];
     if (site.layout === SHARED_CADDY_PROFILE) {
+        if (!routes) {
+            lines.push("its routes, which could not be read from the shared Caddy's caddy/sites/");
+        }
         lines.push(
-            "its routes, in the shared Caddy's caddy/sites/, which are the shared Caddy's files, with its certificates",
+            "the shared Caddy's own configuration and its certificates, which are not the site's",
         );
     } else if (site.layout === 'production') {
         lines.push(
@@ -477,6 +513,10 @@ export async function takeBackup({
             `${copied} files and directories: configuration, metadata, Caddy${overrides.length > 0 ? `, ${overrides.join(', ')}` : ''}`,
         );
 
+        const routes =
+            site.layout === SHARED_CADDY_PROFILE &&
+            (await captureRoutes(io, metadata.site.project, partial));
+
         // Captured: the site runs again before the slower checks, unless the
         // caller keeps it paused.
         await resume();
@@ -562,8 +602,9 @@ export async function takeBackup({
             running: ran,
             databases: manifestDatabases,
             content: { file: CONTENT_ARCHIVE, entries },
+            ...(routes ? { routes: ROUTES_FILE } : {}),
             files,
-            notIncluded: notIncluded(site),
+            notIncluded: notIncluded(site, routes),
         };
         atomicWrite(
             join(partial, MANIFEST_FILE),

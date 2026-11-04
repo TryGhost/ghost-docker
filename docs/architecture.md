@@ -138,7 +138,8 @@ owner; Caddy validates the whole configuration before it is reloaded, and
 routes it refuses are removed. Duplicate domains (from Caddy's loaded
 configuration) and projects (a routes file of that name) are refused before
 any write. `remove` and a failed install's undo take a site's routes out
-again. A backup does not hold them: they are the shared Caddy's.
+again. A site's backup holds a copy (`routes.caddy`), which a restore writes
+back when the shared Caddy has none for the project.
 
 `src/bundle/manifest.ts` defines the migration bundle schema and depends only on
 zod so the exporter can share it. Import policy stays outside that schema.

@@ -12,7 +12,8 @@
 # checked to leave the other as it was, the same containers serving the same
 # routes: updating the first site's Ghost, backing it up and restoring it over
 # itself, restarting and recreating the shared Caddy (both sites come back),
-# and removing the second site, whose routes go with it. The shared Caddy's
+# and removing the second site, whose routes go with it, then restoring it
+# from its backup, which holds them. The shared Caddy's
 # own directory answers self-update; moving it between releases is unit-tested.
 #
 # It pulls images, starts containers and binds ports 80 and 443 (it fails
@@ -207,8 +208,10 @@ step "Backing alpha up and restoring it over itself leaves bravo untouched"
 run gd "$A" backup
 expect_status 0
 backup=$(find "$A/backups" -mindepth 1 -maxdepth 1 | sort | tail -1)
-jq -e '.notIncluded | any(test("shared Caddy"))' "$backup/manifest.json" >/dev/null ||
-    fail "the backup does not say it leaves the routes out" "$(cat "$backup/manifest.json")"
+jq -e '.routes == "routes.caddy"' "$backup/manifest.json" >/dev/null ||
+    fail "the backup does not hold alpha's routes" "$(cat "$backup/manifest.json")"
+[[ $(tail -n +2 "$CADDY/caddy/sites/ghost-alpha-e2e-test.caddy") == "$(cat "$backup/routes.caddy")" ]] ||
+    fail "the backup's routes are not alpha's, without their marker line" "$(cat "$backup/routes.caddy")"
 run gd "$A" restore --yes "$backup"
 expect_status 0
 serves "$DOMAIN_A"
@@ -231,6 +234,9 @@ untouched "$B" "$before_b"
 ok "both answer after a restart and after down and up; neither site's containers changed"
 
 step "Removing bravo removes its routes, and leaves alpha untouched"
+run gd "$B" backup
+expect_status 0
+backup_b=$(find "$B/backups" -mindepth 1 -maxdepth 1 | sort | tail -1)
 run gd "$B" remove
 expect_status 2
 expect_output 'Run it again with --yes'
@@ -247,5 +253,15 @@ run gd "$A" list
 expect_output '^ghost-alpha-e2e-test +shared-caddy '
 refute_output 'ghost-bravo-e2e-test'
 ok "bravo removed with its routes; alpha's containers as they were, and served"
+
+step "Restoring bravo's backup writes its routes back"
+run gd "$B" restore --yes "$backup_b"
+expect_status 0
+expect_output "the backup's, written to"
+[[ -f $CADDY/caddy/sites/ghost-bravo-e2e-test.caddy ]] || fail "bravo's routes were not written back"
+serves "$DOMAIN_B"
+serves "$DOMAIN_A"
+untouched "$A" "$before_a"
+ok "bravo restored behind the shared Caddy, with the routes its backup held; alpha untouched"
 
 passed 'All shared Caddy checks passed.'
