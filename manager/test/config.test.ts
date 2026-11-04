@@ -143,10 +143,11 @@ describe('.env', () => {
         assert.match(result.errors, /warning .*mode is 0644; it holds credentials/);
     });
 
-    test('Compose guards URL itself, so validation does not list it twice', async () => {
+    test('a local site needs URL too: compose.yml no longer guards it', async () => {
         makeSite(h, { ...LOCAL, URL: undefined });
         const result = await validate();
-        assert.doesNotMatch(result.errors, /\.env +URL is required/);
+        assert.equal(result.code, 1);
+        assert.match(result.errors, /URL is required for mode local/);
     });
 });
 

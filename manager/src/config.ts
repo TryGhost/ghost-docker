@@ -39,8 +39,7 @@ export interface Finding {
 export const REQUIRED_KEYS = {
     common: ['COMPOSE_PROFILES', 'COMPOSE_PROJECT_NAME', 'SITE_MODE', 'PROJECT_DIR'],
     /** compose.yml does not `:?`-guard these: the shared Caddy's directory has none. */
-    site: ['GHOST_VERSION', 'DATABASE_PASSWORD', 'DATABASE_ROOT_PASSWORD'],
-    production: ['URL'],
+    site: ['GHOST_VERSION', 'URL', 'DATABASE_PASSWORD', 'DATABASE_ROOT_PASSWORD'],
     /** Behind the shared Caddy, and in its own directory. */
     shared: ['INGRESS_NETWORK'],
 } as const;
@@ -144,7 +143,6 @@ export async function validateEnv(io: Io, dir: string): Promise<Finding[]> {
     const required = [
         ...REQUIRED_KEYS.common,
         ...REQUIRED_KEYS.site,
-        ...(mode === 'production' ? REQUIRED_KEYS.production : []),
         ...(behindSharedCaddy ? REQUIRED_KEYS.shared : []),
     ];
     for (const key of required) {

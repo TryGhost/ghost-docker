@@ -471,6 +471,25 @@ async function updateInfra(
         io.stdout(
             `Updating the shared Caddy from ${describeStack(from)} to ${describeStack(to)}\n`,
         );
+        // Before any file is written: a site's install or remove reloads the
+        // shared Caddy from this directory's files at any moment, so a written
+        // file is live from then on, and a failure after it needs a reload.
+        heading(io, 'Pulling the release’s images');
+        const pull = await io.busy(
+            'Pulling the images this release names',
+            () =>
+                compose(io, {
+                    dir,
+                    composeFile: join(stack, COMPOSE_FILE),
+                    timeout: PULL_MS,
+                })`pull --quiet --ignore-buildable`,
+        );
+        if (pull.exitCode !== 0) {
+            throw new CliError(
+                `the images could not be pulled: ${composeError(pull)}. Nothing has been changed.`,
+            );
+        }
+        ok(io, 'images', 'pulled, while Caddy kept running');
         heading(io, 'Keeping the current files');
         // Not the sites' routes: the update never writes them, and a site
         // installed meanwhile adds its own, which putting files back would lose.
@@ -485,13 +504,6 @@ async function updateInfra(
             heading(io, 'Writing the stack');
             writePayloadChanges(io, dir, stack, payload);
             await requireValid(io, dir, 'this release');
-            const pull = await io.busy(
-                'Pulling the images this release names',
-                () => compose(io, { dir, timeout: PULL_MS })`pull --quiet --ignore-buildable`,
-            );
-            if (pull.exitCode !== 0) {
-                throw new CliError(`the images could not be pulled: ${composeError(pull)}`);
-            }
             heading(io, 'Restarting the shared Caddy');
             started = true;
             await caddyUp(
@@ -514,21 +526,26 @@ async function updateInfra(
                         (started ? ' Caddy may be stopped until then.' : ''),
                 );
             }
-            if (started) {
-                try {
+            try {
+                if (started) {
                     await caddyUp(io, dir, `Starting ${describeStack(from)}'s Caddy again`);
-                } catch (again) {
-                    throw new CliError(
-                        `the files are ${describeStack(from)}'s again, but Caddy did not start on them: ${describeError(again)}\n` +
-                            '  Every site behind it is unreachable until it does: docker compose up -d, and\n' +
-                            `  docker compose logs caddy, in ${dir}. The files as they were are in ${UPDATE_DIR}/files;\n` +
-                            `  remove ${UPDATE_DIR} once Caddy runs.`,
-                    );
+                } else {
+                    // Never restarted, but a site's reload may have loaded the
+                    // written files: load the ones put back.
+                    await reloadCaddy(io, dir);
                 }
+            } catch (again) {
+                throw new CliError(
+                    `the files are ${describeStack(from)}'s again, but Caddy did not ${started ? 'start on' : 'load'} them: ${describeError(again)}\n` +
+                        '  Sites behind it may be unreachable, or served by the release that failed, until it\n' +
+                        `  does: docker compose up -d, then docker compose exec caddy ${RELOAD.join(' ')},\n` +
+                        `  and docker compose logs caddy, in ${dir}. The files as they were are in ${UPDATE_DIR}/files;\n` +
+                        `  remove ${UPDATE_DIR} once Caddy runs on them.`,
+                );
             }
             snapshot.remove();
             throw new CliError(
-                `the update failed; the shared Caddy is back on ${describeStack(from)}${started ? ', and running' : ', and was never stopped'}.`,
+                `the update failed; the shared Caddy is back on ${describeStack(from)}${started ? ', and running' : ', with its configuration loaded again'}.`,
             );
         }
         snapshot.remove();
@@ -547,6 +564,16 @@ async function caddyUp(io: Io, dir: string, spinner: string): Promise<void> {
     await upAndWait(io, dir, spinner);
     // `up` recreates Caddy only when its service changed; a Caddyfile or
     // snippet it mounts is loaded only by a reload.
+    await reloadCaddy(io, dir);
+    const caddy = (await composePs(io, dir))?.find((state) => state.Service === 'caddy');
+    if (caddy?.Health !== 'healthy') {
+        throw new CliError('Caddy started, but it is not healthy');
+    }
+    ok(io, 'caddy', 'healthy: its admin API answers, with its configuration loaded');
+}
+
+/** The running Caddy's configuration loaded from the directory's files. */
+async function reloadCaddy(io: Io, dir: string): Promise<void> {
     const reload = await io.busy(
         'Loading the configuration',
         // One at a time with the sites' route changes (shared.ts RELOAD).
@@ -557,11 +584,6 @@ async function caddyUp(io: Io, dir: string, spinner: string): Promise<void> {
             `Caddy did not load its configuration, and keeps serving the one it had: ${composeError(reload)}`,
         );
     }
-    const caddy = (await composePs(io, dir))?.find((state) => state.Service === 'caddy');
-    if (caddy?.Health !== 'healthy') {
-        throw new CliError('Caddy started, but it is not healthy');
-    }
-    ok(io, 'caddy', 'healthy: its admin API answers, with its configuration loaded');
 }
 
 /** --check: what an update would do, changing nothing. */
