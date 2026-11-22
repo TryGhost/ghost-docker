@@ -10,3 +10,13 @@ header {
 	# Prevent embedding in external iframes
 	Content-Security-Policy "frame-ancestors 'self' {$ADMIN_DOMAIN:}"
 }
+
+# Don't send nosniff with 204 responses. Ghost answers /ghost/auth-frame/, an
+# iframe that comments-ui loads when the comments section scrolls into view,
+# with a 204 for visitors who aren't signed in to Admin. Safari on iOS treats a
+# 204 with nosniff in a frame as a file and asks "Do you want to download
+# auth-frame?".
+header {
+	-X-Content-Type-Options
+	match status 204
+}
