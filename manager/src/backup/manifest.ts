@@ -6,6 +6,9 @@ import { readIfExists } from '../fs.ts';
 
 export const BACKUP_FORMAT = 'ghost-docker-backup';
 export const BACKUP_VERSION = 1;
+
+/** Behind the shared Caddy, the site's routes, in the backup (manifest `routes`). */
+export const ROUTES_FILE = 'routes.caddy';
 export const MANIFEST_FILE = 'manifest.json';
 /** The content directory, as a gzipped tarball of its contents. */
 export const CONTENT_ARCHIVE = 'content.tar.gz';
@@ -85,6 +88,12 @@ export const backupManifestSchema = z.strictObject({
         file: inside,
         entries: z.number().int().nonnegative(),
     }),
+    /**
+     * Behind the shared Caddy: the site's routes, as its caddy/sites/<project>.caddy
+     * held them, without the marker line its install wrote. A restore writes
+     * them back when the shared Caddy has none for the project.
+     */
+    routes: inside.optional(),
     /** SHA-256 of every file in the backup but this one, by path. */
     files: z.record(inside, z.string().regex(/^[0-9a-f]{64}$/)),
     /** What the site has that this backup does not, for a person to read. */

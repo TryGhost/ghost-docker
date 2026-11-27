@@ -13,7 +13,7 @@ import { atomicWrite, PRIVATE, readIfExists } from '../fs.ts';
 import type { Io } from '../io.ts';
 import { acquireLock } from '../lock.ts';
 import { printChecks } from '../report.ts';
-import { CONFIG_FILES, ENV_FILE, GHOST_ENV_FILE, type ConfigFile } from '../site.ts';
+import { CONFIG_FILES, ENV_FILE, GHOST_ENV_FILE, isInfra, type ConfigFile } from '../site.ts';
 import { installedSite } from './common.ts';
 
 const isConfigFile = (value: string | undefined): value is ConfigFile =>
@@ -60,7 +60,7 @@ export const getCommand = defineCommand({
     brief: 'Print one decoded value.',
     positionals: ['file', 'key'],
     run: async (_values, args, io) => {
-        const { site } = installedSite(io, { moved: true });
+        const { site } = installedSite(io, { moved: true, infra: true });
         const { file, rest } = await target(io, site.dir, args, 1);
         const key = rest[0]!;
         checkKey(key);
@@ -81,7 +81,7 @@ export const setCommand = defineCommand({
         'A value that starts with a dash goes after --. Holds the site lock while it writes.',
     positionals: ['file', 'key', 'value'],
     run: async (_values, args, io) => {
-        const { site } = installedSite(io, { moved: true });
+        const { site } = installedSite(io, { moved: true, infra: true });
         const { file, rest } = await target(io, site.dir, args, 2);
         const [key, value] = rest as [string, string];
         checkKey(key);
@@ -118,14 +118,16 @@ export const setCommand = defineCommand({
 });
 
 export async function validateSite(io: Io): Promise<number> {
-    const { site } = installedSite(io);
+    const { site } = installedSite(io, { infra: true });
     const findings = await io.busy('Validating the configuration', () => validate(io, site.dir));
     printChecks(io, findingChecks(findings), 10);
     if (findings.some((finding) => finding.level === 'error')) {
         return EXIT.failure;
     }
     io.stdout(
-        `.env and ghost.env are valid for ${site.mode === null ? 'this' : `a ${site.mode}`} site\n`,
+        isInfra(site.settings)
+            ? '.env is valid for the shared Caddy\n'
+            : `.env and ghost.env are valid for ${site.mode === null ? 'this' : `a ${site.mode}`} site\n`,
     );
     return EXIT.ok;
 }

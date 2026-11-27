@@ -68,6 +68,8 @@ export interface SiteOptions {
     readonly override?: string;
     /** caddy/sites/site.caddy. */
     readonly caddy?: string;
+    /** More `.env` settings. */
+    readonly env?: readonly [string, string][];
 }
 
 export function makeSite(io: Io, name: string, options: SiteOptions): TestSite {
@@ -88,6 +90,7 @@ export function makeSite(io: Io, name: string, options: SiteOptions): TestSite {
             ['URL', options.url ?? 'http://localhost:2368'],
             ['DATABASE_PASSWORD', secret()],
             ['DATABASE_ROOT_PASSWORD', secret()],
+            ...(options.env ?? []),
         ]),
         { mode: 0o600 },
     );

@@ -93,7 +93,9 @@ The strict schema in [`src/meta.ts`](../manager/src/meta.ts) defines
 `.ghost-docker.json`. It records installation provenance, resolved Ghost identity
 and managed-file checksums. It is private, gitignored, atomically written and
 machine-owned. Missing metadata is distinct from invalid metadata; commands
-requiring it refuse either with an actionable diagnostic.
+requiring it refuse either with an actionable diagnostic. The shared Caddy's
+directory has metadata of its own `mode`, `infra`, with no site URL and no
+Ghost; `requireMetadata` refuses it, so only `self-update` and `info` read it.
 
 `source` distinguishes files installed from the image from files used in a
 checkout. `stack.image` is the manager pin. `payload` stores the checksum of each
@@ -122,6 +124,22 @@ jobs, which local sites cannot select. A self-update removes them from local
 sites installed before, keeping any file in them that was edited. Caddy routes are rendered once from
 `templates/site.caddy`, then belong to the operator. [caddy.md](caddy.md) owns
 route edits and reload instructions.
+
+`src/shared.ts` is the shared Caddy: one Caddy project per daemon (`install
+--infra`, the `infra` profile, and metadata of the `infra` mode with no
+Ghost, so that `self-update` can keep its stack files and launcher current
+without a backup, as it holds no data), on a network the manager creates
+and labels with its directory, so no Compose project's `down` removes it. A
+production install finds it by that network and selects the `shared-caddy` profile: Caddy's
+own payload is left out, and its routes are a file in the shared Caddy's
+`caddy/sites/`. The manager cannot see that directory, so it reads and writes
+it through the running Caddy container (Engine API exec), as the directory's
+owner; Caddy validates the whole configuration before it is reloaded, and
+routes it refuses are removed. Duplicate domains (from Caddy's loaded
+configuration) and projects (a routes file of that name) are refused before
+any write. `remove` and a failed install's undo take a site's routes out
+again. A site's backup holds a copy (`routes.caddy`), which a restore writes
+back when the shared Caddy has none for the project.
 
 `src/bundle/manifest.ts` defines the migration bundle schema and depends only on
 zod so the exporter can share it. Import policy stays outside that schema.

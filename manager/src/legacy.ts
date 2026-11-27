@@ -316,6 +316,7 @@ async function prepare(
             port,
             mailpitPort: null,
             ports: { http: old.HTTP_PORT || '80', https: old.HTTPS_PORT || '443' },
+            ingress: null,
             database: {
                 user: old.DATABASE_USER || 'ghost',
                 password: old.DATABASE_PASSWORD!,

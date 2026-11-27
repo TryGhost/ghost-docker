@@ -34,6 +34,7 @@ import {
     type Harness,
     type ProgramResult,
 } from './helpers.ts';
+import { CADDY, fakeShared, sharedApi, type FakeShared } from './shared-caddy.ts';
 import { imageApi, imageStack, INDEX, REFERENCE, resolvedProject, rootContainer } from './site.ts';
 
 const MANAGER = `sha256:${'2'.repeat(64)}`;
@@ -563,6 +564,124 @@ describe('backup records what the site runs', () => {
         assert.deepEqual(composed('exec'), []);
         assert.deepEqual(composed('up'), []);
         assert.deepEqual(backups(), []);
+    });
+});
+
+describe('a site behind the shared Caddy', () => {
+    const ROUTES = 'example.com {\n\treverse_proxy ghost-example-com-ghost:2368\n}\n';
+    let shared: FakeShared;
+    let project: string;
+    const routesFile = () => `${project}.caddy`;
+
+    beforeEach(() => {
+        project = env.toRecord(readSite('.env')).COMPOSE_PROJECT_NAME!;
+        // The site as an install behind the shared Caddy leaves it.
+        const profiles = env.toRecord(readSite('.env')).COMPOSE_PROFILES!;
+        setEnv('COMPOSE_PROFILES', profiles.replace('production', 'shared-caddy'));
+        setEnv('INGRESS_NETWORK', 'ghost-ingress');
+        setEnv('INGRESS_EXTERNAL', 'true');
+        shared = fakeShared();
+        shared.sites.set(routesFile(), `# ghost-docker install ${'a'.repeat(8)}-0000\n${ROUTES}`);
+        const site = h.daemon.api;
+        const caddy = sharedApi(shared);
+        h.daemon.api = (request) => caddy(request) ?? site!(request);
+        h.daemon.containers = [CADDY];
+    });
+
+    test('its backup holds its routes, without their marker line', async () => {
+        const root = await backUp();
+        const manifest = JSON.parse(readFileSync(join(root, 'manifest.json'), 'utf8'));
+        assert.equal(manifest.routes, 'routes.caddy');
+        assert.equal(readFileSync(join(root, 'routes.caddy'), 'utf8'), ROUTES);
+        assert.ok(manifest.files['routes.caddy']);
+        assert.ok(!manifest.notIncluded.some((line: string) => /its routes/.test(line)));
+    });
+
+    test('routes the shared Caddy does not have leave the backup without them, and say so', async () => {
+        shared.sites.clear();
+        const result = await h.run('backup');
+        assert.equal(result.code, 0, result.stderr);
+        assert.match(
+            result.stdout + result.stderr,
+            /does not exist, so the backup holds no routes/,
+        );
+        const manifest = JSON.parse(
+            readFileSync(join(h.dir, 'backups', backups()[0]!, 'manifest.json'), 'utf8'),
+        );
+        assert.equal(manifest.routes, undefined);
+        assert.ok(manifest.notIncluded.some((line: string) => /its routes/.test(line)));
+    });
+
+    test("a restore writes the backup's routes back when the shared Caddy has none", async () => {
+        const root = await backUp();
+        // The site was removed, its routes with it.
+        shared.sites.clear();
+        const result = await h.run('restore', '--yes', root);
+        assert.equal(result.code, 0, result.stderr);
+        assert.match(result.stdout, /the backup's, written to/);
+        const written = shared.sites.get(routesFile());
+        assert.ok(written !== undefined, result.stderr);
+        assert.match(written, /^# ghost-docker install [0-9a-f-]+\n/);
+        assert.equal(written.replace(/^.*\n/, ''), ROUTES);
+        assert.ok(shared.execs.some(({ cmd }) => cmd.includes('reload')));
+    });
+
+    test('a restore keeps the routes the shared Caddy has', async () => {
+        const root = await backUp();
+        const edited = `# ghost-docker install ${'b'.repeat(8)}\nexample.com {\n\trespond 503\n}\n`;
+        shared.sites.set(routesFile(), edited);
+        const result = await h.run('restore', '--yes', root);
+        assert.equal(result.code, 0, result.stderr);
+        assert.match(result.stdout, /kept as it is/);
+        assert.equal(shared.sites.get(routesFile()), edited);
+    });
+
+    test('a backup without routes is refused while the shared Caddy has none', async () => {
+        shared.sites.clear();
+        const result = await h.run('backup');
+        assert.equal(result.code, 0, result.stderr);
+        const root = join(h.dir, 'backups', backups()[0]!);
+        const restored = await h.run('restore', '--yes', root);
+        assert.equal(restored.code, 1);
+        assert.match(
+            restored.stderr,
+            /has no routes for it[\s\S]*the backup holds none[\s\S]*Nothing has/,
+        );
+    });
+
+    test('routes with no checksum are refused before anything changes', async () => {
+        const root = await backUp();
+        const manifest = JSON.parse(readFileSync(join(root, 'manifest.json'), 'utf8'));
+        delete manifest.files['routes.caddy'];
+        writeFileSync(join(root, 'manifest.json'), JSON.stringify(manifest));
+        writeFileSync(
+            join(root, 'routes.caddy'),
+            'example.com {\n\trespond "not the backup\'s"\n}\n',
+        );
+        shared.sites.clear();
+        shared.execs.length = 0;
+        const before = readSite('.env');
+        const restored = await h.run('restore', '--yes', root);
+        assert.equal(restored.code, 1);
+        assert.match(
+            restored.stderr,
+            /lists no checksum for routes\.caddy\. Nothing has been changed/,
+        );
+        assert.equal(readSite('.env'), before);
+        assert.equal(shared.sites.size, 0);
+        assert.deepEqual(shared.execs, []);
+    });
+
+    test("routes whose domain another site's routes serve are refused before anything changes", async () => {
+        const root = await backUp();
+        shared.sites.clear();
+        shared.hosts = new Set(['example.com']);
+        const env = readSite('.env');
+        const restored = await h.run('restore', '--yes', root);
+        assert.equal(restored.code, 1);
+        assert.match(restored.stderr, /already serves example\.com/);
+        assert.equal(readSite('.env'), env);
+        assert.equal(shared.sites.size, 0);
     });
 });
 
