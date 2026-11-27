@@ -13,3 +13,7 @@ handle /.well-known/webfinger {
 handle /.well-known/nodeinfo {
 	reverse_proxy {args[0]}
 }
+
+handle /.well-known/atproto-did {
+	reverse_proxy {args[0]}
+}
