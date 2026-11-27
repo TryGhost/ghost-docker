@@ -11,3 +11,7 @@ handle /.well-known/webfinger {
 handle /.well-known/nodeinfo {
 	reverse_proxy {$ACTIVITYPUB_TARGET}
 }
+
+handle /.well-known/atproto-did {
+	reverse_proxy {$ACTIVITYPUB_TARGET}
+}
